@@ -257,6 +257,7 @@ class SDKBackend:
         # Two-tier healing state
         self._last_fast_check: Dict[str, datetime] = {}  # chat_id -> last scan timestamp
         self._recently_healed: Dict[str, datetime] = {}  # chat_id -> heal timestamp
+        self._last_auth_error_notification: Optional[datetime] = None  # debounce auth error SMS
 
     async def recreate_sessions_with_pending_summaries(self) -> int:
         """Recreate sessions that have pending summaries from previous daemon shutdown.
@@ -1147,6 +1148,32 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             return False
         return True
 
+    def _send_auth_error_notification(self):
+        """Send SMS to admin when OAuth token has expired.
+
+        Uses subprocess directly (not a Claude session) since sessions
+        can't function without valid auth. Runs in fire-and-forget mode.
+        """
+        from assistant import config
+
+        try:
+            admin_phone = config.require("owner.phone")
+            send_sms = HOME / ".claude/skills/sms-assistant/scripts/send-sms"
+            message = "[AUTH] OAuth token expired - run /login to refresh"
+
+            result = subprocess.run(
+                [str(send_sms), admin_phone, message],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                lifecycle_log.info(f"AUTH_ERROR_NOTIFY | Sent SMS to admin: {message}")
+            else:
+                log.warning(f"AUTH_ERROR_NOTIFY | SMS failed: {result.stderr}")
+        except Exception as e:
+            log.error(f"AUTH_ERROR_NOTIFY | Failed to send SMS: {e}")
+
     async def health_check_all(self) -> Dict[str, bool]:
         """Check all sessions. Auto-restarts unhealthy ones."""
         results = {}
@@ -1223,6 +1250,19 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                 lifecycle_log.info(
                     f"FAST_HEAL | {session_name} | {fatal_label} | Restarting"
                 )
+
+                # Send SMS notification for auth errors (OAuth token expired)
+                # Debounce to max once per 5 minutes to avoid spam
+                if fatal_label == "auth_error":
+                    should_notify = True
+                    if self._last_auth_error_notification:
+                        elapsed = (now - self._last_auth_error_notification).total_seconds()
+                        if elapsed < 300:  # 5 minutes
+                            should_notify = False
+
+                    if should_notify:
+                        self._last_auth_error_notification = now
+                        self._send_auth_error_notification()
 
                 self._recently_healed[chat_id] = now
 
