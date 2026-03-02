@@ -1,0 +1,18 @@
+{
+  "skipDangerousModePermissionPrompt": true,
+  "hooks": {
+    "PreToolUse": [],
+    "PostToolUseFailure": [
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/skills/webfetch/hooks/webfetch-fallback.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

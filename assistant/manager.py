@@ -2079,6 +2079,23 @@ Keep the text concise - this is a nightly check-in, not a full report.
         log.info("=" * 60)
         lifecycle_log.info(f"DAEMON | START | rowid={self.last_rowid}")
 
+        # Ensure global settings.json symlink is correct
+        global_settings_target = HOME / "dispatch" / "config" / "global-settings.json"
+        global_settings_link = HOME / ".claude" / "settings.json"
+        if global_settings_target.exists():
+            if global_settings_link.is_symlink():
+                if global_settings_link.resolve() != global_settings_target.resolve():
+                    log.info(f"Fixing global settings.json symlink -> {global_settings_target}")
+                    global_settings_link.unlink()
+                    global_settings_link.symlink_to(global_settings_target)
+            elif global_settings_link.exists():
+                log.warning(f"Global settings.json is a regular file, replacing with symlink")
+                global_settings_link.unlink()
+                global_settings_link.symlink_to(global_settings_target)
+            else:
+                log.info(f"Creating global settings.json symlink -> {global_settings_target}")
+                global_settings_link.symlink_to(global_settings_target)
+
         # Setup signal handlers
         loop = asyncio.get_event_loop()
         loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(self._shutdown()))

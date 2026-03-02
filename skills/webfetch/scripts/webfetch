@@ -3,23 +3,24 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "requests>=2.31",
-#     "playwright>=1.40",
+#     "zendriver>=0.15",
 #     "markdownify>=0.11",
 #     "beautifulsoup4>=4.12",
 #     "pycryptodomex>=3.20",
 # ]
 # ///
 """
-webfetch - Fetch web pages with requests + playwright fallback.
+webfetch - Fetch web pages with requests + zendriver fallback.
 
 Usage:
-    webfetch <url> [--timeout SECONDS] [--force-playwright] [--raw]
+    webfetch <url> [--timeout SECONDS] [--force-headless] [--raw]
 
-Tries requests with Chrome cookies + UA first. Falls back to playwright headless
+Tries requests with Chrome cookies + UA first. Falls back to zendriver headless
 if blocked (403/503) or if content is too small (likely antibot page).
 """
 
 import argparse
+import asyncio
 import hashlib
 import os
 import shutil
@@ -126,37 +127,39 @@ def fetch_with_requests(url: str, timeout: int = 30, cookies: dict[str, str] | N
         return None, 0, str(e)
 
 
-def fetch_with_playwright(url: str, timeout: int = 30, cookies: list[dict] | None = None) -> tuple[str | None, str | None]:
-    """Fetch with playwright headless. Returns (html, error)."""
+async def fetch_with_zendriver_async(url: str, timeout: int = 30) -> tuple[str | None, str | None]:
+    """Fetch with zendriver headless. Returns (html, error)."""
+    browser = None
     try:
-        from playwright.sync_api import sync_playwright
+        import zendriver as zd
 
-        with sync_playwright() as p:
-            # Use chromium in headless mode
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent=CHROME_UA,
-                viewport={"width": 1920, "height": 1080},
-            )
+        async def do_fetch():
+            nonlocal browser
+            browser = await zd.start(headless=True)
+            page = await browser.get(url)
+            # Wait for content to render
+            await asyncio.sleep(2)
+            html = await page.get_content()
+            return html
 
-            # Add cookies if provided
-            if cookies:
-                context.add_cookies(cookies)
-
-            page = context.new_page()
-
-            # Navigate and wait for content (use domcontentloaded, networkidle is too slow)
-            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
-            # Give JS a moment to render
-            page.wait_for_timeout(2000)
-
-            # Get rendered HTML
-            html = page.content()
-
-            browser.close()
-            return html, None
+        # Enforce timeout
+        html = await asyncio.wait_for(do_fetch(), timeout=timeout)
+        return html, None
+    except asyncio.TimeoutError:
+        return None, f"Timeout after {timeout}s"
     except Exception as e:
         return None, str(e)
+    finally:
+        if browser:
+            try:
+                await browser.stop()
+            except Exception:
+                pass
+
+
+def fetch_with_zendriver(url: str, timeout: int = 30) -> tuple[str | None, str | None]:
+    """Sync wrapper for zendriver fetch."""
+    return asyncio.run(fetch_with_zendriver_async(url, timeout))
 
 
 def html_to_markdown(html: str, url: str) -> str:
@@ -202,6 +205,7 @@ def looks_like_antibot_page(html: str) -> bool:
         "captcha",
         "cf-browser-verification",
         "challenge-running",
+        "<title>sign in to github",  # GitHub login page (in title tag)
     ]
 
     html_lower = html.lower()
@@ -226,7 +230,8 @@ def main():
     parser = argparse.ArgumentParser(description="Fetch web pages with fallback")
     parser.add_argument("url", help="URL to fetch")
     parser.add_argument("--timeout", type=int, default=30, help="Timeout in seconds")
-    parser.add_argument("--force-playwright", action="store_true", help="Skip requests, use playwright directly")
+    parser.add_argument("--force-headless", action="store_true", help="Skip requests, use zendriver directly")
+    parser.add_argument("--force-playwright", action="store_true", help="Deprecated: same as --force-headless")
     parser.add_argument("--raw", action="store_true", help="Output raw HTML instead of markdown")
     parser.add_argument("--no-cookies", action="store_true", help="Don't use Chrome cookies")
     args = parser.parse_args()
@@ -248,46 +253,39 @@ def main():
 
     html = None
     method_used = None
+    force_headless = args.force_headless or args.force_playwright
 
-    # Try requests first (unless forced to playwright)
-    if not args.force_playwright:
+    # Try requests first (unless forced to headless)
+    if not force_headless:
         html, status, error = fetch_with_requests(url, args.timeout, cookies)
 
         if error:
             print(f"[requests] Error: {error}", file=sys.stderr)
         elif status in BLOCKED_CODES:
-            print(f"[requests] Blocked (HTTP {status}), falling back to playwright", file=sys.stderr)
+            print(f"[requests] Blocked (HTTP {status}), falling back to zendriver", file=sys.stderr)
             html = None
         elif html and looks_like_antibot_page(html):
-            print("[requests] Antibot page detected, falling back to playwright", file=sys.stderr)
+            print("[requests] Antibot page detected, falling back to zendriver", file=sys.stderr)
             html = None
         elif html:
             method_used = "requests"
 
-    # Fallback to playwright
+    # Fallback to zendriver
     if html is None:
-        print("[playwright] Fetching with headless browser...", file=sys.stderr)
+        print("[zendriver] Fetching with headless browser...", file=sys.stderr)
 
-        # Convert cookies to playwright format
-        pw_cookies = None
-        if cookies:
-            pw_cookies = [
-                {"name": k, "value": v, "domain": f".{domain}", "path": "/"}
-                for k, v in cookies.items()
-            ]
-
-        html, error = fetch_with_playwright(url, args.timeout, pw_cookies)
+        html, error = fetch_with_zendriver(url, args.timeout)
 
         if error:
-            print(f"[playwright] Error: {error}", file=sys.stderr)
+            print(f"[zendriver] Error: {error}", file=sys.stderr)
             sys.exit(1)
 
         if html and looks_like_antibot_page(html):
-            print("[playwright] Warning: still looks like antibot page", file=sys.stderr)
+            print("[zendriver] Warning: still looks like antibot page", file=sys.stderr)
             if looks_like_cloudflare(html):
-                print("[playwright] Cloudflare detected. Try: ~/.claude/skills/chrome-control/scripts/chrome fetch <url>", file=sys.stderr)
+                print("[zendriver] Cloudflare detected. Try: ~/.claude/skills/chrome-control/scripts/chrome fetch <url>", file=sys.stderr)
 
-        method_used = "playwright"
+        method_used = "zendriver"
 
     if not html:
         print("Failed to fetch content", file=sys.stderr)

@@ -1,11 +1,11 @@
 ---
 name: webfetch
-description: Fetch web pages with requests + playwright fallback. Use as alternative to WebFetch for better success on blocked sites. Trigger words - fetch, web, scrape.
+description: Fetch web pages with requests + zendriver fallback. Use as alternative to WebFetch for better success on blocked sites. Trigger words - fetch, web, scrape.
 ---
 
 # WebFetch CLI
 
-A CLI that fetches web pages using requests with Chrome UA, falling back to playwright headless for blocked sites.
+A CLI that fetches web pages using requests with Chrome UA, falling back to zendriver headless for blocked sites.
 
 ## Usage
 
@@ -13,8 +13,8 @@ A CLI that fetches web pages using requests with Chrome UA, falling back to play
 # Basic fetch (returns markdown)
 ~/.claude/skills/webfetch/scripts/webfetch "https://reddit.com/r/programming"
 
-# Force playwright (skip requests)
-~/.claude/skills/webfetch/scripts/webfetch "https://amazon.com" --force-playwright
+# Force headless (skip requests)
+~/.claude/skills/webfetch/scripts/webfetch "https://amazon.com" --force-headless
 
 # Raw HTML output
 ~/.claude/skills/webfetch/scripts/webfetch "https://example.com" --raw
@@ -29,10 +29,11 @@ A CLI that fetches web pages using requests with Chrome UA, falling back to play
    - Fast (~1-2s)
    - Works for most sites
 
-2. **Fallback**: `playwright` headless browser
+2. **Fallback**: `zendriver` headless browser (forked from nodriver)
    - Triggered on 403/503/429 errors
-   - Triggered if page looks like antibot challenge
-   - Slower (~3-5s) but handles JS-rendered content
+   - Triggered if page looks like antibot challenge (e.g., GitHub login redirect)
+   - ~50-83% bypass rate on anti-bot protection (vs playwright's 33%)
+   - Faster than playwright (~0.5s launch + 0.5s page load)
 
 ## Output
 
@@ -43,11 +44,7 @@ A CLI that fetches web pages using requests with Chrome UA, falling back to play
 
 ## First Run
 
-Playwright needs browser binaries installed:
-
-```bash
-uv run playwright install chromium
-```
+Zendriver uses your installed Chrome, no extra setup needed. Just ensure `uv pip install zendriver` has been run.
 
 ## When to Use
 
