@@ -2,129 +2,29 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "requests>=2.31",
 #     "zendriver>=0.15",
 #     "markdownify>=0.11",
 #     "beautifulsoup4>=4.12",
-#     "pycryptodomex>=3.20",
 # ]
 # ///
 """
-webfetch - Fetch web pages with requests + zendriver fallback.
+webfetch - Fetch web pages using zendriver headless browser.
 
 Usage:
-    webfetch <url> [--timeout SECONDS] [--force-headless] [--raw]
+    webfetch <url> [--timeout SECONDS] [--raw]
 
-Tries requests with Chrome cookies + UA first. Falls back to zendriver headless
-if blocked (403/503) or if content is too small (likely antibot page).
+Uses zendriver (undetected Chrome) for reliable fetching that bypasses
+most anti-bot protection.
 """
 
 import argparse
 import asyncio
-import hashlib
-import os
-import shutil
-import sqlite3
-import subprocess
 import sys
 import re
-import tempfile
 from urllib.parse import urlparse
 
-import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
-
-# Chrome UA - kept current
-CHROME_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-
-# Status codes that indicate blocking
-BLOCKED_CODES = {403, 503, 429}
-
-# Minimum content length to consider successful (antibot pages are often tiny)
-MIN_CONTENT_LENGTH = 500
-
-
-def get_chrome_cookies(domain: str) -> dict[str, str]:
-    """Extract Chrome cookies for a domain. Returns {name: value} dict."""
-    try:
-        try:
-            from Cryptodome.Cipher import AES
-        except ImportError:
-            from Crypto.Cipher import AES
-
-        # Get encryption key from Keychain
-        key_b64 = subprocess.check_output(
-            ['security', 'find-generic-password', '-w', '-s', 'Chrome Safe Storage'],
-            stderr=subprocess.DEVNULL
-        ).decode().strip()
-
-        # Derive key using PBKDF2
-        key = hashlib.pbkdf2_hmac('sha1', key_b64.encode(), b'saltysalt', 1003, dklen=16)
-
-        # Copy cookies db (Chrome locks it)
-        cookies_path = os.path.expanduser('~/Library/Application Support/Google/Chrome/Default/Cookies')
-        if not os.path.exists(cookies_path):
-            return {}
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp:
-            tmp_path = tmp.name
-
-        shutil.copy2(cookies_path, tmp_path)
-
-        conn = sqlite3.connect(tmp_path)
-        cursor = conn.cursor()
-
-        # Match domain and subdomains (e.g., .amazon.com matches www.amazon.com)
-        cursor.execute("""
-            SELECT name, encrypted_value
-            FROM cookies
-            WHERE host_key LIKE ? OR host_key LIKE ?
-        """, (f'%{domain}', f'.{domain}'))
-
-        cookies = {}
-        for name, enc_val in cursor.fetchall():
-            if enc_val and enc_val[:3] == b'v10':
-                try:
-                    iv = b' ' * 16
-                    cipher = AES.new(key, AES.MODE_CBC, iv)
-                    decrypted = cipher.decrypt(enc_val[3:])
-                    padding = decrypted[-1]
-                    value = decrypted[:-padding].decode('utf-8', errors='ignore')
-                    # Clean up any garbage chars and null bytes
-                    value = value.replace('\x00', '').strip()
-                    value = ''.join(c for c in value if c.isprintable() and ord(c) < 128)
-                    if value and len(value) > 0:
-                        cookies[name] = value
-                except Exception:
-                    pass
-
-        conn.close()
-        os.unlink(tmp_path)
-        return cookies
-
-    except Exception as e:
-        print(f"[cookies] Could not extract Chrome cookies: {e}", file=sys.stderr)
-        return {}
-
-
-def fetch_with_requests(url: str, timeout: int = 30, cookies: dict[str, str] | None = None) -> tuple[str | None, int, str | None]:
-    """Try fetching with requests + Chrome UA + cookies. Returns (html, status_code, error)."""
-    try:
-        resp = requests.get(
-            url,
-            headers={
-                "User-Agent": CHROME_UA,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            },
-            cookies=cookies or {},
-            timeout=timeout,
-            allow_redirects=True,
-        )
-        return resp.text, resp.status_code, None
-    except requests.RequestException as e:
-        return None, 0, str(e)
 
 
 async def fetch_with_zendriver_async(url: str, timeout: int = 30) -> tuple[str | None, str | None]:
@@ -193,7 +93,7 @@ def html_to_markdown(html: str, url: str) -> str:
 
 def looks_like_antibot_page(html: str) -> bool:
     """Check if the page looks like an antibot challenge."""
-    if len(html) < MIN_CONTENT_LENGTH:
+    if len(html) < 500:
         return True
 
     # Common antibot indicators
@@ -205,87 +105,40 @@ def looks_like_antibot_page(html: str) -> bool:
         "captcha",
         "cf-browser-verification",
         "challenge-running",
-        "<title>sign in to github",  # GitHub login page (in title tag)
+        "cloudflare",
+        "security verification",
+        "ray id:",
     ]
 
     html_lower = html.lower()
     return any(pattern in html_lower for pattern in antibot_patterns)
 
 
-def looks_like_cloudflare(html: str) -> bool:
-    """Check if the page is a Cloudflare challenge page."""
-    cloudflare_patterns = [
-        "cloudflare",
-        "security verification",
-        "ray id:",
-        "cf-browser-verification",
-        "challenge-platform",
-        "performance and security by cloudflare",
-    ]
-    html_lower = html.lower()
-    return any(pattern in html_lower for pattern in cloudflare_patterns)
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Fetch web pages with fallback")
+    parser = argparse.ArgumentParser(description="Fetch web pages with zendriver")
     parser.add_argument("url", help="URL to fetch")
     parser.add_argument("--timeout", type=int, default=30, help="Timeout in seconds")
-    parser.add_argument("--force-headless", action="store_true", help="Skip requests, use zendriver directly")
-    parser.add_argument("--force-playwright", action="store_true", help="Deprecated: same as --force-headless")
     parser.add_argument("--raw", action="store_true", help="Output raw HTML instead of markdown")
-    parser.add_argument("--no-cookies", action="store_true", help="Don't use Chrome cookies")
+    # Deprecated flags kept for backwards compat
+    parser.add_argument("--force-headless", action="store_true", help="Deprecated (now default)")
+    parser.add_argument("--force-playwright", action="store_true", help="Deprecated")
+    parser.add_argument("--no-cookies", action="store_true", help="Deprecated (cookies not used)")
     args = parser.parse_args()
 
     url = args.url
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
-    # Extract domain for cookie lookup
-    parsed = urlparse(url)
-    domain = parsed.netloc.replace('www.', '')
+    print("[zendriver] Fetching with headless browser...", file=sys.stderr)
 
-    # Get Chrome cookies for this domain
-    cookies = {}
-    if not args.no_cookies:
-        cookies = get_chrome_cookies(domain)
-        if cookies:
-            print(f"[cookies] Found {len(cookies)} Chrome cookies for {domain}", file=sys.stderr)
+    html, error = fetch_with_zendriver(url, args.timeout)
 
-    html = None
-    method_used = None
-    force_headless = args.force_headless or args.force_playwright
+    if error:
+        print(f"[zendriver] Error: {error}", file=sys.stderr)
+        sys.exit(1)
 
-    # Try requests first (unless forced to headless)
-    if not force_headless:
-        html, status, error = fetch_with_requests(url, args.timeout, cookies)
-
-        if error:
-            print(f"[requests] Error: {error}", file=sys.stderr)
-        elif status in BLOCKED_CODES:
-            print(f"[requests] Blocked (HTTP {status}), falling back to zendriver", file=sys.stderr)
-            html = None
-        elif html and looks_like_antibot_page(html):
-            print("[requests] Antibot page detected, falling back to zendriver", file=sys.stderr)
-            html = None
-        elif html:
-            method_used = "requests"
-
-    # Fallback to zendriver
-    if html is None:
-        print("[zendriver] Fetching with headless browser...", file=sys.stderr)
-
-        html, error = fetch_with_zendriver(url, args.timeout)
-
-        if error:
-            print(f"[zendriver] Error: {error}", file=sys.stderr)
-            sys.exit(1)
-
-        if html and looks_like_antibot_page(html):
-            print("[zendriver] Warning: still looks like antibot page", file=sys.stderr)
-            if looks_like_cloudflare(html):
-                print("[zendriver] Cloudflare detected. Try: ~/.claude/skills/chrome-control/scripts/chrome fetch <url>", file=sys.stderr)
-
-        method_used = "zendriver"
+    if html and looks_like_antibot_page(html):
+        print("[zendriver] Warning: antibot page detected. Try: ~/.claude/skills/chrome-control/scripts/chrome fetch <url>", file=sys.stderr)
 
     if not html:
         print("Failed to fetch content", file=sys.stderr)
@@ -298,7 +151,7 @@ def main():
         markdown = html_to_markdown(html, url)
         print(markdown)
 
-    print(f"\n[Fetched with {method_used}]", file=sys.stderr)
+    print("\n[Fetched with zendriver]", file=sys.stderr)
 
 
 if __name__ == "__main__":

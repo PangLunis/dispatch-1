@@ -1,20 +1,17 @@
 ---
 name: webfetch
-description: Fetch web pages with requests + zendriver fallback. Use as alternative to WebFetch for better success on blocked sites. Trigger words - fetch, web, scrape.
+description: Fetch web pages using zendriver headless browser. Use as alternative to WebFetch for better success on blocked sites. Trigger words - fetch, web, scrape.
 ---
 
 # WebFetch CLI
 
-A CLI that fetches web pages using requests with Chrome UA, falling back to zendriver headless for blocked sites.
+A CLI that fetches web pages using zendriver headless browser for reliable anti-bot bypass.
 
 ## Usage
 
 ```bash
 # Basic fetch (returns markdown)
 ~/.claude/skills/webfetch/scripts/webfetch "https://reddit.com/r/programming"
-
-# Force headless (skip requests)
-~/.claude/skills/webfetch/scripts/webfetch "https://amazon.com" --force-headless
 
 # Raw HTML output
 ~/.claude/skills/webfetch/scripts/webfetch "https://example.com" --raw
@@ -25,15 +22,10 @@ A CLI that fetches web pages using requests with Chrome UA, falling back to zend
 
 ## How It Works
 
-1. **First try**: `requests` with Chrome User-Agent
-   - Fast (~1-2s)
-   - Works for most sites
-
-2. **Fallback**: `zendriver` headless browser (forked from nodriver)
-   - Triggered on 403/503/429 errors
-   - Triggered if page looks like antibot challenge (e.g., GitHub login redirect)
-   - ~50-83% bypass rate on anti-bot protection (vs playwright's 33%)
-   - Faster than playwright (~0.5s launch + 0.5s page load)
+Uses `zendriver` headless browser (undetected Chrome fork):
+- ~50-83% bypass rate on anti-bot protection
+- Handles JavaScript rendering
+- Works on most sites including Reddit, Medium, Amazon
 
 ## Output
 
@@ -53,21 +45,11 @@ Use this instead of WebFetch when:
 - Site requires JavaScript rendering
 - Site blocks non-browser User-Agents
 
-## Automatic Fallback Hook
-
-A `PostToolUseFailure` hook is installed that automatically retries failed WebFetch calls using the webfetch CLI. When WebFetch fails (403, 503, antibot, etc), the hook:
-
-1. Extracts the URL from the failed call
-2. Runs webfetch CLI with Chrome cookies + playwright fallback
-3. Returns the content as additionalContext for Claude
-
-This is transparent to all sessions - no manual intervention needed.
-
 ## Limitations
 
 - Won't work on sites with heavy Cloudflare protection (use chrome-control for text extraction)
 - Won't work on sites requiring login (use chrome-control with existing session)
-- Slower than raw WebFetch for simple sites
+- Takes ~3-5s per fetch (headless browser startup)
 
 ## Tier 3: Chrome Control Fallback
 
