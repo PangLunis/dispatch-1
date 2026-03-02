@@ -29,8 +29,9 @@ Analyze performance metrics from the dispatch daemon and SDK sessions.
 
 ## Available Metrics
 
-### Daemon Component
+### Daemon Component - Core
 - `poll_cycle_ms` - Main poll loop time (sampled 1/10)
+- `poll_gap_ms` - Actual time between poll cycles (should be ~100ms, drift = CPU pressure)
 - `messages_read` - Messages ingested per poll (by source: imessage/signal)
 - `contact_lookup_ms` - Contact tier lookup time
 - `session_spawn_ms` - Time to create new SDK session
@@ -39,9 +40,19 @@ Analyze performance metrics from the dispatch daemon and SDK sessions.
 - `gemini_vision_ms` - Gemini image analysis time
 - `error_count` - Errors by type
 
+### Daemon Component - Message Lifecycle (PR #10)
+- `message_staleness_ms` - Age of message when first processed (chat.db timestamp vs now)
+- `messages_batch_size` - Messages arriving per poll batch (>5 = backlog indicator)
+- `poll_to_inject_ms` - End-to-end time from poll start to session inject complete
+
+### Daemon Component - System Health (PR #10)
+- `wal_checkpoint_status` - SQLite WAL checkpoint result (0=ok, 1=busy, -2=error)
+
 ### Session Component
 - `send_sms_ms` - Time for send-sms CLI to complete
 - `tool_execution` - Per-tool call timing (Bash, Read, Grep, etc.)
+- `sdk_queue_depth` - Messages waiting in session queue (catches backup)
+- `session_wake_latency_ms` - Time from queue get to query completion (for idle sessions)
 
 ### sven-api Component
 - `request_ms` - HTTP request latency (by endpoint)
@@ -115,6 +126,25 @@ jq 'select(.metric=="error_count")' ~/dispatch/logs/perf-*.jsonl
 
 # Group by component
 jq -s 'group_by(.component) | map({component: .[0].component, count: length})' ~/dispatch/logs/perf-*.jsonl
+```
+
+## Message Lifecycle Queries (jq)
+
+```bash
+# Message staleness (how old were messages when processed)
+jq 'select(.metric=="message_staleness_ms")' ~/dispatch/logs/perf-$(date +%Y-%m-%d).jsonl
+
+# Batch sizes (>5 indicates backlog)
+jq 'select(.metric=="messages_batch_size" and .value > 5)' ~/dispatch/logs/perf-*.jsonl
+
+# Poll gaps over 500ms (CPU pressure indicator)
+jq 'select(.metric=="poll_gap_ms" and .value > 500)' ~/dispatch/logs/perf-*.jsonl
+
+# Session queue depth (backup detection)
+jq 'select(.metric=="sdk_queue_depth" and .value > 3)' ~/dispatch/logs/perf-*.jsonl
+
+# WAL checkpoint issues
+jq 'select(.metric=="wal_checkpoint_status" and .value != 0)' ~/dispatch/logs/perf-*.jsonl
 ```
 
 ## Tool Execution Queries (jq)
@@ -272,14 +302,22 @@ duckdb -c "
 
 ### Healthy Baselines
 - `poll_cycle_ms` p95 < 100ms
+- `poll_gap_ms` p95 < 500ms (should hover around 100ms)
 - `inject_ms` p95 < 500ms
 - `send_sms_ms` p95 < 5s (AppleScript is slow)
 - `contact_lookup_ms` p95 < 10ms (SQLite cache)
+- `message_staleness_ms` p95 < 5000ms (messages processed within 5s)
+- `sdk_queue_depth` max < 5 (no message backup)
 
 ### Warning Signs
 - `poll_cycle_ms` p99 > 500ms - check iMessage FDA access
+- `poll_gap_ms` p95 > 500ms - CPU pressure or daemon stall
 - `inject_ms` p95 > 2s - session may need restart
 - `session_spawn_ms` > 10s - SDK slow to initialize
+- `message_staleness_ms` > 30000ms - delivery delays (check apsd, Amphetamine)
+- `messages_batch_size` > 5 - message backlog building up
+- `sdk_queue_depth` > 10 - session falling behind on processing
+- `wal_checkpoint_status` != 0 - SQLite WAL issues
 - `error_count` increasing - check specific error_type
 
 ## Visualization
