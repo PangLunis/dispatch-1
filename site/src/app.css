@@ -1,28 +1,68 @@
-:root {
-  /* Dark theme colors matching OpenClaw */
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #21262d;
-  --bg-hover: #30363d;
-  --border-color: #30363d;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #6e7681;
-  --link-color: #58a6ff;
-  --link-hover: #79c0ff;
-  --accent-purple: #a371f7;
-  --accent-green: #3fb950;
-  --code-bg: #1e242b;
-  --code-border: #30363d;
+/* Dispatch Documentation - Precision Design System
+ *
+ * Intent: Developer documentation for infrastructure/daemon software
+ * Feel: Precise, professional, infrastructure-grade — NOT playful or gaudy
+ * Reference: interface-design.dev specifications
+ */
 
-  /* Spacing */
-  --sidebar-width: 260px;
-  --header-height: 64px;
-  --content-max-width: 800px;
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600&display=swap');
+
+:root {
+  /* Core Palette - Warm cream, not stark white or dark */
+  --bg-base: #f5f3f0;
+  --bg-surface: #fafaf9;
+  --bg-elevated: #ffffff;
+  --bg-inset: #edeae6;
+
+  /* Text - Near-black, not pure black */
+  --text-primary: #1c1917;
+  --text-secondary: #57534e;
+  --text-tertiary: #78716c;
+  --text-muted: #a8a29e;
+
+  /* Borders - Subtle, disappear when not needed */
+  --border-default: #e7e5e4;
+  --border-subtle: #f0eeec;
+  --border-strong: #d6d3d1;
+
+  /* Accent - Single color, used sparingly */
+  --accent: #ea580c;
+  --accent-hover: #c2410c;
+
+  /* Code */
+  --code-bg: #292524;
+  --code-text: #fafaf9;
+  --code-border: #44403c;
+
+  /* Semantic */
+  --success: #16a34a;
+  --warning: #d97706;
+  --error: #dc2626;
+
+  /* Layout */
+  --sidebar-width: 240px;
+  --content-max-width: 720px;
+  --nav-height: 56px;
+
+  /* Spacing - 4px base */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
 
   /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  /* Radius - Sharp, technical */
+  --radius-0: 0;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-smooth: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
@@ -32,126 +72,186 @@
 }
 
 html {
-  font-size: 16px;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
   font-family: var(--font-sans);
-  background: var(--bg-primary);
+  background: var(--bg-base);
   color: var(--text-primary);
-  line-height: 1.6;
+  line-height: 1.7;
   min-height: 100vh;
+  min-height: -webkit-fill-available;
 }
 
+/* Typography - Precise hierarchy */
+h1, h2, h3, h4 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+h1 {
+  font-size: 28px;
+  line-height: 1.2;
+  margin: 0 0 var(--space-6);
+}
+
+h2 {
+  font-size: 16px;
+  line-height: 1.4;
+  margin: var(--space-8) 0 var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+h2:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+h3 {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: var(--space-6) 0 var(--space-3);
+}
+
+p {
+  margin: var(--space-4) 0;
+}
+
+/* Links - Accent color, no underline by default */
 a {
-  color: var(--link-color);
+  color: var(--accent);
   text-decoration: none;
+  transition: color var(--transition-fast);
 }
 
 a:hover {
-  color: var(--link-hover);
-  text-decoration: underline;
+  color: var(--accent-hover);
 }
 
+/* Inline code */
 code {
   font-family: var(--font-mono);
-  background: var(--code-bg);
-  border: 1px solid var(--code-border);
-  border-radius: 6px;
-  padding: 0.2em 0.4em;
-  font-size: 0.875em;
+  font-size: 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  padding: 2px 6px;
+  border-radius: var(--radius-0);
 }
 
+/* Code blocks */
 pre {
   background: var(--code-bg);
-  border: 1px solid var(--code-border);
-  border-radius: 6px;
-  padding: 1rem;
+  color: var(--code-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: var(--space-4);
+  margin: var(--space-4) 0;
   overflow-x: auto;
-  font-size: 0.875rem;
-  line-height: 1.5;
+  border-radius: var(--radius-0);
+  border: 1px solid var(--code-border);
+  -webkit-overflow-scrolling: touch;
 }
 
 pre code {
   background: none;
   border: none;
   padding: 0;
+  font-size: inherit;
 }
 
-h1, h2, h3, h4 {
-  color: var(--text-primary);
-  margin: 1.5rem 0 0.75rem;
-  line-height: 1.3;
-}
-
-h1 {
-  font-size: 2rem;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 0.5rem;
-}
-
-h2 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 0.25rem;
-}
-
-h3 {
-  font-size: 1.25rem;
-  font-weight: 600;
-}
-
-p {
-  margin: 1rem 0;
-}
-
+/* Lists */
 ul, ol {
-  margin: 1rem 0;
-  padding-left: 1.5rem;
+  margin: var(--space-4) 0;
+  padding-left: var(--space-6);
 }
 
 li {
-  margin: 0.5rem 0;
+  margin: var(--space-2) 0;
 }
 
+li::marker {
+  color: var(--text-tertiary);
+}
+
+/* Tables - Clean, data-focused */
 table {
   width: 100%;
   border-collapse: collapse;
-  margin: 1rem 0;
+  margin: var(--space-4) 0;
+  font-size: 12px;
 }
 
 th, td {
-  border: 1px solid var(--border-color);
-  padding: 0.75rem;
+  border: 1px solid var(--border-default);
+  padding: var(--space-3) var(--space-4);
   text-align: left;
+  vertical-align: top;
 }
 
 th {
-  background: var(--bg-tertiary);
+  background: var(--bg-surface);
   font-weight: 600;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-tr:nth-child(even) {
-  background: var(--bg-secondary);
+td {
+  background: var(--bg-elevated);
 }
 
-/* Scrollbar styling */
+td strong {
+  color: var(--text-primary);
+}
+
+tr:hover td {
+  background: var(--bg-surface);
+}
+
+/* Horizontal rule */
+hr {
+  border: none;
+  border-top: 1px solid var(--border-default);
+  margin: var(--space-8) 0;
+}
+
+/* Selection */
+::selection {
+  background: rgba(234, 88, 12, 0.15);
+  color: inherit;
+}
+
+/* Scrollbar - Minimal */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-hover);
-  border-radius: 4px;
+  background: var(--border-strong);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* iOS safe areas */
+@supports (padding: max(0px)) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
 }

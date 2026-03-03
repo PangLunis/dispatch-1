@@ -13,7 +13,7 @@
 
   function navigateTo(page) {
     currentPage = page
-    window.scrollTo(0, 0)
+    window.scrollTo({ top: 0, behavior: 'instant' })
   }
 
   const pages = {
@@ -32,8 +32,8 @@
 <div class="layout">
   <Sidebar {currentPage} onNavigate={navigateTo} />
 
-  <main class="main-content">
-    <div class="content-wrapper">
+  <main class="main">
+    <div class="content">
       <svelte:component this={pageComponent} {navigateTo} />
     </div>
   </main>
@@ -43,23 +43,25 @@
   .layout {
     display: flex;
     min-height: 100vh;
+    min-height: 100dvh;
   }
 
-  .main-content {
+  .main {
     flex: 1;
     margin-left: var(--sidebar-width);
-    padding: 2rem;
+    padding: var(--space-8);
+    padding-bottom: var(--space-12);
   }
 
-  .content-wrapper {
+  .content {
     max-width: var(--content-max-width);
-    margin: 0 auto;
   }
 
   @media (max-width: 768px) {
-    .main-content {
+    .main {
       margin-left: 0;
-      padding: 1rem;
+      margin-top: var(--nav-height);
+      padding: var(--space-6) var(--space-4);
     }
   }
 </style>

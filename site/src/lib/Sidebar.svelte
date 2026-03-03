@@ -2,156 +2,263 @@
   let { currentPage, onNavigate } = $props();
 
   const navItems = [
-    { id: 'home', label: 'Home', icon: '🏠' },
-    { id: 'getting-started', label: 'Getting Started', icon: '🚀' },
-    { id: 'tiers', label: 'Contact Tiers', icon: '👥' },
-    { id: 'skills', label: 'Skills System', icon: '⚡' },
-    { id: 'cli', label: 'CLI Reference', icon: '💻' },
-    { id: 'architecture', label: 'Architecture', icon: '🏗️' },
-    { id: 'configuration', label: 'Configuration', icon: '⚙️' },
+    { id: 'home', label: 'Overview' },
+    { id: 'getting-started', label: 'Getting Started' },
+    { id: 'tiers', label: 'Contact Tiers' },
+    { id: 'skills', label: 'Skills' },
+    { id: 'cli', label: 'CLI Reference' },
+    { id: 'architecture', label: 'Architecture' },
+    { id: 'configuration', label: 'Configuration' },
   ];
+
+  let mobileMenuOpen = $state(false);
+
+  function handleNav(id) {
+    onNavigate(id);
+    mobileMenuOpen = false;
+  }
 </script>
 
-<aside class="sidebar">
-  <div class="logo">
-    <div class="logo-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-        <path d="M2 17l10 5 10-5"/>
-        <path d="M2 12l10 5 10-5"/>
-      </svg>
-    </div>
-    <span class="logo-text">Dispatch</span>
+<!-- Mobile header -->
+<header class="mobile-header">
+  <button class="mobile-menu-btn" onclick={() => mobileMenuOpen = !mobileMenuOpen} aria-label="Toggle menu">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+      {#if mobileMenuOpen}
+        <path d="M5 5l10 10M15 5L5 15" />
+      {:else}
+        <path d="M3 5h14M3 10h14M3 15h14" />
+      {/if}
+    </svg>
+  </button>
+  <span class="mobile-title">Dispatch</span>
+</header>
+
+<!-- Sidebar -->
+<aside class="sidebar" class:mobile-open={mobileMenuOpen}>
+  <div class="sidebar-header">
+    <span class="logo">Dispatch</span>
+    <span class="version">v1.0</span>
   </div>
 
   <nav class="nav">
-    {#each navItems as item}
-      <button
-        class="nav-item"
-        class:active={currentPage === item.id}
-        onclick={() => onNavigate(item.id)}
-      >
-        <span class="nav-icon">{item.icon}</span>
-        <span class="nav-label">{item.label}</span>
-      </button>
-    {/each}
+    <div class="nav-section">
+      <div class="nav-section-title">Documentation</div>
+      {#each navItems as item}
+        <button
+          class="nav-item"
+          class:active={currentPage === item.id}
+          onclick={() => handleNav(item.id)}
+        >
+          {item.label}
+          {#if currentPage === item.id}
+            <span class="nav-indicator"></span>
+          {/if}
+        </button>
+      {/each}
+    </div>
   </nav>
 
   <div class="sidebar-footer">
-    <a href="https://github.com/svenflow/dispatch" target="_blank" rel="noopener" class="github-link">
-      <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
-        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+    <a href="https://github.com/svenflow/dispatch" target="_blank" rel="noopener" class="footer-link">
+      GitHub
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M3.5 8.5l5-5M4 3.5h4.5V8" />
       </svg>
-      <span>GitHub</span>
     </a>
   </div>
 </aside>
 
+<!-- Mobile overlay -->
+{#if mobileMenuOpen}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="mobile-overlay" onclick={() => mobileMenuOpen = false} role="presentation"></div>
+{/if}
+
 <style>
+  /* Mobile header */
+  .mobile-header {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--nav-height);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-default);
+    padding: 0 var(--space-4);
+    align-items: center;
+    gap: var(--space-3);
+    z-index: 200;
+  }
+
+  .mobile-menu-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: none;
+    border: 1px solid var(--border-default);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: border-color var(--transition-fast);
+  }
+
+  .mobile-menu-btn:hover {
+    border-color: var(--border-strong);
+  }
+
+  .mobile-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  .mobile-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 99;
+  }
+
+  /* Sidebar */
   .sidebar {
     position: fixed;
     top: 0;
     left: 0;
     width: var(--sidebar-width);
     height: 100vh;
-    background: var(--bg-secondary);
-    border-right: 1px solid var(--border-color);
+    height: 100dvh;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-default);
     display: flex;
     flex-direction: column;
     z-index: 100;
   }
 
+  .sidebar-header {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: var(--space-6) var(--space-4);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
   .logo {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 1.25rem 1rem;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .logo-icon {
-    width: 32px;
-    height: 32px;
-    background: linear-gradient(135deg, var(--accent-purple), var(--link-color));
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-  }
-
-  .logo-icon svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .logo-text {
-    font-size: 1.25rem;
     font-weight: 600;
+    font-size: 14px;
     color: var(--text-primary);
+    letter-spacing: -0.01em;
   }
 
+  .version {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  /* Navigation */
   .nav {
     flex: 1;
-    padding: 1rem 0.5rem;
     overflow-y: auto;
+    padding: var(--space-4) 0;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .nav-section {
+    padding: 0 var(--space-3);
+  }
+
+  .nav-section-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: var(--space-2) var(--space-3);
+    margin-bottom: var(--space-1);
   }
 
   .nav-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    justify-content: space-between;
     width: 100%;
-    padding: 0.75rem 1rem;
+    padding: var(--space-2) var(--space-3);
     background: none;
     border: none;
-    border-radius: 6px;
     color: var(--text-secondary);
-    font-size: 0.9375rem;
+    font-size: 13px;
+    font-family: inherit;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: color var(--transition-fast);
     text-align: left;
+    position: relative;
   }
 
   .nav-item:hover {
-    background: var(--bg-hover);
     color: var(--text-primary);
   }
 
   .nav-item.active {
-    background: var(--bg-tertiary);
     color: var(--text-primary);
+    font-weight: 500;
   }
 
-  .nav-icon {
-    font-size: 1rem;
-    width: 1.25rem;
-    text-align: center;
+  .nav-indicator {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 2px;
+    height: 100%;
+    background: var(--accent);
   }
 
-  .nav-label {
-    flex: 1;
-  }
-
+  /* Footer */
   .sidebar-footer {
-    padding: 1rem;
-    border-top: 1px solid var(--border-color);
+    padding: var(--space-4);
+    border-top: 1px solid var(--border-subtle);
   }
 
-  .github-link {
-    display: flex;
+  .footer-link {
+    display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    color: var(--text-secondary);
-    border-radius: 6px;
-    font-size: 0.875rem;
-    transition: all 0.15s ease;
+    gap: var(--space-1);
+    font-size: 12px;
+    color: var(--text-tertiary);
+    transition: color var(--transition-fast);
   }
 
-  .github-link:hover {
-    background: var(--bg-hover);
+  .footer-link:hover {
     color: var(--text-primary);
-    text-decoration: none;
+  }
+
+  .footer-link svg {
+    opacity: 0.6;
+  }
+
+  /* Mobile responsive */
+  @media (max-width: 768px) {
+    .mobile-header {
+      display: flex;
+    }
+
+    .mobile-overlay {
+      display: block;
+    }
+
+    .sidebar {
+      transform: translateX(-100%);
+      transition: transform var(--transition-smooth);
+      top: var(--nav-height);
+      height: calc(100vh - var(--nav-height));
+      height: calc(100dvh - var(--nav-height));
+    }
+
+    .sidebar.mobile-open {
+      transform: translateX(0);
+    }
   }
 </style>

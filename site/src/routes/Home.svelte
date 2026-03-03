@@ -2,194 +2,245 @@
   let { navigateTo } = $props();
 </script>
 
-<div class="hero">
-  <h1>Dispatch</h1>
-  <p class="subtitle">
-    A personal AI assistant daemon that turns Claude into a full computer-controlling agent with
-    SMS/Signal messaging, browser automation, smart home control, and persistent memory.
-  </p>
-  <div class="buttons">
-    <button class="btn btn-primary" onclick={() => navigateTo('getting-started')}>
+<article class="page">
+  <header class="page-header">
+    <h1>Dispatch</h1>
+    <p class="lead">
+      A daemon that turns Claude into a full personal assistant with computer control,
+      multi-channel messaging, and persistent memory.
+    </p>
+  </header>
+
+  <div class="quick-actions">
+    <button class="action-btn primary" onclick={() => navigateTo('getting-started')}>
       Get Started
     </button>
-    <a href="https://github.com/svenflow/dispatch" class="btn btn-secondary" target="_blank" rel="noopener">
-      View on GitHub
+    <a href="https://github.com/svenflow/dispatch" class="action-btn" target="_blank" rel="noopener">
+      View Source
     </a>
   </div>
-</div>
 
-<hr>
+  <section>
+    <h2>Overview</h2>
+    <p>
+      Dispatch runs a background daemon that receives messages from iMessage and Signal,
+      routes them to per-contact Claude SDK sessions, and gives Claude full control of the
+      host machine. Each contact gets their own persistent session with appropriate access
+      based on their tier.
+    </p>
 
-<section>
-  <h2>What is Dispatch?</h2>
-  <p>Dispatch runs a daemon that:</p>
-  <ul>
-    <li><strong>Receives messages</strong> from iMessage and Signal in real-time</li>
-    <li><strong>Routes them to Claude SDK sessions</strong> based on contact tier (admin, family, favorites, etc.)</li>
-    <li><strong>Gives Claude full computer control</strong>: browser automation, file management, smart home, messaging</li>
-    <li><strong>Maintains persistent memory</strong> across conversations with full-text search</li>
-    <li><strong>Auto-recovers from crashes</strong> via watchdog daemon with exponential backoff</li>
-  </ul>
-  <p>Each contact gets their own persistent Claude session with conversation history, memories, and tier-appropriate tool access.</p>
-</section>
+    <div class="feature-grid">
+      <div class="feature">
+        <div class="feature-title">Messaging</div>
+        <div class="feature-desc">iMessage + Signal with real-time polling and group chat support</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Tiered Access</div>
+        <div class="feature-desc">Admin, Partner, Family, Favorite, and Bot tiers with scoped permissions</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">67+ Skills</div>
+        <div class="feature-desc">Browser automation, smart home, iOS dev, payments, and more</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Persistent Memory</div>
+        <div class="feature-desc">Full-text search across all conversations with semantic retrieval</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Auto-Recovery</div>
+        <div class="feature-desc">Watchdog daemon with exponential backoff and crash notifications</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Mid-Turn Steering</div>
+        <div class="feature-desc">New messages reach Claude between tool calls for real-time context</div>
+      </div>
+    </div>
+  </section>
 
-<section>
-  <h2>Quick Start</h2>
-  <pre><code># Clone the repo
-git clone https://github.com/svenflow/dispatch.git ~/dispatch
+  <section>
+    <h2>Quick Start</h2>
+    <pre><code>git clone https://github.com/svenflow/dispatch.git ~/dispatch
 cd ~/dispatch
-
-# Install dependencies
 uv sync
-
-# Copy and edit config
 cp config.example.yaml config.local.yaml
-
-# Start the daemon
 ./bin/claude-assistant start</code></pre>
-</section>
+  </section>
 
-<section>
-  <h2>Features at a Glance</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Feature</th>
-        <th>Description</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><strong>Messaging</strong></td>
-        <td>iMessage + Signal, real-time, group chat support</td>
-      </tr>
-      <tr>
-        <td><strong>Tiers</strong></td>
-        <td>Admin, Partner, Family, Favorite, Bots — each with appropriate access</td>
-      </tr>
-      <tr>
-        <td><strong>Skills</strong></td>
-        <td>67+ built-in capabilities (browser, smart home, iOS dev, etc.)</td>
-      </tr>
-      <tr>
-        <td><strong>Memory</strong></td>
-        <td>Persistent FTS search across all conversations</td>
-      </tr>
-      <tr>
-        <td><strong>Recovery</strong></td>
-        <td>Watchdog daemon with exponential backoff</td>
-      </tr>
-      <tr>
-        <td><strong>Mid-turn steering</strong></td>
-        <td>New messages reach Claude between tool calls</td>
-      </tr>
-    </tbody>
-  </table>
-</section>
-
-<section>
-  <h2>Architecture</h2>
-  <pre class="architecture"><code>┌─────────────────────────────────────────────────────────────┐
-│  Messages.app (iMessage)      Signal (via signal-cli)       │
-│  Polled every 100ms           JSON-RPC socket               │
-└────────────────┬──────────────────────────┬─────────────────┘
-                 │                          │
-                 └──────────────┬───────────┘
-                                ▼
-                    ┌───────────────────────┐
-                    │    Manager Daemon     │
-                    │   (event loop)        │
-                    └──────────┬────────────┘
-                               ▼
-                    ┌───────────────────────┐
-                    │   Contact Lookup      │
-                    │   + Tier Check        │
-                    └──────────┬────────────┘
-                               ▼
-                    ┌───────────────────────┐
-                    │   SDK Backend         │
-                    │   (session factory)   │
-                    └──────────┬────────────┘
-                               ▼
-              ┌────────────────────────────────┐
-              │   Per-Contact SDK Sessions     │
-              │   (Claude Opus, async queues,  │
-              │    mid-turn message injection) │
-              └────────────────────────────────┘</code></pre>
-</section>
+  <section>
+    <h2>How It Works</h2>
+    <div class="architecture">
+      <div class="arch-row">
+        <div class="arch-box source">iMessage</div>
+        <div class="arch-box source">Signal</div>
+      </div>
+      <div class="arch-arrow"></div>
+      <div class="arch-row">
+        <div class="arch-box core">Manager Daemon</div>
+      </div>
+      <div class="arch-arrow"></div>
+      <div class="arch-row">
+        <div class="arch-box">Contact Lookup</div>
+        <div class="arch-box">Tier Check</div>
+      </div>
+      <div class="arch-arrow"></div>
+      <div class="arch-row">
+        <div class="arch-box core">SDK Sessions</div>
+      </div>
+    </div>
+    <p class="arch-caption">
+      Messages flow through the manager daemon, get routed based on contact tier,
+      and land in per-contact Claude sessions with full conversation persistence.
+    </p>
+  </section>
+</article>
 
 <style>
-  .hero {
-    text-align: center;
-    padding: 2rem 0 3rem;
+  .page {
+    max-width: var(--content-max-width);
   }
 
-  .hero h1 {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-    border: none;
+  .page-header {
+    margin-bottom: var(--space-8);
   }
 
-  .subtitle {
-    font-size: 1.25rem;
+  .page-header h1 {
+    margin-bottom: var(--space-3);
+  }
+
+  .lead {
+    font-size: 15px;
     color: var(--text-secondary);
-    max-width: 700px;
-    margin: 0 auto 2rem;
-    line-height: 1.7;
+    line-height: 1.6;
+    margin: 0;
+    max-width: 560px;
   }
 
-  .buttons {
+  /* Actions */
+  .quick-actions {
     display: flex;
-    gap: 1rem;
-    justify-content: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-12);
     flex-wrap: wrap;
   }
 
-  .btn {
+  .action-btn {
     display: inline-flex;
     align-items: center;
-    padding: 0.75rem 1.5rem;
-    font-size: 1rem;
+    padding: var(--space-2) var(--space-4);
+    font-size: 13px;
     font-weight: 500;
-    border-radius: 8px;
-    border: none;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    text-decoration: none;
-  }
-
-  .btn-primary {
-    background: linear-gradient(135deg, var(--accent-purple), var(--link-color));
-    color: white;
-  }
-
-  .btn-primary:hover {
-    filter: brightness(1.1);
-  }
-
-  .btn-secondary {
-    background: var(--bg-tertiary);
+    font-family: inherit;
+    border: 1px solid var(--border-default);
+    background: var(--bg-elevated);
     color: var(--text-primary);
-    border: 1px solid var(--border-color);
-  }
-
-  .btn-secondary:hover {
-    background: var(--bg-hover);
+    cursor: pointer;
+    transition: all var(--transition-fast);
     text-decoration: none;
   }
 
-  hr {
-    border: none;
-    border-top: 1px solid var(--border-color);
-    margin: 2rem 0;
+  .action-btn:hover {
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+  }
+
+  .action-btn.primary {
+    background: var(--text-primary);
+    border-color: var(--text-primary);
+    color: var(--bg-surface);
+  }
+
+  .action-btn.primary:hover {
+    background: var(--text-secondary);
+    border-color: var(--text-secondary);
+  }
+
+  /* Feature grid */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1px;
+    background: var(--border-default);
+    border: 1px solid var(--border-default);
+    margin: var(--space-6) 0;
+  }
+
+  .feature {
+    padding: var(--space-4);
+    background: var(--bg-elevated);
+  }
+
+  .feature-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: var(--space-1);
+  }
+
+  .feature-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* Architecture diagram */
+  .architecture {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-6);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    margin: var(--space-4) 0;
+  }
+
+  .arch-row {
+    display: flex;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .arch-box {
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--border-default);
+    background: var(--bg-surface);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+  }
+
+  .arch-box.source {
+    border-color: var(--border-strong);
+  }
+
+  .arch-box.core {
+    background: var(--text-primary);
+    border-color: var(--text-primary);
+    color: var(--bg-surface);
+    font-weight: 500;
+  }
+
+  .arch-arrow {
+    width: 1px;
+    height: 16px;
+    background: var(--border-strong);
+  }
+
+  .arch-caption {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    text-align: center;
+    margin-top: var(--space-2);
   }
 
   section {
-    margin: 2rem 0;
+    margin-bottom: var(--space-8);
   }
 
-  .architecture {
-    font-size: 0.8rem;
-    line-height: 1.4;
+  @media (max-width: 768px) {
+    .feature-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

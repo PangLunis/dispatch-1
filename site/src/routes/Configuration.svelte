@@ -1,70 +1,66 @@
-<h1>Configuration</h1>
-<p class="lead">All configuration options for Dispatch.</p>
+<article class="page">
+  <header class="page-header">
+    <h1>Configuration</h1>
+    <p class="lead">Settings reference.</p>
+  </header>
 
-<hr>
+  <section>
+    <h2>Config File</h2>
+    <p>Configuration lives in <code>config.local.yaml</code> (gitignored):</p>
+    <pre><code>cp config.example.yaml config.local.yaml</code></pre>
+  </section>
 
-<nav class="toc">
-  <h3>On this page</h3>
-  <ul>
-    <li><a href="#config-file">Config File</a></li>
-    <li><a href="#required">Required Settings</a></li>
-    <li><a href="#optional">Optional Settings</a></li>
-    <li><a href="#example">Full Example</a></li>
-    <li><a href="#accessing">Accessing Config Values</a></li>
-    <li><a href="#env">Environment Variables</a></li>
-  </ul>
-</nav>
+  <section>
+    <h2>Required Settings</h2>
 
-<hr>
-
-<section id="config-file">
-  <h2>Config File</h2>
-  <p>Configuration lives in <code>config.local.yaml</code> (gitignored). Copy from the template:</p>
-  <pre><code>cp config.example.yaml config.local.yaml</code></pre>
-</section>
-
-<section id="required">
-  <h2>Required Settings</h2>
-
-  <h3>Owner</h3>
-  <pre><code>owner:
+    <div class="config-block">
+      <div class="config-header">Owner</div>
+      <pre><code>owner:
   name: "John Smith"
   phone: "+16175551234"
   email: "john@example.com"</code></pre>
+    </div>
 
-  <h3>Assistant</h3>
-  <pre><code>assistant:
+    <div class="config-block">
+      <div class="config-header">Assistant</div>
+      <pre><code>assistant:
   name: "Sven"
   email: "assistant@example.com"
-  phone: "+19495551234"  # For Signal account</code></pre>
-</section>
+  phone: "+19495551234"</code></pre>
+    </div>
+  </section>
 
-<section id="optional">
-  <h2>Optional Settings</h2>
+  <section>
+    <h2>Optional Settings</h2>
 
-  <h3>Partner</h3>
-  <pre><code>partner:
+    <div class="config-block">
+      <div class="config-header">Partner</div>
+      <pre><code>partner:
   name: "Jane Smith"</code></pre>
-  <p>Used for the partner tier's warm tone personalization.</p>
+      <p class="config-note">Used for partner tier's warm tone.</p>
+    </div>
 
-  <h3>Signal</h3>
-  <pre><code>signal:
+    <div class="config-block">
+      <div class="config-header">Signal</div>
+      <pre><code>signal:
   account: "+19495551234"</code></pre>
-  <p>The phone number registered with signal-cli.</p>
+      <p class="config-note">Phone registered with signal-cli.</p>
+    </div>
 
-  <h3>Smart Home</h3>
-  <pre><code>hue:
+    <div class="config-block">
+      <div class="config-header">Smart Home</div>
+      <pre><code>hue:
   bridges:
     home:
       ip: "10.10.10.10"
-    office:
-      ip: "10.10.10.11"
 
 lutron:
   bridge_ip: "10.10.10.12"</code></pre>
+    </div>
 
-  <h3>Chrome Profiles</h3>
-  <pre><code>chrome:
+    <div class="config-block">
+      <div class="config-header">Chrome Profiles</div>
+      <pre><code>chrome:
   profiles:
     0:
       name: "assistant"
@@ -72,21 +68,49 @@ lutron:
     1:
       name: "owner"
       email: "john@example.com"</code></pre>
-  <p>Profile 0 is the assistant's Chrome profile. Profile 1+ are others.</p>
+      <p class="config-note">Profile 0 is the assistant's Chrome profile.</p>
+    </div>
+  </section>
 
-  <h3>Podcast</h3>
-  <pre><code>podcast:
-  bucket: "my-podcast-bucket"
-  title: "My Audio Articles"
-  email: "john@example.com"</code></pre>
-  <p>For the podcast skill's GCS hosting.</p>
-</section>
+  <section>
+    <h2>Accessing Values</h2>
+    <p>Use the <code>identity</code> CLI:</p>
+    <pre><code>~/dispatch/bin/identity owner.name
+~/dispatch/bin/identity hue.bridges.home.ip</code></pre>
 
-<section id="example">
-  <h2>Full Example</h2>
-  <pre><code># config.local.yaml
+    <p>In skills, use dynamic prompts:</p>
+    <pre><code>**!`identity owner.name`** is the owner.</code></pre>
+  </section>
 
-owner:
+  <section>
+    <h2>Environment Variables</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Variable</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>DISPATCH_CONFIG</code></td>
+          <td>Config file path</td>
+        </tr>
+        <tr>
+          <td><code>DISPATCH_LOG_LEVEL</code></td>
+          <td>DEBUG, INFO, WARNING, ERROR</td>
+        </tr>
+        <tr>
+          <td><code>ANTHROPIC_API_KEY</code></td>
+          <td>Claude API key</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Full Example</h2>
+    <pre><code>owner:
   name: "John Smith"
   phone: "+16175551234"
   email: "john@example.com"
@@ -114,88 +138,43 @@ chrome:
   profiles:
     0:
       name: "sven"
-      email: "assistant@example.com"
-    1:
-      name: "owner"
-      email: "john@example.com"</code></pre>
-</section>
-
-<section id="accessing">
-  <h2>Accessing Config Values</h2>
-  <p>Use the <code>identity</code> CLI:</p>
-  <pre><code>~/dispatch/bin/identity owner.name      # → John Smith
-~/dispatch/bin/identity owner.phone     # → +16175551234
-~/dispatch/bin/identity hue.bridges.home.ip  # → 10.10.10.10</code></pre>
-
-  <p>In skills and templates, use the <code>!`identity`</code> dynamic prompt:</p>
-  <pre><code>**!`identity owner.name`** is the owner.</code></pre>
-  <p>This gets replaced at runtime with the actual value.</p>
-</section>
-
-<section id="env">
-  <h2>Environment Variables</h2>
-  <p>Override settings via environment:</p>
-  <table>
-    <thead>
-      <tr>
-        <th>Variable</th>
-        <th>Description</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><code>DISPATCH_CONFIG</code></td>
-        <td>Path to config file</td>
-      </tr>
-      <tr>
-        <td><code>DISPATCH_LOG_LEVEL</code></td>
-        <td>Log level (DEBUG, INFO, etc.)</td>
-      </tr>
-      <tr>
-        <td><code>ANTHROPIC_API_KEY</code></td>
-        <td>Claude API key</td>
-      </tr>
-    </tbody>
-  </table>
-</section>
+      email: "assistant@example.com"</code></pre>
+  </section>
+</article>
 
 <style>
+  .page {
+    max-width: var(--content-max-width);
+  }
+
+  .page-header {
+    margin-bottom: var(--space-6);
+  }
+
   .lead {
-    font-size: 1.25rem;
+    font-size: 15px;
     color: var(--text-secondary);
-  }
-
-  hr {
-    border: none;
-    border-top: 1px solid var(--border-color);
-    margin: 1.5rem 0;
-  }
-
-  .toc {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 1rem 1.5rem;
-  }
-
-  .toc h3 {
-    font-size: 0.875rem;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    margin: 0 0 0.75rem;
-  }
-
-  .toc ul {
-    list-style: none;
-    padding: 0;
     margin: 0;
   }
 
-  .toc li {
-    margin: 0.5rem 0;
+  section {
+    margin-bottom: var(--space-8);
   }
 
-  section {
-    margin: 2rem 0;
+  .config-block {
+    margin: var(--space-4) 0;
+  }
+
+  .config-header {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: var(--space-2);
+  }
+
+  .config-note {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin: var(--space-2) 0 0;
   }
 </style>

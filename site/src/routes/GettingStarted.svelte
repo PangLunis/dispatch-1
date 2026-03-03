@@ -2,151 +2,186 @@
   let { navigateTo } = $props();
 </script>
 
-<h1>Getting Started</h1>
-<p class="lead">Get Dispatch running on your Mac in minutes.</p>
+<article class="page">
+  <header class="page-header">
+    <h1>Getting Started</h1>
+    <p class="lead">Set up Dispatch on your Mac.</p>
+  </header>
 
-<hr>
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ul>
+      <li><a href="#requirements">Requirements</a></li>
+      <li><a href="#installation">Installation</a></li>
+      <li><a href="#verify">Verification</a></li>
+      <li><a href="#next-steps">Next steps</a></li>
+    </ul>
+  </nav>
 
-<nav class="toc">
-  <h3>On this page</h3>
-  <ul>
-    <li><a href="#requirements">Requirements</a></li>
-    <li><a href="#installation">Installation</a></li>
-    <li><a href="#verify">Verify it's working</a></li>
-    <li><a href="#next-steps">Next steps</a></li>
-  </ul>
-</nav>
+  <section id="requirements">
+    <h2>Requirements</h2>
+    <ul>
+      <li><strong>macOS</strong> with Messages.app and Contacts.app</li>
+      <li><strong>Python 3.12+</strong> with <a href="https://github.com/astral-sh/uv">uv</a></li>
+      <li><strong>Claude API key</strong> from Anthropic</li>
+      <li><strong>Optional:</strong> signal-cli for Signal messaging</li>
+      <li><strong>Optional:</strong> Chrome with extension for browser automation</li>
+    </ul>
+  </section>
 
-<hr>
+  <section id="installation">
+    <h2>Installation</h2>
 
-<section id="requirements">
-  <h2>Requirements</h2>
-  <ul>
-    <li><strong>macOS</strong> (uses Messages.app, Contacts.app)</li>
-    <li><strong>Python 3.12+</strong> with <a href="https://github.com/astral-sh/uv">uv</a> package manager</li>
-    <li><strong>Claude API access</strong> (Anthropic)</li>
-    <li><strong>Optional</strong>: <code>signal-cli</code> daemon for Signal messaging</li>
-    <li><strong>Optional</strong>: Chrome with Chrome Control extension for browser automation</li>
-  </ul>
-</section>
+    <h3>1. Clone and install</h3>
+    <pre><code>git clone https://github.com/svenflow/dispatch.git ~/dispatch
+cd ~/dispatch
+uv sync</code></pre>
 
-<section id="installation">
-  <h2>Installation</h2>
+    <h3>2. Configure</h3>
+    <pre><code>cp config.example.yaml config.local.yaml</code></pre>
+    <p>Edit <code>config.local.yaml</code> with:</p>
+    <ul>
+      <li><code>assistant.name</code> - Your assistant's name</li>
+      <li><code>contacts.owner_phone</code> - Your phone (admin tier)</li>
+      <li><code>messaging.enabled_backends</code> - imessage, signal, etc.</li>
+    </ul>
 
-  <h3>1. Clone the repository</h3>
-  <pre><code>git clone https://github.com/svenflow/dispatch.git ~/dispatch
-cd ~/dispatch</code></pre>
+    <h3>3. Set up contact groups</h3>
+    <p>Create these groups in Contacts.app:</p>
+    <div class="group-list">
+      <div class="group"><code>Claude Admin</code><span>Full access</span></div>
+      <div class="group"><code>Claude Partner</code><span>Full access + warm tone</span></div>
+      <div class="group"><code>Claude Family</code><span>Read-only</span></div>
+      <div class="group"><code>Claude Favorites</code><span>Restricted tools</span></div>
+      <div class="group"><code>Claude Bots</code><span>AI agents</span></div>
+    </div>
 
-  <h3>2. Install dependencies</h3>
-  <pre><code>uv sync</code></pre>
+    <h3>4. Start</h3>
+    <pre><code>./bin/claude-assistant start</code></pre>
 
-  <h3>3. Configure</h3>
-  <pre><code># Copy the example config
-cp config.example.yaml config.local.yaml
+    <h3>5. Install watchdog (recommended)</h3>
+    <pre><code>./bin/watchdog-install</code></pre>
+  </section>
 
-# Edit with your settings
-nano config.local.yaml</code></pre>
-
-  <p>Key settings:</p>
-  <ul>
-    <li><code>assistant.name</code> — Your assistant's name</li>
-    <li><code>contacts.owner_phone</code> — Your phone number (gets admin tier)</li>
-    <li><code>messaging.enabled_backends</code> — Which backends to enable</li>
-  </ul>
-
-  <h3>4. Set up Contacts groups</h3>
-  <p>Create these groups in macOS Contacts.app:</p>
-  <ul>
-    <li><code>Claude Admin</code> — Full access users (your phone)</li>
-    <li><code>Claude Partner</code> — Partner with full access + warm tone</li>
-    <li><code>Claude Family</code> — Family members (read-only)</li>
-    <li><code>Claude Favorites</code> — Friends (restricted tools)</li>
-    <li><code>Claude Bots</code> — AI agents (loop detection)</li>
-  </ul>
-  <p>Add contacts to appropriate groups to assign their tier.</p>
-
-  <h3>5. Start the daemon</h3>
-  <pre><code>./bin/claude-assistant start</code></pre>
-
-  <h3>6. Install the watchdog (recommended)</h3>
-  <p>The watchdog auto-recovers from crashes:</p>
-  <pre><code>./bin/watchdog-install</code></pre>
-</section>
-
-<section id="verify">
-  <h2>Verify it's working</h2>
-  <pre><code># Check status
-./bin/claude-assistant status
-
-# Watch logs
+  <section id="verify">
+    <h2>Verification</h2>
+    <pre><code>./bin/claude-assistant status
 ./bin/claude-assistant logs</code></pre>
-  <p>Send yourself a text message — the daemon should pick it up and Claude will respond!</p>
-</section>
+    <p>Send yourself a text. The daemon should respond.</p>
+  </section>
 
-<section id="next-steps">
-  <h2>Next steps</h2>
-  <ul>
-    <li><button class="link-btn" onclick={() => navigateTo('tiers')}>Contact Tiers</button> — Learn about access control</li>
-    <li><button class="link-btn" onclick={() => navigateTo('skills')}>Skills System</button> — Explore built-in capabilities</li>
-    <li><button class="link-btn" onclick={() => navigateTo('cli')}>CLI Reference</button> — Full command documentation</li>
-  </ul>
-</section>
+  <section id="next-steps">
+    <h2>Next steps</h2>
+    <ul>
+      <li>
+        <button class="text-link" onclick={() => navigateTo('tiers')}>Contact Tiers</button>
+        <span class="link-desc">- Access control system</span>
+      </li>
+      <li>
+        <button class="text-link" onclick={() => navigateTo('skills')}>Skills</button>
+        <span class="link-desc">- Built-in capabilities</span>
+      </li>
+      <li>
+        <button class="text-link" onclick={() => navigateTo('cli')}>CLI Reference</button>
+        <span class="link-desc">- Full command docs</span>
+      </li>
+    </ul>
+  </section>
+</article>
 
 <style>
-  .lead {
-    font-size: 1.25rem;
-    color: var(--text-secondary);
+  .page {
+    max-width: var(--content-max-width);
   }
 
-  hr {
-    border: none;
-    border-top: 1px solid var(--border-color);
-    margin: 1.5rem 0;
+  .page-header {
+    margin-bottom: var(--space-6);
+  }
+
+  .lead {
+    font-size: 15px;
+    color: var(--text-secondary);
+    margin: 0;
   }
 
   .toc {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 1rem 1.5rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    padding: var(--space-4);
+    margin-bottom: var(--space-8);
   }
 
-  .toc h3 {
-    font-size: 0.875rem;
+  .toc-title {
+    font-size: 10px;
+    font-weight: 600;
     text-transform: uppercase;
+    letter-spacing: 0.08em;
     color: var(--text-muted);
-    margin: 0 0 0.75rem;
+    margin-bottom: var(--space-3);
   }
 
   .toc ul {
     list-style: none;
     padding: 0;
     margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-6);
   }
 
   .toc li {
-    margin: 0.5rem 0;
+    margin: 0;
+  }
+
+  .toc a {
+    font-size: 12px;
   }
 
   section {
-    margin: 2rem 0;
+    margin-bottom: var(--space-8);
   }
 
-  h3 {
-    margin-top: 1.5rem;
+  .group-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--border-default);
+    border: 1px solid var(--border-default);
+    margin: var(--space-4) 0;
   }
 
-  .link-btn {
+  .group {
+    display: flex;
+    justify-content: space-between;
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg-elevated);
+    font-size: 12px;
+  }
+
+  .group code {
+    font-size: 12px;
+  }
+
+  .group span {
+    color: var(--text-tertiary);
+  }
+
+  .text-link {
     background: none;
     border: none;
-    color: var(--link-color);
-    cursor: pointer;
-    font-size: inherit;
     padding: 0;
+    color: var(--accent);
+    font-size: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color var(--transition-fast);
   }
 
-  .link-btn:hover {
-    text-decoration: underline;
-    color: var(--link-hover);
+  .text-link:hover {
+    color: var(--accent-hover);
+  }
+
+  .link-desc {
+    color: var(--text-tertiary);
   }
 </style>
