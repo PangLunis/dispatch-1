@@ -64,27 +64,14 @@ uv sync</code></pre>
     <h2>Part 2: Claude Setup</h2>
     <p class="section-desc">Hand off to Claude to finish the installation.</p>
 
-    <h3>Start Claude and log in</h3>
+    <h3>Start Claude and run setup</h3>
     <pre><code>cd ~/dispatch
 claude</code></pre>
-    <p>When prompted, log in with your Claude account (or create one). Then give Claude this prompt:</p>
-
-    <h3>Bootstrap prompt:</h3>
+    <p>When prompted, log in with your Claude account (or create one). Then type:</p>
     <div class="prompt-box">
-      <pre><code>I want to set up Dispatch, the personal assistant system.
-
-Read through the bootstrap guides in ~/dispatch/docs/blog/bootstrap/
-starting with 03-identity-setup.md.
-
-For each guide:
-1. Read it fully
-2. Implement what it describes
-3. Verify with the checklist at the end
-4. Move to the next guide
-
-Start with identity setup - ask me for my info (name, phone, email)
-to create config.local.yaml.</code></pre>
+      <pre><code>/setup</code></pre>
     </div>
+    <p>The setup wizard will guide you through the rest interactively.</p>
 
     <h3>What happens next</h3>
     <p>Claude will work through the bootstrap guides autonomously:</p>
