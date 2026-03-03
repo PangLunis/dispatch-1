@@ -337,6 +337,9 @@ async function handleCommand(message) {
     case 'get_accessibility_tree':
       return await getAccessibilityTree(params.tabId);
 
+    case 'click_by_name':
+      return await clickByAccessibleName(params.tabId, params.name, params.role, params.index || 0);
+
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -1373,6 +1376,131 @@ async function getAccessibilityTree(tabId) {
     return tree;
   } catch (error) {
     return { error: error.message };
+  }
+}
+
+// Click element by accessible name using Chrome's accessibility tree
+// This bypasses CSP restrictions since it uses the debugger protocol
+async function clickByAccessibleName(tabId, name, role = null, index = 0) {
+  try {
+    // Focus the tab first
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.tabs.update(tabId, { active: true });
+
+    await ensureDebuggerAttached(tabId);
+
+    // Enable Accessibility domain
+    await chrome.debugger.sendCommand({ tabId }, 'Accessibility.enable');
+
+    // Get the full accessibility tree
+    const tree = await chrome.debugger.sendCommand({ tabId }, 'Accessibility.getFullAXTree');
+
+    if (!tree || !tree.nodes) {
+      resetDebuggerIdleTimer(tabId);
+      return { clicked: false, error: 'No accessibility tree available' };
+    }
+
+    // Search for nodes matching the name (case-insensitive partial match)
+    const searchName = name.toLowerCase();
+    const matches = [];
+
+    for (const node of tree.nodes) {
+      // Check name property
+      const nodeName = node.name?.value?.toLowerCase() || '';
+      const nodeRole = node.role?.value || '';
+
+      // Skip ignored/invisible nodes
+      if (node.ignored) continue;
+
+      // Match by name (partial, case-insensitive)
+      const nameMatches = nodeName.includes(searchName) || searchName.includes(nodeName);
+
+      // Match by role if specified
+      const roleMatches = !role || nodeRole.toLowerCase() === role.toLowerCase();
+
+      if (nameMatches && roleMatches && nodeName) {
+        matches.push({
+          nodeId: node.nodeId,
+          backendNodeId: node.backendDOMNodeId,
+          name: node.name?.value,
+          role: nodeRole,
+          description: node.description?.value
+        });
+      }
+    }
+
+    if (matches.length === 0) {
+      resetDebuggerIdleTimer(tabId);
+      // Return available buttons/links for debugging
+      const clickables = tree.nodes
+        .filter(n => !n.ignored && ['button', 'link', 'menuitem', 'checkbox', 'radio'].includes(n.role?.value?.toLowerCase()))
+        .map(n => ({ name: n.name?.value, role: n.role?.value }))
+        .filter(n => n.name)
+        .slice(0, 15);
+      return {
+        clicked: false,
+        error: `No element found with name containing "${name}"`,
+        matchesFound: 0,
+        availableElements: clickables
+      };
+    }
+
+    // Get the match at the specified index
+    const match = matches[index];
+    if (!match) {
+      resetDebuggerIdleTimer(tabId);
+      return {
+        clicked: false,
+        error: `Index ${index} out of range. Found ${matches.length} matches.`,
+        matchesFound: matches.length,
+        matches: matches.slice(0, 5).map(m => ({ name: m.name, role: m.role }))
+      };
+    }
+
+    // Use DOM.getBoxModel to get the element's position via backendNodeId
+    const boxModel = await chrome.debugger.sendCommand({ tabId }, 'DOM.getBoxModel', {
+      backendNodeId: match.backendNodeId
+    });
+
+    if (!boxModel || !boxModel.model) {
+      // Fallback: try using nodeId from DOM tree
+      await chrome.debugger.sendCommand({ tabId }, 'DOM.enable');
+      const doc = await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument');
+
+      resetDebuggerIdleTimer(tabId);
+      return {
+        clicked: false,
+        error: 'Could not get element position',
+        match: { name: match.name, role: match.role }
+      };
+    }
+
+    // Get center of the content box
+    const content = boxModel.model.content;
+    // content is [x1,y1, x2,y2, x3,y3, x4,y4] - corners of the quad
+    const x = Math.round((content[0] + content[2] + content[4] + content[6]) / 4);
+    const y = Math.round((content[1] + content[3] + content[5] + content[7]) / 4);
+
+    // Click at the center
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'left', clickCount: 1
+    });
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'left', clickCount: 1
+    });
+
+    resetDebuggerIdleTimer(tabId);
+    return {
+      clicked: true,
+      name: match.name,
+      role: match.role,
+      x, y,
+      matchesFound: matches.length
+    };
+  } catch (error) {
+    resetDebuggerIdleTimer(tabId);
+    return { clicked: false, error: error.message };
   }
 }
 

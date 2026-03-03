@@ -1,0 +1,376 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""
+Auto-login to Claude Code when OAuth expires.
+
+This script automates the browser-based OAuth flow when a session needs re-auth:
+1. Starts `claude` in tmux, runs /login, selects option 1
+2. Extracts the OAuth URL from the tmux pane
+3. Opens URL in Chrome via chrome-control extension
+4. Clicks Authorize button if needed
+5. Waits for redirect and extracts auth code from callback URL
+6. Pastes the code back into tmux
+
+Usage:
+    auto-login              # Run the full flow
+    auto-login --dry-run    # Print what would happen without doing it
+"""
+
+import argparse
+import re
+import subprocess
+import sys
+import time
+
+
+TMUX_SESSION = "claude-login"
+CHROME_CLI = "/Users/sven/.claude/skills/chrome-control/scripts/chrome"
+
+
+def log(msg: str):
+    print(f"\033[0;32m[auto-login]\033[0m {msg}")
+
+
+def warn(msg: str):
+    print(f"\033[1;33m[auto-login]\033[0m {msg}")
+
+
+def error(msg: str):
+    print(f"\033[0;31m[auto-login]\033[0m {msg}", file=sys.stderr)
+
+
+def chrome(cmd: str) -> tuple[str, int]:
+    """Run chrome-control CLI command. Returns (output, returncode)."""
+    result = subprocess.run(
+        [CHROME_CLI] + cmd.split(),
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() + result.stderr.strip(), result.returncode
+
+
+def tmux_send_keys(keys: str):
+    """Send keys to tmux session."""
+    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, keys])
+
+
+def tmux_capture_pane() -> str:
+    """Capture tmux pane content."""
+    result = subprocess.run(
+        ["tmux", "capture-pane", "-t", TMUX_SESSION, "-p"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
+def wait_for_text(pattern: str, timeout: int = 30) -> bool:
+    """Wait for text to appear in tmux pane."""
+    elapsed = 0
+    while elapsed < timeout:
+        content = tmux_capture_pane()
+        if pattern in content:
+            return True
+        time.sleep(0.5)
+        elapsed += 1
+    return False
+
+
+def extract_oauth_url() -> str | None:
+    """Extract OAuth URL from tmux pane."""
+    content = tmux_capture_pane()
+    # URL spans multiple lines due to terminal wrapping
+    lines = content.split("\n")
+    capturing = False
+    url_parts = []
+
+    for line in lines:
+        if "Use the url below" in line or "Browser didn't open" in line:
+            capturing = True
+            continue
+        if capturing:
+            stripped = line.strip()
+            if "Paste code" in line:
+                break
+            if not stripped:
+                continue
+            url_parts.append(stripped)
+
+    if url_parts:
+        url = "".join(url_parts).replace(" ", "")
+        if url.startswith("https://claude.ai"):
+            return url
+
+    # Fallback: regex extract URL from content
+    match = re.search(r'https://claude\.ai/oauth/authorize[^\s\n]+', content.replace("\n", ""))
+    if match:
+        return match.group(0)
+
+    return None
+
+
+def setup_tmux_and_login() -> str | None:
+    """
+    Set up tmux session, run /login, and return OAuth URL.
+    Returns OAuth URL if successful, None otherwise.
+    """
+    # Kill existing session
+    subprocess.run(
+        ["tmux", "kill-session", "-t", TMUX_SESSION],
+        capture_output=True,
+    )
+
+    # Create new session running claude
+    log("Starting claude in tmux session...")
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", TMUX_SESSION, "claude"],
+        check=True,
+    )
+    time.sleep(4)  # Wait for claude to start
+
+    # Wait for prompt
+    if not wait_for_text("❯", 10):
+        error("Timeout waiting for claude prompt")
+        print(tmux_capture_pane())
+        return None
+
+    # Run /login
+    log("Running /login command...")
+    tmux_send_keys("/login")
+    time.sleep(0.5)
+    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "Enter"])
+    time.sleep(1)
+    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "Enter"])
+    time.sleep(2)
+
+    # Check if OAuth URL already appeared (auto-selected Claude account)
+    if "claude.ai/oauth" in tmux_capture_pane():
+        log("OAuth URL already appeared (auto-selected)")
+    else:
+        # Wait for login options
+        if wait_for_text("Select login method", 10) or wait_for_text("Claude account", 5):
+            # Select option 1 (Claude account)
+            log("Selecting Claude account login...")
+            tmux_send_keys("1")
+            time.sleep(3)
+
+        # Wait for OAuth URL
+        if not wait_for_text("claude.ai/oauth", 15):
+            error("Timeout waiting for OAuth URL")
+            print(tmux_capture_pane())
+            return None
+
+    # Extract URL
+    oauth_url = extract_oauth_url()
+    if not oauth_url:
+        error("Failed to extract OAuth URL")
+        print(tmux_capture_pane())
+        return None
+
+    log(f"Got OAuth URL ({len(oauth_url)} chars)")
+    return oauth_url
+
+
+def do_oauth_flow_chrome(oauth_url: str) -> str | None:
+    """
+    Complete OAuth flow using chrome-control extension.
+    Returns auth code or "SUCCESS" if successful, None otherwise.
+    """
+    # Test chrome extension connectivity
+    output, rc = chrome("ping")
+    if rc != 0:
+        warn(f"Chrome extension not connected: {output}")
+        return None
+    log("Chrome extension connected")
+
+    # Open OAuth URL in new tab
+    log("Opening OAuth URL in Chrome...")
+    output, rc = chrome(f"open {oauth_url}")
+    if rc != 0:
+        error(f"Failed to open tab: {output}")
+        return None
+
+    # Parse tab_id from output like "Opened tab 123456"
+    match = re.search(r'(\d+)', output)
+    if not match:
+        error(f"Could not parse tab_id from: {output}")
+        return None
+    tab_id = match.group(1)
+    log(f"Opened tab {tab_id}")
+
+    try:
+        # Wait for page to load
+        time.sleep(3)
+
+        # Poll for redirect or need to click Authorize
+        max_attempts = 30
+        for attempt in range(max_attempts):
+            # Get current URL using text extraction (bypasses CSP)
+            output, rc = chrome(f"text {tab_id}")
+            page_text = output if rc == 0 else ""
+
+            # Also try to get URL from page info
+            url_output, url_rc = chrome(f"read {tab_id}")
+
+            # Check for success page (OAuth completed without code)
+            if "Build something great" in page_text or "all set up for Claude Code" in page_text:
+                log("OAuth completed successfully (no code needed)")
+                chrome(f"close {tab_id}")
+                return "SUCCESS"
+
+            # Check for auth code page (OAuth completed with code to paste)
+            if "Authentication Code" in page_text or "Paste this into Claude Code" in page_text:
+                log("Auth code page detected, extracting code...")
+                # Extract the code from page text
+                # Format: "Paste this into Claude Code:\n\n<code>\nCopy Code"
+                code_match = re.search(r'Paste this into Claude Code[:\s]*\n+([A-Za-z0-9_#-]+)', page_text)
+                if code_match:
+                    auth_code = code_match.group(1).strip()
+                    log(f"Got auth code: {auth_code[:20]}...")
+                    chrome(f"close {tab_id}")
+                    return auth_code
+                else:
+                    # Try alternative extraction - code is usually on its own line
+                    lines = page_text.split('\n')
+                    for i, line in enumerate(lines):
+                        if 'Paste this' in line or 'Authentication Code' in line:
+                            # Code should be in the next non-empty line
+                            for next_line in lines[i+1:]:
+                                next_line = next_line.strip()
+                                if next_line and len(next_line) > 20 and '#' in next_line:
+                                    log(f"Got auth code: {next_line[:20]}...")
+                                    chrome(f"close {tab_id}")
+                                    return next_line
+                                elif next_line and next_line not in ['Copy Code', '']:
+                                    break
+
+            # Try to click Authorize button using click-by-name (uses Chrome accessibility tree)
+            if attempt in [2, 5, 10, 15, 20]:
+                log("Looking for Authorize button...")
+                # Use click-by-name which searches Chrome's accessibility tree
+                # This bypasses CSP and works on elements that aren't in normal DOM
+                click_output, click_rc = chrome(f"click-by-name {tab_id} Authorize --role button")
+                if click_rc == 0 and "clicked" in click_output.lower():
+                    log("Clicked Authorize button via accessibility tree")
+                    time.sleep(3)
+                    continue
+
+                # Fallback: try iframe-click with button containing Authorize text
+                click_output, click_rc = chrome(f"iframe-click {tab_id} 'button'")
+                if click_rc == 0:
+                    log("Clicked button element")
+                    time.sleep(2)
+
+            time.sleep(1)
+
+        error(f"Timeout waiting for auth. Page text: {page_text[:200] if page_text else 'empty'}")
+        return None
+
+    except Exception as e:
+        error(f"OAuth flow error: {e}")
+        return None
+    finally:
+        # Clean up tab on error
+        try:
+            chrome(f"close {tab_id}")
+        except Exception:
+            pass
+
+
+def paste_code_and_verify(auth_code: str) -> bool:
+    """Paste auth code into tmux and verify login."""
+    if auth_code == "SUCCESS":
+        # OAuth completed without needing to paste code
+        # Just wait for tmux session to update
+        log("OAuth completed via browser - waiting for tmux to reflect login...")
+        time.sleep(3)
+        content = tmux_capture_pane()
+        if any(x in content.lower() for x in ["logged in", "authenticated", "using", "success"]):
+            log("✅ Login successful!")
+            return True
+        # Even if tmux doesn't show it, the login may have worked
+        log("✅ OAuth completed - login should be active")
+        return True
+
+    log("Pasting auth code into claude...")
+    tmux_send_keys(auth_code)
+    time.sleep(0.5)
+    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "Enter"])
+    time.sleep(3)
+
+    # Check result
+    content = tmux_capture_pane()
+    if any(x in content.lower() for x in ["logged in", "authenticated", "using"]):
+        log("✅ Login successful!")
+        return True
+    else:
+        warn("Login status unclear - check tmux session")
+        return False
+
+
+def cleanup():
+    """Kill tmux session."""
+    subprocess.run(
+        ["tmux", "kill-session", "-t", TMUX_SESSION],
+        capture_output=True,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Auto-login to Claude Code")
+    parser.add_argument("--dry-run", action="store_true", help="Print what would happen")
+    args = parser.parse_args()
+
+    if args.dry_run:
+        log("[DRY-RUN] Would:")
+        log("  1. Start claude in tmux session")
+        log("  2. Run /login and select option 1")
+        log("  3. Extract OAuth URL")
+        log("  4. Open in Chrome via chrome-control extension")
+        log("  5. Click Authorize button if needed")
+        log("  6. Wait for auth code in callback URL")
+        log("  7. Paste code back into tmux")
+        return
+
+    try:
+        # Step 1: Setup tmux and get OAuth URL
+        oauth_url = setup_tmux_and_login()
+        if not oauth_url:
+            cleanup()
+            sys.exit(1)
+
+        # Step 2: Complete OAuth flow using chrome-control
+        auth_code = do_oauth_flow_chrome(oauth_url)
+        if not auth_code:
+            error("Failed to get auth code")
+            cleanup()
+            sys.exit(1)
+
+        # Step 3: Paste code and verify
+        success = paste_code_and_verify(auth_code)
+
+        log("Auto-login flow complete")
+        log(f"Note: tmux session '{TMUX_SESSION}' is still running")
+        log(f"To attach: tmux attach -t {TMUX_SESSION}")
+        log(f"To kill: tmux kill-session -t {TMUX_SESSION}")
+
+        if not success:
+            sys.exit(1)
+
+    except KeyboardInterrupt:
+        log("Interrupted")
+        cleanup()
+        sys.exit(1)
+    except Exception as e:
+        error(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        cleanup()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

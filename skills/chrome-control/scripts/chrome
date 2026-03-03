@@ -20,6 +20,7 @@ Usage:
 
     chrome [-p PROFILE] click <tab_id> <ref>      Click element by ref
     chrome [-p PROFILE] click-at <tab_id> <x> <y> Click at coordinates
+    chrome [-p PROFILE] click-by-name <tab_id> <name>  Click by accessible name (bypasses CSP)
     chrome [-p PROFILE] type <tab_id> <ref> <text> Type into element
     chrome [-p PROFILE] input <tab_id> <ref> <val> Set form input value
     chrome [-p PROFILE] key <tab_id> <key>        Send key
@@ -344,6 +345,46 @@ def cmd_iframe_click(client, args):
     print(f"Result: {result.get('result', result)}")
 
 
+def cmd_click_by_name(client, args):
+    """Click element by accessible name using Chrome accessibility tree."""
+    if len(args) < 2:
+        print("Usage: chrome click-by-name <tab_id> <name> [--role <role>] [--index <n>]", file=sys.stderr)
+        print("  Uses Chrome's accessibility tree to find elements.", file=sys.stderr)
+        print("  Bypasses CSP restrictions.", file=sys.stderr)
+        sys.exit(1)
+    tab_id = int(args[0])
+
+    # Parse args
+    name = args[1]
+    role = None
+    index = 0
+    i = 2
+    while i < len(args):
+        if args[i] == "--role" and i + 1 < len(args):
+            role = args[i + 1]
+            i += 2
+        elif args[i] == "--index" and i + 1 < len(args):
+            index = int(args[i + 1])
+            i += 2
+        else:
+            # Append to name if not a flag
+            name += " " + args[i]
+            i += 1
+
+    params = {"tabId": tab_id, "name": name, "index": index}
+    if role:
+        params["role"] = role
+
+    result = get_result(client.send("click_by_name", **params))
+    if result.get("clicked"):
+        print(f"Clicked element: {result.get('name', name)} (role: {result.get('role', 'unknown')})")
+    else:
+        print(f"Could not find element with name '{name}'", file=sys.stderr)
+        if result.get("matchesFound"):
+            print(f"  Found {result.get('matchesFound')} partial matches", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_iframe_type(client, args):
     """Type text using debugger key events (works for iframes)."""
     if len(args) < 2:
@@ -538,6 +579,7 @@ COMMANDS = {
     "console": cmd_console,
     "network": cmd_network,
     "ping": cmd_ping,
+    "click-by-name": cmd_click_by_name,
 }
 
 
