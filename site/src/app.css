@@ -84,6 +84,9 @@ body {
   line-height: 1.7;
   min-height: 100vh;
   min-height: -webkit-fill-available;
+  overflow-x: hidden;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 /* Typography - Precise hierarchy */
@@ -157,6 +160,7 @@ pre {
   border-radius: var(--radius-0);
   border: 1px solid var(--code-border);
   -webkit-overflow-scrolling: touch;
+  max-width: 100%;
 }
 
 pre code {
@@ -253,5 +257,28 @@ hr {
   body {
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* Mobile text overflow prevention */
+@media (max-width: 768px) {
+  h1 {
+    font-size: 24px;
+  }
+
+  p, li {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }
+
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  code {
+    word-break: break-all;
   }
 }

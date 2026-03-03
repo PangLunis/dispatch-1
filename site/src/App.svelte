@@ -62,6 +62,13 @@
       margin-left: 0;
       margin-top: var(--nav-height);
       padding: var(--space-6) var(--space-4);
+      max-width: 100vw;
+      overflow-x: hidden;
+    }
+
+    .content {
+      max-width: 100%;
+      overflow-x: hidden;
     }
   }
 </style>
