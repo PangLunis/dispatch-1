@@ -3,6 +3,7 @@
 
   const navItems = [
     { id: 'home', label: 'Overview' },
+    { id: 'philosophy', label: 'Philosophy' },
     { id: 'getting-started', label: 'Getting Started' },
     { id: 'tiers', label: 'Contact Tiers' },
     { id: 'skills', label: 'Skills' },

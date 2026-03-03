@@ -4,10 +4,11 @@
 
 <article class="page">
   <header class="page-header">
+    <div class="badge">macOS only · Dedicated Mac recommended</div>
     <h1>Dispatch</h1>
     <p class="lead">
-      A daemon that turns Claude into a full personal assistant with computer control,
-      multi-channel messaging, and persistent memory.
+      Turn a Mac into an always-on AI assistant with its own identity—its own iCloud,
+      Gmail, and phone number. Not acting as you. A separate entity in your household.
     </p>
   </header>
 
@@ -15,20 +16,56 @@
     <button class="action-btn primary" onclick={() => navigateTo('getting-started')}>
       Get Started
     </button>
+    <button class="action-btn" onclick={() => navigateTo('philosophy')}>
+      Philosophy
+    </button>
     <a href="https://github.com/svenflow/dispatch" class="action-btn" target="_blank" rel="noopener">
-      View Source
+      GitHub
     </a>
   </div>
 
   <section>
-    <h2>Overview</h2>
+    <h2>The Core Idea</h2>
     <p>
-      Dispatch runs a background daemon that receives messages from iMessage and Signal,
-      routes them to per-contact Claude SDK sessions, and gives Claude full control of the
-      host machine. Each contact gets their own persistent session with appropriate access
-      based on their tier.
+      Dispatch creates an assistant that exists as its own person—with its own accounts,
+      its own phone number, its own presence. People text the assistant directly.
+      It doesn't pretend to be you or act on your behalf.
     </p>
 
+    <div class="concept-grid">
+      <div class="concept">
+        <div class="concept-title">Own Identity</div>
+        <div class="concept-desc">
+          Dedicated iCloud account, Gmail, Chrome profile. The assistant's accounts
+          are completely separate from yours.
+        </div>
+      </div>
+      <div class="concept">
+        <div class="concept-title">Own Phone Number</div>
+        <div class="concept-desc">
+          People message the assistant's number via iMessage or Signal.
+          Not forwarding your messages—direct communication.
+        </div>
+      </div>
+      <div class="concept">
+        <div class="concept-title">Own Machine</div>
+        <div class="concept-desc">
+          A dedicated Mac (Mini recommended) running 24/7 with Full Disk Access
+          and all the permissions it needs.
+        </div>
+      </div>
+      <div class="concept">
+        <div class="concept-title">Own Personality</div>
+        <div class="concept-desc">
+          Defined by SOUL.md—casual tone, genuine opinions, family member energy.
+          Customizable to match your household.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What It Does</h2>
     <div class="feature-grid">
       <div class="feature">
         <div class="feature-title">Messaging</div>
@@ -36,7 +73,7 @@
       </div>
       <div class="feature">
         <div class="feature-title">Tiered Access</div>
-        <div class="feature-desc">Admin, Partner, Family, Favorite, and Bot tiers with scoped permissions</div>
+        <div class="feature-desc">Admin, Partner, Family, Favorite tiers with scoped permissions</div>
       </div>
       <div class="feature">
         <div class="feature-title">67+ Skills</div>
@@ -44,26 +81,31 @@
       </div>
       <div class="feature">
         <div class="feature-title">Persistent Memory</div>
-        <div class="feature-desc">Full-text search across all conversations with semantic retrieval</div>
+        <div class="feature-desc">Remembers conversations, preferences, and context across sessions</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Computer Control</div>
+        <div class="feature-desc">Full access to the Mac—files, apps, browser, terminal</div>
       </div>
       <div class="feature">
         <div class="feature-title">Auto-Recovery</div>
-        <div class="feature-desc">Watchdog daemon with exponential backoff and crash notifications</div>
-      </div>
-      <div class="feature">
-        <div class="feature-title">Mid-Turn Steering</div>
-        <div class="feature-desc">New messages reach Claude between tool calls for real-time context</div>
+        <div class="feature-desc">Watchdog daemon with crash recovery and health monitoring</div>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>Quick Start</h2>
-    <pre><code>git clone https://github.com/svenflow/dispatch.git ~/dispatch
-cd ~/dispatch
-uv sync
-cp config.example.yaml config.local.yaml
-./bin/claude-assistant start</code></pre>
+    <h2>Requirements</h2>
+    <ul class="req-list">
+      <li><strong>macOS</strong> — Uses Messages.app, Contacts.app, and macOS permissions</li>
+      <li><strong>Dedicated Mac</strong> — Mac Mini recommended, runs 24/7</li>
+      <li><strong>Separate iCloud account</strong> — The assistant's own Apple ID</li>
+      <li><strong>Claude API access</strong> — Anthropic API key</li>
+    </ul>
+    <p class="note">
+      This is not a cloud service. It's software you run on your own hardware,
+      with your own API key, under your control.
+    </p>
   </section>
 
   <section>
@@ -84,12 +126,29 @@ cp config.example.yaml config.local.yaml
       </div>
       <div class="arch-arrow"></div>
       <div class="arch-row">
-        <div class="arch-box core">SDK Sessions</div>
+        <div class="arch-box core">Claude Sessions</div>
+      </div>
+      <div class="arch-arrow"></div>
+      <div class="arch-row">
+        <div class="arch-box">Skills</div>
+        <div class="arch-box">Memory</div>
+        <div class="arch-box">Tools</div>
       </div>
     </div>
-    <p class="arch-caption">
-      Messages flow through the manager daemon, get routed based on contact tier,
-      and land in per-contact Claude sessions with full conversation persistence.
+  </section>
+
+  <section>
+    <h2>Quick Start</h2>
+    <pre><code>git clone https://github.com/svenflow/dispatch.git ~/dispatch
+cd ~/dispatch
+uv sync
+cp config.example.yaml config.local.yaml
+./bin/claude-assistant start</code></pre>
+    <p class="note">
+      Full setup requires configuring macOS permissions, creating the assistant's
+      iCloud account, and setting up Contacts groups. See the
+      <button class="text-link" onclick={() => navigateTo('getting-started')}>Getting Started</button>
+      guide.
     </p>
   </section>
 </article>
@@ -101,6 +160,18 @@ cp config.example.yaml config.local.yaml
 
   .page-header {
     margin-bottom: var(--space-8);
+  }
+
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-default);
+    padding: var(--space-1) var(--space-2);
+    margin-bottom: var(--space-4);
   }
 
   .page-header h1 {
@@ -154,7 +225,35 @@ cp config.example.yaml config.local.yaml
     border-color: var(--text-secondary);
   }
 
-  /* Feature grid */
+  /* Concept grid - larger cards for the core ideas */
+  .concept-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--border-default);
+    border: 1px solid var(--border-default);
+    margin: var(--space-6) 0;
+  }
+
+  .concept {
+    padding: var(--space-6);
+    background: var(--bg-elevated);
+  }
+
+  .concept-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-bottom: var(--space-2);
+  }
+
+  .concept-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  /* Feature grid - smaller cards */
   .feature-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -180,6 +279,29 @@ cp config.example.yaml config.local.yaml
     font-size: 12px;
     color: var(--text-secondary);
     line-height: 1.5;
+  }
+
+  /* Requirements list */
+  .req-list {
+    list-style: none;
+    padding: 0;
+    margin: var(--space-4) 0;
+  }
+
+  .req-list li {
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 13px;
+  }
+
+  .req-list li:last-child {
+    border-bottom: none;
+  }
+
+  .note {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: var(--space-4);
   }
 
   /* Architecture diagram */
@@ -227,18 +349,28 @@ cp config.example.yaml config.local.yaml
     background: var(--border-strong);
   }
 
-  .arch-caption {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    text-align: center;
-    margin-top: var(--space-2);
-  }
-
   section {
     margin-bottom: var(--space-8);
   }
 
+  .text-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .text-link:hover {
+    color: var(--accent-hover);
+  }
+
   @media (max-width: 768px) {
+    .concept-grid {
+      grid-template-columns: 1fr;
+    }
+
     .feature-grid {
       grid-template-columns: 1fr;
     }

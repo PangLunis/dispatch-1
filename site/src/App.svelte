@@ -8,6 +8,7 @@
   import CLI from './routes/CLI.svelte'
   import Architecture from './routes/Architecture.svelte'
   import Configuration from './routes/Configuration.svelte'
+  import Philosophy from './routes/Philosophy.svelte'
 
   let currentPage = $state('home')
 
@@ -18,6 +19,7 @@
 
   const pages = {
     'home': Home,
+    'philosophy': Philosophy,
     'getting-started': GettingStarted,
     'tiers': Tiers,
     'skills': Skills,
