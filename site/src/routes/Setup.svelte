@@ -56,35 +56,7 @@ gh repo clone svenflow/dispatch ~/dispatch
 cd ~/dispatch
 uv sync</code></pre>
 
-    <h3>5. Authenticate Claude</h3>
-    <pre><code>claude auth</code></pre>
-    <p class="note">This logs you into Claude Code. No manual API key needed.</p>
-
-    <h3>6. Create contact groups</h3>
-    <p>In Contacts.app, create these groups:</p>
-    <div class="tier-list">
-      <div class="tier">
-        <div class="tier-name">Claude Admin</div>
-        <div class="tier-desc">Full access (add yourself here)</div>
-      </div>
-      <div class="tier">
-        <div class="tier-name">Claude Partner</div>
-        <div class="tier-desc">Full access + warm tone</div>
-      </div>
-      <div class="tier">
-        <div class="tier-name">Claude Family</div>
-        <div class="tier-desc">Read-only</div>
-      </div>
-      <div class="tier">
-        <div class="tier-name">Claude Favorites</div>
-        <div class="tier-desc">Restricted tools</div>
-      </div>
-      <div class="tier">
-        <div class="tier-name">Claude Bots</div>
-        <div class="tier-desc">AI agents</div>
-      </div>
-    </div>
-    <p class="note">Add yourself to Claude Admin to get started.</p>
+    <p>That's it! Now hand off to Claude.</p>
   </section>
 
   <!-- PART 2: CLAUDE SETUP -->
@@ -92,11 +64,12 @@ uv sync</code></pre>
     <h2>Part 2: Claude Setup</h2>
     <p class="section-desc">Hand off to Claude to finish the installation.</p>
 
-    <h3>Start Claude</h3>
+    <h3>Start Claude and log in</h3>
     <pre><code>cd ~/dispatch
 claude</code></pre>
+    <p>When prompted, log in with your Claude account (or create one). Then give Claude this prompt:</p>
 
-    <h3>Give Claude this prompt:</h3>
+    <h3>Bootstrap prompt:</h3>
     <div class="prompt-box">
       <pre><code>I want to set up Dispatch, the personal assistant system.
 
@@ -118,9 +91,9 @@ to create config.local.yaml.</code></pre>
     <ol>
       <li><strong>Keep-awake</strong> - Installs <a href="https://apps.apple.com/app/amphetamine/id937984704" target="_blank" rel="noopener">Amphetamine</a> via mas-cli, configures it to run indefinitely at startup</li>
       <li><strong>Full Disk Access</strong> - Identifies the Python binary path and walks you through adding it to FDA</li>
+      <li><strong>Contact groups</strong> - Creates the tier groups in Contacts.app and adds you to Claude Admin</li>
       <li><strong>Identity setup</strong> - Creates config.local.yaml with your info</li>
       <li><strong>Messaging core</strong> - Sets up the daemon that polls iMessage</li>
-      <li><strong>Contact tiers</strong> - Configures access control</li>
       <li><strong>Skills system</strong> - Installs modular capabilities</li>
       <li><strong>LaunchAgent</strong> - Installs the daemon to run at boot via launchd</li>
     </ol>
@@ -237,33 +210,6 @@ to create config.local.yaml.</code></pre>
     margin-bottom: var(--space-4);
   }
 
-  .tier-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    background: var(--border-default);
-    border: 1px solid var(--border-default);
-    margin: var(--space-4) 0;
-  }
-
-  .tier {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-2) var(--space-4);
-    background: var(--bg-elevated);
-    font-size: 12px;
-  }
-
-  .tier-name {
-    font-family: var(--font-mono);
-    font-weight: 500;
-  }
-
-  .tier-desc {
-    color: var(--text-tertiary);
-  }
-
   .prompt-box {
     background: var(--bg-elevated);
     border: 1px solid var(--border-default);
@@ -301,11 +247,4 @@ to create config.local.yaml.</code></pre>
     color: var(--text-tertiary);
   }
 
-  @media (max-width: 768px) {
-    .tier {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: var(--space-1);
-    }
-  }
 </style>
