@@ -9,6 +9,7 @@
     green: '#59a14f',
     teal: '#76b7b2',
     purple: '#af7aa1',
+    red: '#e15759',
   };
 
   function animate() {
@@ -46,7 +47,7 @@
     </div>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 900 700" class="architecture-svg">
+      <svg viewBox="0 0 900 750" class="architecture-svg">
         <defs>
           <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="4" result="blur"/>
@@ -207,8 +208,33 @@
           </circle>
         {/if}
 
+        <!-- ═══════════════ WATCHDOG (below daemon) ═══════════════ -->
+        <g transform="translate(320, 280)">
+          <g class="watchdog">
+            <!-- Watchdog box -->
+            <rect x="0" y="0" width="240" height="100" rx="12" class="watchdog-box"/>
+
+            <!-- Header -->
+            <rect x="0" y="0" width="240" height="32" rx="12" fill="{colors.red}" opacity="0.9"/>
+            <rect x="0" y="16" width="240" height="16" fill="{colors.red}" opacity="0.9"/>
+            <text x="16" y="22" class="watchdog-title">🛡️ Watchdog</text>
+            <text x="224" y="22" class="watchdog-interval">every 60s</text>
+
+            <!-- Watchdog internals -->
+            <g transform="translate(12, 44)">
+              <text x="0" y="14" class="watchdog-text">Monitors daemon health</text>
+              <text x="0" y="32" class="watchdog-text">On crash → spawns healer Claude</text>
+              <text x="0" y="50" class="watchdog-text">Exponential backoff on failures</text>
+            </g>
+
+            <!-- Health check arrow (watchdog → daemon) -->
+            <path d="M 120 0 L 120 -20" stroke="{colors.red}" stroke-width="2" stroke-dasharray="4 2" fill="none" opacity="0.6"/>
+            <circle cx="120" cy="-24" r="4" fill="{colors.red}" opacity="0.6"/>
+          </g>
+        </g>
+
         <!-- ═══════════════ BOTTOM: EXPLANATION ═══════════════ -->
-        <g transform="translate(40, 440)">
+        <g transform="translate(40, 480)">
           <rect x="0" y="0" width="820" height="220" rx="12" class="explain-box"/>
 
           <text x="20" y="32" class="explain-title">How inject-prompt works</text>
@@ -242,7 +268,7 @@
         </g>
 
         <!-- Legend -->
-        <g transform="translate(720, 460)">
+        <g transform="translate(720, 500)">
           <g transform="translate(0, 0)">
             <circle r="6" cx="6" cy="6" fill="{colors.blue}"/>
             <text x="20" y="10" class="legend-text">Message in</text>
@@ -254,6 +280,10 @@
           <g transform="translate(0, 48)">
             <rect x="0" y="0" width="12" height="12" rx="3" fill="{colors.orange}"/>
             <text x="20" y="10" class="legend-text">Active session</text>
+          </g>
+          <g transform="translate(0, 72)">
+            <rect x="0" y="0" width="12" height="12" rx="3" fill="{colors.red}"/>
+            <text x="20" y="10" class="legend-text">Watchdog</text>
           </g>
         </g>
       </svg>
@@ -616,6 +646,34 @@
   .legend-text {
     font-family: var(--font-sans);
     font-size: 11px;
+    fill: #57534e;
+  }
+
+  /* Watchdog styles */
+  .watchdog-box {
+    fill: white;
+    stroke: #e7e5e4;
+    stroke-width: 2;
+    filter: url(#shadow);
+  }
+
+  .watchdog-title {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    fill: white;
+  }
+
+  .watchdog-interval {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    fill: rgba(255,255,255,0.8);
+    text-anchor: end;
+  }
+
+  .watchdog-text {
+    font-family: var(--font-sans);
+    font-size: 10px;
     fill: #57534e;
   }
 
