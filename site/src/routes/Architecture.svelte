@@ -114,19 +114,54 @@
           {/if}
         </g>
 
-        <!-- ═══════════════ FLOW ARROW: PHONE → DAEMON ═══════════════ -->
-        <g class="flow-section" class:active={step >= 1}>
-          <path d="M 220 180 C 280 180, 280 180, 320 180" class="flow-path" class:active={step >= 1}/>
-          {#if step >= 1 && step < 3}
-            <g class="message-packet">
-              <rect x="-40" y="-16" width="80" height="32" rx="12" fill="{colors.blue}" filter="url(#glow)">
-                <animateMotion dur="0.6s" fill="freeze" path="M 220 180 C 280 180, 280 180, 320 180"/>
-              </rect>
-              <text x="0" y="4" class="packet-text" text-anchor="middle">
-                <animateMotion dur="0.6s" fill="freeze" path="M 220 180 C 280 180, 280 180, 320 180"/>
-                message
-              </text>
-            </g>
+        <!-- ═══════════════ INCOMING PATH: PHONE → DAEMON → AGENT ═══════════════ -->
+        <g class="flow-incoming">
+          <!-- Path line: Phone → Daemon -->
+          <path d="M 220 160 L 320 160" class="flow-path-static incoming"/>
+          <!-- Arrowhead -->
+          <polygon points="320,160 310,154 310,166" fill="{colors.blue}"/>
+
+          <!-- Path line: Daemon → Agent (via inject-prompt) -->
+          <path d="M 560 160 C 590 160, 600 100, 620 100" class="flow-path-static incoming"/>
+          <!-- Arrowhead -->
+          <polygon points="620,100 610,94 610,106" fill="{colors.blue}"/>
+
+          <!-- Label: inject-prompt -->
+          <g transform="translate(570, 130)">
+            <rect x="-40" y="-10" width="80" height="20" rx="4" fill="{colors.blue}" opacity="0.15"/>
+            <text x="0" y="4" class="flow-label" fill="{colors.blue}">inject-prompt</text>
+          </g>
+
+          <!-- Animated packet during animation -->
+          {#if step >= 1 && step < 5}
+            <circle r="8" fill="{colors.blue}" filter="url(#glow)">
+              {#if step < 3}
+                <animateMotion dur="0.6s" fill="freeze" path="M 220 160 L 320 160"/>
+              {:else}
+                <animateMotion dur="0.6s" fill="freeze" path="M 560 160 C 590 160, 600 100, 620 100"/>
+              {/if}
+            </circle>
+          {/if}
+        </g>
+
+        <!-- ═══════════════ OUTGOING PATH: AGENT → PHONE ═══════════════ -->
+        <g class="flow-outgoing">
+          <!-- Path line: Agent → Phone (via send-sms) - curves below -->
+          <path d="M 620 140 C 500 180, 400 280, 220 200" class="flow-path-static outgoing"/>
+          <!-- Arrowhead at phone end -->
+          <polygon points="220,200 232,196 228,206" fill="{colors.green}"/>
+
+          <!-- Label: send-sms -->
+          <g transform="translate(420, 240)">
+            <rect x="-35" y="-10" width="70" height="20" rx="4" fill="{colors.green}" opacity="0.15"/>
+            <text x="0" y="4" class="flow-label" fill="{colors.green}">send-sms</text>
+          </g>
+
+          <!-- Animated packet during animation -->
+          {#if step >= 6}
+            <circle r="8" fill="{colors.green}" filter="url(#glow)">
+              <animateMotion dur="0.8s" fill="freeze" path="M 620 140 C 500 180, 400 280, 220 200"/>
+            </circle>
           {/if}
         </g>
 
@@ -192,21 +227,6 @@
           </g>
         </g>
 
-        <!-- ═══════════════ FLOW ARROW: DAEMON → SESSION ═══════════════ -->
-        {#if step >= 4}
-          <path d="M 560 180 C 590 180, 590 100, 620 100" class="flow-path active"/>
-          <circle r="6" fill="{colors.orange}" filter="url(#glow)">
-            <animateMotion dur="0.4s" fill="freeze" path="M 560 180 C 590 180, 590 100, 620 100"/>
-          </circle>
-        {/if}
-
-        <!-- ═══════════════ FLOW ARROW: SESSION → PHONE (RESPONSE) ═══════════════ -->
-        {#if step >= 6}
-          <path d="M 620 160 C 400 200, 300 350, 220 280" class="flow-path response"/>
-          <circle r="6" fill="{colors.green}" filter="url(#glow)">
-            <animateMotion dur="0.8s" fill="freeze" path="M 620 160 C 400 200, 300 350, 220 280"/>
-          </circle>
-        {/if}
 
         <!-- ═══════════════ WATCHDOG (below daemon) ═══════════════ -->
         <g transform="translate(320, 280)">
@@ -451,6 +471,28 @@
   .flow-path.response {
     stroke: #59a14f;
     stroke-dasharray: 8 4;
+  }
+
+  .flow-path-static {
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  .flow-path-static.incoming {
+    stroke: #4e79a7;
+  }
+
+  .flow-path-static.outgoing {
+    stroke: #59a14f;
+    stroke-dasharray: 6 3;
+  }
+
+  .flow-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    text-anchor: middle;
   }
 
   .packet-text {
