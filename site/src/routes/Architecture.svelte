@@ -69,6 +69,9 @@
           <marker id="arrowGray" markerWidth="6" markerHeight="6" refX="5" refY="2.5" orient="auto">
             <path d="M0,0 L0,5 L6,2.5 z" fill="{colors.gray}"/>
           </marker>
+          <marker id="arrowOrange" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="{colors.orange}"/>
+          </marker>
         </defs>
 
         <!-- ════════════════════════════════════════════════════════════ -->
@@ -184,12 +187,11 @@
           <!-- Branch node (small circle) -->
           <circle cx="295" cy="310" r="5" fill="{colors.blue}"/>
 
-          <!-- Fan lines from branch node - straight lines to session centers -->
+          <!-- Fan lines from branch node - faded for idle sessions -->
           <path d="M 295 315 L 100 365" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
           <path d="M 295 315 L 210 365" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
-          <path d="M 295 315 L 350 365" class="flow-path-thin" marker-end="url(#arrowGray)"/>
-
-          <text x="365" y="345" class="flow-label-small" fill="{colors.blue}">→ selected</text>
+          <!-- Active/selected session path - highlighted in orange -->
+          <path d="M 295 315 L 350 365" class="flow-path-solid" stroke="{colors.orange}" stroke-width="2.5" marker-end="url(#arrowOrange)"/>
 
           {#if step === 5}
             <circle r="4" fill="{colors.orange}" filter="url(#glow)">
@@ -291,16 +293,16 @@
           <text x="100" y="30" class="node-sublabel">delivers response</text>
         </g>
 
-        <!-- Return path to 1:1 chat - goes LEFT side, enters chat from left edge -->
+        <!-- Return path - goes RIGHT side, enters 1:1 chat from right edge -->
         <g class="flow-return">
-          <!-- Path: left from send-sms, up the far left, then right into left edge of 1:1 chat -->
-          <path d="M 170 695 L 50 695 L 50 50 L 100 50"
+          <!-- Path: right from send-sms, up the right side, left to 1:1 chat right edge -->
+          <path d="M 370 695 L 460 695 L 460 50 L 230 50"
                 class="flow-path-solid outgoing" marker-end="url(#arrowGreen)"/>
-          <text x="35" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
+          <text x="470" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
           {#if step === 9}
             <circle r="5" fill="{colors.green}" filter="url(#glow)">
               <animateMotion dur="1.0s" fill="freeze"
-                path="M 170 695 L 50 695 L 50 50 L 100 50"/>
+                path="M 370 695 L 460 695 L 460 50 L 230 50"/>
             </circle>
           {/if}
         </g>
