@@ -1,24 +1,28 @@
 <script>
-  let selectedComponent = $state(null);
-  let animatingMessage = $state(false);
-  let messageStep = $state(0);
+  let animatingMessage = false;
+  let messageStep = 0;
+  let hoveredNode = null;
 
-  const contacts = [
-    { id: 'admin', name: 'Admin', tier: 'admin', color: '#ea580c' },
-    { id: 'partner', name: 'Partner', tier: 'partner', color: '#7c3aed' },
-    { id: 'family', name: 'Family', tier: 'family', color: '#0891b2' },
-  ];
-
-  function selectComponent(id) {
-    selectedComponent = selectedComponent === id ? null : id;
-  }
+  // Observable-style Tableau 10 colors
+  const colors = {
+    blue: '#4e79a7',
+    orange: '#f28e2c',
+    red: '#e15759',
+    teal: '#76b7b2',
+    green: '#59a14f',
+    yellow: '#edc949',
+    purple: '#af7aa1',
+    pink: '#ff9da7',
+    brown: '#9c755f',
+    gray: '#bab0ab'
+  };
 
   function simulateMessage() {
     if (animatingMessage) return;
     animatingMessage = true;
     messageStep = 0;
 
-    const steps = [1, 2, 3, 4, 5];
+    const steps = [1, 2, 3, 4, 5, 6, 7];
     let i = 0;
     const interval = setInterval(() => {
       messageStep = steps[i];
@@ -28,7 +32,7 @@
         setTimeout(() => {
           animatingMessage = false;
           messageStep = 0;
-        }, 1500);
+        }, 2000);
       }
     }, 600);
   }
@@ -37,340 +41,284 @@
 <article class="page">
   <header class="page-header">
     <h1>Architecture</h1>
-    <p class="lead">How Dispatch isolates contacts and orchestrates agent sessions.</p>
+    <p class="lead">How Dispatch isolates contacts and orchestrates agent sessions</p>
   </header>
 
-  <!-- Interactive System Diagram -->
   <section class="diagram-section">
     <div class="diagram-header">
-      <h2>System Overview</h2>
-      <button class="simulate-btn" onclick={simulateMessage} disabled={animatingMessage}>
-        {animatingMessage ? 'Simulating...' : 'Simulate Message Flow'}
+      <button class="simulate-btn" on:click={simulateMessage} disabled={animatingMessage}>
+        {animatingMessage ? 'Simulating...' : '▶ Trace Message Flow'}
       </button>
     </div>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 800 500" class="architecture-svg">
-        <!-- Background grid -->
+      <svg viewBox="0 0 880 780" class="architecture-svg">
         <defs>
-          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e7e5e4" stroke-width="0.5"/>
-          </pattern>
-
-          <!-- Gradient for message flow -->
-          <linearGradient id="flowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stop-color="#ea580c" stop-opacity="0"/>
-            <stop offset="50%" stop-color="#ea580c" stop-opacity="1"/>
-            <stop offset="100%" stop-color="#ea580c" stop-opacity="0"/>
-          </linearGradient>
-
-          <!-- Glow filter -->
-          <filter id="glow">
-            <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+          <!-- Glow filter for animated elements -->
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="blur"/>
             <feMerge>
-              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="blur"/>
               <feMergeNode in="SourceGraphic"/>
             </feMerge>
           </filter>
+
+          <!-- Gradient for flow lines -->
+          <linearGradient id="flowGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="{colors.blue}" stop-opacity="0.8"/>
+            <stop offset="100%" stop-color="{colors.teal}" stop-opacity="0.8"/>
+          </linearGradient>
         </defs>
 
-        <rect width="800" height="500" fill="url(#grid)"/>
+        <!-- ═══════════════ STAGE 1: SOURCES ═══════════════ -->
+        <g transform="translate(40, 30)">
+          <text x="0" y="0" class="stage-label">① sources</text>
+        </g>
 
-        <!-- Input Sources -->
-        <g class="input-sources" transform="translate(50, 60)">
-          <text x="60" y="-20" class="section-label">Message Sources</text>
+        <!-- iMessage node -->
+        <g transform="translate(80, 50)"
+           class="node"
+           class:active={messageStep >= 1}
+           on:mouseenter={() => hoveredNode = 'imessage'}
+           on:mouseleave={() => hoveredNode = null}
+           role="button"
+           tabindex="0">
+          <rect x="0" y="0" width="140" height="56" rx="4" class="node-box" style="--node-color: {colors.blue}"/>
+          <text x="70" y="28" class="node-title">iMessage</text>
+          <text x="70" y="44" class="node-detail">polls chat.db</text>
+        </g>
 
-          <!-- iMessage -->
-          <g
-            class="source-box"
-            class:active={messageStep >= 1}
-            onclick={() => selectComponent('imessage')}
-          >
-            <rect x="0" y="0" width="120" height="50" rx="0" class="box"/>
-            <text x="60" y="30" class="box-label">iMessage</text>
-            {#if messageStep >= 1}
-              <circle cx="60" cy="25" r="4" class="pulse-dot"/>
-            {/if}
+        <!-- Signal node -->
+        <g transform="translate(260, 50)" class="node">
+          <rect x="0" y="0" width="140" height="56" rx="4" class="node-box" style="--node-color: {colors.teal}"/>
+          <text x="70" y="28" class="node-title">Signal</text>
+          <text x="70" y="44" class="node-detail">JSON-RPC socket</text>
+        </g>
+
+        <!-- chat_id reference -->
+        <g transform="translate(500, 50)">
+          <rect x="0" y="0" width="200" height="56" rx="4" class="reference-box"/>
+          <text x="100" y="18" class="reference-label">chat_id formats</text>
+          <text x="16" y="36" class="code mono">+16175969496</text>
+          <text x="130" y="36" class="code-hint">individual</text>
+          <text x="16" y="50" class="code mono">b3d258b9a4de...</text>
+          <text x="130" y="50" class="code-hint">group</text>
+        </g>
+
+        <!-- Flow line: sources → daemon -->
+        <path d="M 150 106 C 150 140, 150 140, 200 170"
+              class="flow-line" class:active={messageStep >= 2}/>
+        <path d="M 330 106 C 330 140, 330 140, 280 170"
+              class="flow-line"/>
+
+        {#if messageStep >= 2}
+          <circle r="6" fill="{colors.blue}" filter="url(#glow)">
+            <animateMotion dur="0.4s" fill="freeze" path="M 150 106 C 150 140, 150 140, 200 170"/>
+          </circle>
+        {/if}
+
+        <!-- ═══════════════ STAGE 2: DAEMON ═══════════════ -->
+        <g transform="translate(40, 150)">
+          <text x="0" y="0" class="stage-label">② manager daemon</text>
+        </g>
+
+        <!-- Daemon node -->
+        <g transform="translate(80, 170)"
+           class="node primary"
+           class:active={messageStep >= 2 && messageStep <= 4}>
+          <rect x="0" y="0" width="320" height="72" rx="4" class="node-box-primary"/>
+          <text x="160" y="28" class="node-title-primary">Manager Daemon</text>
+          <text x="160" y="48" class="node-detail-primary">contact lookup • tier check • session routing</text>
+          <text x="160" y="62" class="node-detail-primary">inject-prompt wraps messages</text>
+        </g>
+
+        <!-- Contacts.app -->
+        <g transform="translate(460, 170)">
+          <rect x="0" y="0" width="180" height="72" rx="4" class="reference-box"/>
+          <text x="90" y="18" class="reference-label">Contacts.app</text>
+          <text x="16" y="38" class="code mono small">phone → name</text>
+          <text x="16" y="52" class="code mono small">phone → tier (admin, family...)</text>
+          <text x="16" y="66" class="code mono small">phone → notes</text>
+        </g>
+
+        <path d="M 400 206 L 460 206" class="connector-line" class:active={messageStep >= 3}/>
+
+        <!-- Flow line: daemon → inject-prompt -->
+        <path d="M 240 242 L 240 290" class="flow-line" class:active={messageStep >= 4}/>
+
+        <!-- ═══════════════ STAGE 3: INJECT-PROMPT ═══════════════ -->
+        <g transform="translate(40, 270)">
+          <text x="0" y="0" class="stage-label">③ inject-prompt</text>
+        </g>
+
+        <g transform="translate(80, 290)">
+          <rect x="0" y="0" width="560" height="110" rx="4" class="code-box"/>
+
+          <!-- Before transformation -->
+          <text x="16" y="24" class="code-comment"># incoming message</text>
+          <text x="16" y="44" class="code-string">"hey what's the weather?"</text>
+
+          <!-- Arrow -->
+          <g transform="translate(250, 30)">
+            <path d="M 0 14 L 30 14" stroke="{colors.orange}" stroke-width="2" fill="none"/>
+            <polygon points="30,14 24,10 24,18" fill="{colors.orange}"/>
           </g>
 
-          <!-- Signal -->
-          <g class="source-box" transform="translate(140, 0)">
-            <rect x="0" y="0" width="120" height="50" rx="0" class="box"/>
-            <text x="60" y="30" class="box-label">Signal</text>
-          </g>
+          <!-- After transformation -->
+          <text x="300" y="24" class="code-comment"># wrapped with context</text>
+          <text x="300" y="44" class="code-tag">---SMS FROM Nikhil (admin)---</text>
+          <text x="300" y="60" class="code-string">"hey what's the weather?"</text>
+          <text x="300" y="76" class="code-tag">---END SMS---</text>
+
+          <text x="16" y="100" class="code-hint">Tags identify sender, tier, separate from tool output</text>
         </g>
 
-        <!-- Flow lines from sources to daemon -->
-        <g class="flow-lines">
-          <path d="M 110 110 L 110 160 L 400 160 L 400 180" class="flow-line" class:active={messageStep >= 2}/>
-          <path d="M 250 110 L 250 160 L 400 160 L 400 180" class="flow-line"/>
-
-          {#if messageStep >= 2}
-            <circle r="5" fill="#ea580c" filter="url(#glow)">
-              <animateMotion dur="0.5s" fill="freeze" path="M 110 110 L 110 160 L 400 160 L 400 180"/>
-            </circle>
-          {/if}
-        </g>
-
-        <!-- Manager Daemon - Central Hub -->
-        <g
-          class="daemon-hub"
-          transform="translate(300, 180)"
-          class:active={messageStep >= 2 && messageStep <= 4}
-          onclick={() => selectComponent('daemon')}
-        >
-          <rect x="0" y="0" width="200" height="80" rx="0" class="box primary"/>
-          <text x="100" y="35" class="box-label primary">Manager Daemon</text>
-          <text x="100" y="55" class="box-sublabel">Polls 100ms | Routes | Orchestrates</text>
-
-          {#if selectedComponent === 'daemon'}
-            <g class="detail-popup" transform="translate(210, 0)">
-              <rect x="0" y="0" width="180" height="100" class="popup-bg"/>
-              <text x="10" y="20" class="popup-title">manager.py</text>
-              <text x="10" y="40" class="popup-item">- Polls Messages.app</text>
-              <text x="10" y="55" class="popup-item">- Listens Signal socket</text>
-              <text x="10" y="70" class="popup-item">- Contact lookup</text>
-              <text x="10" y="85" class="popup-item">- Session routing</text>
-            </g>
-          {/if}
-        </g>
-
-        <!-- Contact Lookup -->
-        <g class="lookup-step" transform="translate(520, 190)" class:active={messageStep >= 3}>
-          <rect x="0" y="0" width="100" height="60" rx="0" class="box subtle"/>
-          <text x="50" y="25" class="box-label small">Contact</text>
-          <text x="50" y="42" class="box-label small">Lookup</text>
-        </g>
-
-        <!-- Tier routing line -->
-        <path d="M 500 220 L 520 220" class="flow-line" class:active={messageStep >= 3}/>
-
-        <!-- Contact Sessions (Isolated Blocks) -->
-        <g class="contact-sessions" transform="translate(100, 320)">
-          <text x="300" y="-30" class="section-label">Isolated Agent Sessions</text>
-
-          {#each contacts as contact, i}
-            <g
-              class="contact-block"
-              transform="translate({i * 200}, 0)"
-              class:active={messageStep >= 4 && i === 0}
-              onclick={() => selectComponent(contact.id)}
-            >
-              <!-- Session container -->
-              <rect x="0" y="0" width="180" height="140" rx="0" class="session-box" style="--accent: {contact.color}"/>
-
-              <!-- Header -->
-              <rect x="0" y="0" width="180" height="30" class="session-header" style="fill: {contact.color}"/>
-              <text x="90" y="20" class="session-title">{contact.name}</text>
-              <text x="170" y="20" class="tier-badge">{contact.tier}</text>
-
-              <!-- Transcript folder -->
-              <g transform="translate(10, 40)">
-                <rect x="0" y="0" width="160" height="25" class="folder-box"/>
-                <text x="8" y="17" class="folder-path">~/transcripts/{contact.id}/</text>
-              </g>
-
-              <!-- SDK Session -->
-              <g transform="translate(10, 75)">
-                <rect x="0" y="0" width="160" height="25" class="process-box"/>
-                <text x="8" y="17" class="process-label">SDK Session (opus)</text>
-              </g>
-
-              <!-- Skills access -->
-              <g transform="translate(10, 110)">
-                <rect x="0" y="0" width="160" height="20" class="skills-box"/>
-                <text x="8" y="14" class="skills-label">.claude/ → ~/.claude/skills/</text>
-              </g>
-
-              {#if selectedComponent === contact.id}
-                <g class="detail-popup" transform="translate(0, 145)">
-                  <rect x="0" y="0" width="180" height="70" class="popup-bg"/>
-                  <text x="10" y="18" class="popup-title">Isolation guarantees:</text>
-                  <text x="10" y="35" class="popup-item">- Own transcript folder</text>
-                  <text x="10" y="50" class="popup-item">- Own SDK process</text>
-                  <text x="10" y="65" class="popup-item">- Shared skills (read-only)</text>
-                </g>
-              {/if}
-            </g>
-          {/each}
-        </g>
-
-        <!-- Flow lines from daemon to sessions -->
-        <g class="distribution-lines">
-          <path d="M 400 260 L 400 290 L 190 290 L 190 320" class="flow-line" class:active={messageStep >= 4}/>
-          <path d="M 400 260 L 400 290 L 390 290 L 390 320" class="flow-line"/>
-          <path d="M 400 260 L 400 290 L 590 290 L 590 320" class="flow-line"/>
-
-          {#if messageStep >= 4}
-            <circle r="5" fill="#ea580c" filter="url(#glow)">
-              <animateMotion dur="0.4s" fill="freeze" path="M 400 260 L 400 290 L 190 290 L 190 320"/>
-            </circle>
-          {/if}
-        </g>
-
-        <!-- Response flow (from session back out) -->
+        <!-- Flow line: inject-prompt → session -->
+        <path d="M 240 400 L 240 450" class="flow-line" class:active={messageStep >= 5}/>
         {#if messageStep >= 5}
+          <circle r="6" fill="{colors.blue}" filter="url(#glow)">
+            <animateMotion dur="0.3s" fill="freeze" path="M 240 400 L 240 450"/>
+          </circle>
+        {/if}
+
+        <!-- ═══════════════ STAGE 4: SESSION ═══════════════ -->
+        <g transform="translate(40, 430)">
+          <text x="0" y="0" class="stage-label">④ sdk session</text>
+        </g>
+
+        <!-- Session detail -->
+        <g transform="translate(80, 450)" class="node" class:active={messageStep >= 5}>
+          <rect x="0" y="0" width="380" height="180" rx="4" class="node-box" style="--node-color: {colors.orange}"/>
+
+          <!-- Session header -->
+          <rect x="0" y="0" width="380" height="32" rx="4" fill="{colors.orange}"/>
+          <rect x="0" y="16" width="380" height="16" fill="{colors.orange}"/>
+          <text x="16" y="22" class="session-name">imessage/_16175969496</text>
+          <text x="364" y="22" class="session-tier">admin</text>
+
+          <!-- Transcript simulation -->
+          <g transform="translate(12, 42)">
+            <text x="0" y="14" class="code-comment small"># what claude sees</text>
+
+            <!-- Hidden turns -->
+            <rect x="0" y="22" width="356" height="20" rx="2" class="transcript-row hidden"/>
+            <text x="8" y="36" class="transcript-text dim">Assistant: [tool call] Read("/weather.json")</text>
+
+            <rect x="0" y="46" width="356" height="20" rx="2" class="transcript-row hidden"/>
+            <text x="8" y="60" class="transcript-text dim">Tool result: &#123;"temp": 45, "condition": "cloudy"&#125;</text>
+
+            <rect x="0" y="70" width="356" height="20" rx="2" class="transcript-row hidden"/>
+            <text x="8" y="84" class="transcript-text dim">Assistant: [thinking] The weather is...</text>
+
+            <!-- Visible turn -->
+            <rect x="0" y="98" width="356" height="32" rx="2" class="transcript-row visible"/>
+            <text x="8" y="112" class="transcript-text bright">Human: ---SMS FROM Nikhil (admin)---</text>
+            <text x="8" y="126" class="transcript-text bright">"hey what's the weather?"</text>
+          </g>
+        </g>
+
+        <!-- Transcript structure -->
+        <g transform="translate(500, 450)">
+          <rect x="0" y="0" width="220" height="180" rx="4" class="reference-box"/>
+          <text x="110" y="20" class="reference-label">~/transcripts/</text>
+
+          <!-- Tree structure -->
+          <g transform="translate(16, 36)">
+            <!-- imessage branch -->
+            <text x="0" y="12" class="folder-name">imessage/</text>
+            <path d="M 8 18 L 8 56 M 8 30 L 20 30 M 8 48 L 20 48" class="tree-connector"/>
+
+            <text x="24" y="34" class="folder-item">_16175969496/</text>
+            <rect x="112" y="22" width="48" height="16" rx="8" fill="rgba(242, 142, 44, 0.2)"/>
+            <text x="136" y="34" class="tier-pill" style="fill: {colors.orange}">admin</text>
+
+            <text x="24" y="52" class="folder-item">b3d258b9.../</text>
+            <rect x="100" y="40" width="48" height="16" rx="8" fill="rgba(118, 183, 178, 0.2)"/>
+            <text x="124" y="52" class="tier-pill" style="fill: {colors.teal}">group</text>
+
+            <!-- signal branch -->
+            <text x="0" y="80" class="folder-name">signal/</text>
+            <path d="M 8 86 L 8 124 M 8 98 L 20 98 M 8 116 L 20 116" class="tree-connector"/>
+
+            <text x="24" y="102" class="folder-item">_16175969496/</text>
+            <rect x="112" y="90" width="48" height="16" rx="8" fill="rgba(242, 142, 44, 0.2)"/>
+            <text x="136" y="102" class="tier-pill" style="fill: {colors.orange}">admin</text>
+
+            <text x="24" y="120" class="folder-item">group-b64.../</text>
+            <rect x="100" y="108" width="48" height="16" rx="8" fill="rgba(89, 161, 79, 0.2)"/>
+            <text x="124" y="120" class="tier-pill" style="fill: {colors.green}">group</text>
+          </g>
+
+          <text x="110" y="170" class="folder-note">+ replaced with _ in paths</text>
+        </g>
+
+        <!-- Flow line: session → response -->
+        <path d="M 240 630 L 240 680" class="flow-line" class:active={messageStep >= 6}/>
+
+        <!-- ═══════════════ STAGE 5: RESPONSE ═══════════════ -->
+        <g transform="translate(40, 660)">
+          <text x="0" y="0" class="stage-label">⑤ response</text>
+        </g>
+
+        <g transform="translate(80, 680)" class:active={messageStep >= 6}>
+          <rect x="0" y="0" width="560" height="70" rx="4" class="code-box"/>
+          <text x="16" y="26" class="code-comment"># claude sends response</text>
+          <text x="16" y="48" class="code mono">send-sms "+16175969496" "It's 45°F and cloudy"</text>
+          <text x="16" y="64" class="code-hint">→ AppleScript → Messages.app → user's phone</text>
+        </g>
+
+        <!-- Response arc back to top -->
+        {#if messageStep >= 7}
           <g class="response-flow">
-            <path d="M 190 460 L 190 480 L 50 480 L 50 110" class="flow-line response active"/>
-            <circle r="5" fill="#16a34a" filter="url(#glow)">
-              <animateMotion dur="0.6s" fill="freeze" path="M 190 460 L 190 480 L 50 480 L 50 110"/>
+            <path d="M 640 710 Q 780 710, 780 400 Q 780 90, 700 90"
+                  class="response-arc" fill="none"/>
+            <circle r="6" fill="{colors.green}" filter="url(#glow)">
+              <animateMotion dur="0.7s" fill="freeze" path="M 640 710 Q 780 710, 780 400 Q 780 90, 700 90"/>
             </circle>
           </g>
         {/if}
 
         <!-- Legend -->
-        <g class="legend" transform="translate(620, 420)">
-          <text x="0" y="0" class="legend-title">Click to explore</text>
-          <g transform="translate(0, 15)">
-            <rect x="0" y="0" width="12" height="12" fill="#ea580c"/>
-            <text x="18" y="10" class="legend-item">Message in</text>
+        <g transform="translate(720, 680)">
+          <rect x="0" y="0" width="120" height="70" rx="4" class="legend-box"/>
+          <text x="60" y="18" class="legend-title">Legend</text>
+          <g transform="translate(12, 28)">
+            <circle r="5" cx="5" cy="6" fill="{colors.blue}"/>
+            <text x="18" y="10" class="legend-item">message in</text>
           </g>
-          <g transform="translate(0, 32)">
-            <rect x="0" y="0" width="12" height="12" fill="#16a34a"/>
-            <text x="18" y="10" class="legend-item">Response out</text>
+          <g transform="translate(12, 46)">
+            <circle r="5" cx="5" cy="6" fill="{colors.green}"/>
+            <text x="18" y="10" class="legend-item">response out</text>
           </g>
         </g>
       </svg>
     </div>
   </section>
 
-  <!-- Key Concepts -->
+  <!-- Concepts -->
   <section>
-    <h2>Key Isolation Principles</h2>
-
-    <div class="principles-grid">
-      <div class="principle">
-        <div class="principle-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-          </svg>
-        </div>
-        <div class="principle-content">
-          <h3>Transcript Isolation</h3>
-          <p>Each contact gets their own folder: <code>~/transcripts/{backend}/{chat_id}/</code></p>
-          <p class="detail">Conversation history, context files, and CLAUDE.md are all per-contact. No cross-contamination.</p>
+    <h2>Key Concepts</h2>
+    <div class="concepts">
+      <div class="concept">
+        <div class="concept-marker" style="background: {colors.orange}"></div>
+        <div class="concept-content">
+          <h3>inject-prompt</h3>
+          <p>The daemon wraps incoming messages with <code>---SMS FROM---</code> tags so Claude knows who sent them and their permission tier.</p>
         </div>
       </div>
-
-      <div class="principle">
-        <div class="principle-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="3" width="20" height="14" rx="2"/>
-            <path d="M8 21h8M12 17v4"/>
-          </svg>
+      <div class="concept">
+        <div class="concept-marker" style="background: {colors.blue}"></div>
+        <div class="concept-content">
+          <h3>Hidden vs Visible</h3>
+          <p>Tool calls and internal reasoning are hidden. Only injected SMS messages appear as "Human:" turns. Responses go via <code>send-sms</code>.</p>
         </div>
-        <div class="principle-content">
+      </div>
+      <div class="concept">
+        <div class="concept-marker" style="background: {colors.teal}"></div>
+        <div class="concept-content">
           <h3>Session Isolation</h3>
-          <p>Each contact gets their own SDK session running in the daemon process.</p>
-          <p class="detail">Sessions are resumed across restarts. Context is persisted. No shared state between contacts.</p>
+          <p>Each contact gets their own SDK session in <code>~/transcripts/&#123;backend&#125;/&#123;chat_id&#125;/</code>. Sessions persist across daemon restarts.</p>
         </div>
-      </div>
-
-      <div class="principle">
-        <div class="principle-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
-          </svg>
-        </div>
-        <div class="principle-content">
-          <h3>Shared Skills</h3>
-          <p>Skills are symlinked: <code>.claude → ~/.claude</code></p>
-          <p class="detail">All sessions access the same skill definitions (read-only). Updates propagate instantly.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Message Flow Detail -->
-  <section>
-    <h2>Message Flow</h2>
-
-    <div class="flow-steps">
-      <div class="flow-step-item">
-        <div class="step-number">1</div>
-        <div class="step-content">
-          <h3>Message Arrives</h3>
-          <p>Manager daemon polls Messages.app (100ms) or receives Signal via JSON-RPC socket.</p>
-        </div>
-      </div>
-
-      <div class="flow-step-item">
-        <div class="step-number">2</div>
-        <div class="step-content">
-          <h3>Contact Lookup</h3>
-          <p>Phone number → Contacts.app SQLite → Name, tier, notes.</p>
-        </div>
-      </div>
-
-      <div class="flow-step-item">
-        <div class="step-number">3</div>
-        <div class="step-content">
-          <h3>Tier Check</h3>
-          <p>Unknown tier = ignored. Known tier = route to session.</p>
-        </div>
-      </div>
-
-      <div class="flow-step-item">
-        <div class="step-number">4</div>
-        <div class="step-content">
-          <h3>Session Injection</h3>
-          <p>Message injected into contact's SDK session. Claude processes with full context.</p>
-        </div>
-      </div>
-
-      <div class="flow-step-item">
-        <div class="step-number">5</div>
-        <div class="step-content">
-          <h3>Response</h3>
-          <p>Claude calls <code>send-sms</code> or <code>send-signal</code> CLI explicitly. No auto-send.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Components -->
-  <section>
-    <h2>Core Components</h2>
-
-    <div class="components-grid">
-      <div class="component-card">
-        <div class="component-header">
-          <span class="component-name">manager.py</span>
-          <span class="component-role">Orchestrator</span>
-        </div>
-        <ul>
-          <li>Polls Messages.app every 100ms</li>
-          <li>Listens to Signal JSON-RPC socket</li>
-          <li>Routes messages to sessions</li>
-          <li>Manages session lifecycle</li>
-        </ul>
-      </div>
-
-      <div class="component-card">
-        <div class="component-header">
-          <span class="component-name">sdk_backend.py</span>
-          <span class="component-role">Session Factory</span>
-        </div>
-        <ul>
-          <li>Creates per-contact sessions</li>
-          <li>Configures tool access by tier</li>
-          <li>Handles session resumption</li>
-          <li>Manages idle reaping</li>
-        </ul>
-      </div>
-
-      <div class="component-card">
-        <div class="component-header">
-          <span class="component-name">sdk_session.py</span>
-          <span class="component-role">Session Wrapper</span>
-        </div>
-        <ul>
-          <li>Wraps Claude Agent SDK</li>
-          <li>Manages async message queue</li>
-          <li>Handles mid-turn steering</li>
-          <li>Tracks health and activity</li>
-        </ul>
       </div>
     </div>
   </section>
@@ -378,11 +326,15 @@
 
 <style>
   .page {
-    max-width: 900px;
+    max-width: 960px;
   }
 
   .page-header {
     margin-bottom: var(--space-6);
+  }
+
+  .page-header h1 {
+    margin-bottom: var(--space-1);
   }
 
   .lead {
@@ -395,37 +347,43 @@
     margin-bottom: var(--space-8);
   }
 
-  /* Diagram Section */
+  section h2 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin: 0 0 var(--space-4);
+  }
+
+  /* Diagram */
   .diagram-section {
-    margin-bottom: var(--space-12);
+    margin-bottom: var(--space-8);
   }
 
   .diagram-header {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--space-4);
-  }
-
-  .diagram-header h2 {
-    margin: 0;
-    border: none;
-    padding: 0;
+    justify-content: flex-end;
+    margin-bottom: var(--space-3);
   }
 
   .simulate-btn {
-    background: var(--text-primary);
-    color: var(--bg-surface);
-    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-default);
     padding: var(--space-2) var(--space-4);
-    font-family: var(--font-mono);
-    font-size: 11px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
-    transition: all var(--transition-fast);
+    transition: all 0.15s ease;
+    border-radius: 4px;
   }
 
   .simulate-btn:hover:not(:disabled) {
-    background: var(--accent);
+    border-color: #4e79a7;
+    color: #4e79a7;
+    background: rgba(78, 121, 167, 0.05);
   }
 
   .simulate-btn:disabled {
@@ -434,341 +392,319 @@
   }
 
   .diagram-container {
-    background: var(--bg-elevated);
+    background: #fafafa;
     border: 1px solid var(--border-default);
+    border-radius: 6px;
     padding: var(--space-4);
-    overflow: hidden;
+    overflow-x: auto;
   }
 
   .architecture-svg {
     width: 100%;
+    min-width: 840px;
     height: auto;
     display: block;
   }
 
-  /* SVG Styles */
-  .section-label {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    fill: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-  }
-
-  .box {
-    fill: var(--bg-surface);
-    stroke: var(--border-default);
-    stroke-width: 1;
-    transition: all 0.2s ease;
-  }
-
-  .box.primary {
-    fill: var(--text-primary);
-    stroke: var(--text-primary);
-  }
-
-  .box.subtle {
-    fill: var(--bg-inset);
-    stroke: var(--border-default);
-  }
-
-  .source-box:hover .box,
-  .daemon-hub:hover .box,
-  .contact-block:hover .session-box {
-    stroke: var(--accent);
-    stroke-width: 2;
-  }
-
-  .source-box.active .box,
-  .daemon-hub.active .box,
-  .contact-block.active .session-box {
-    stroke: var(--accent);
-    stroke-width: 2;
-  }
-
-  .box-label {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    fill: var(--text-secondary);
-    text-anchor: middle;
-    dominant-baseline: middle;
-  }
-
-  .box-label.primary {
-    fill: var(--bg-surface);
-    font-weight: 500;
-  }
-
-  .box-label.small {
-    font-size: 10px;
-  }
-
-  .box-sublabel {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    fill: var(--text-muted);
-    text-anchor: middle;
-  }
-
-  .box-label.primary + .box-sublabel {
-    fill: rgba(250, 250, 249, 0.6);
-  }
-
-  /* Flow lines */
-  .flow-line {
-    fill: none;
-    stroke: var(--border-strong);
-    stroke-width: 1;
-    stroke-dasharray: 4 2;
-    transition: all 0.3s ease;
-  }
-
-  .flow-line.active {
-    stroke: var(--accent);
-    stroke-width: 2;
-    stroke-dasharray: none;
-  }
-
-  .flow-line.response {
-    stroke: var(--success);
-  }
-
-  /* Pulse animation */
-  .pulse-dot {
-    fill: var(--accent);
-    animation: pulse 1s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; r: 4; }
-    50% { opacity: 0.5; r: 6; }
-  }
-
-  /* Contact session blocks */
-  .session-box {
-    fill: var(--bg-surface);
-    stroke: var(--border-default);
-    stroke-width: 1;
-  }
-
-  .session-header {
-    fill: var(--text-tertiary);
-  }
-
-  .session-title {
+  /* SVG styles */
+  .stage-label {
     font-family: var(--font-sans);
     font-size: 11px;
+    font-weight: 600;
+    fill: #78716c;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .node-box {
+    fill: white;
+    stroke: var(--node-color, #d6d3d1);
+    stroke-width: 1.5;
+    transition: all 0.15s ease;
+  }
+
+  .node.active .node-box {
+    stroke-width: 2.5;
+    filter: drop-shadow(0 2px 8px rgba(0,0,0,0.1));
+  }
+
+  .node-box-primary {
+    fill: #292524;
+    stroke: none;
+  }
+
+  .node.primary.active .node-box-primary {
+    filter: drop-shadow(0 2px 12px rgba(0,0,0,0.2));
+  }
+
+  .node-title {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    fill: #292524;
+    text-anchor: middle;
+  }
+
+  .node-title-primary {
+    font-family: var(--font-sans);
+    font-size: 14px;
     font-weight: 600;
     fill: white;
     text-anchor: middle;
   }
 
-  .tier-badge {
+  .node-detail {
     font-family: var(--font-mono);
-    font-size: 8px;
-    fill: rgba(255, 255, 255, 0.7);
-    text-anchor: end;
+    font-size: 10px;
+    fill: #78716c;
+    text-anchor: middle;
   }
 
-  .folder-box, .process-box, .skills-box {
-    fill: var(--bg-inset);
-    stroke: var(--border-default);
-    stroke-width: 0.5;
-  }
-
-  .folder-path, .process-label, .skills-label {
+  .node-detail-primary {
     font-family: var(--font-mono);
-    font-size: 8px;
-    fill: var(--text-tertiary);
+    font-size: 10px;
+    fill: rgba(255,255,255,0.6);
+    text-anchor: middle;
   }
 
-  /* Popups */
-  .detail-popup {
-    pointer-events: none;
-  }
-
-  .popup-bg {
-    fill: var(--bg-elevated);
-    stroke: var(--border-default);
+  .reference-box {
+    fill: #f5f5f4;
+    stroke: #e7e5e4;
     stroke-width: 1;
-    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
   }
 
-  .popup-title {
+  .reference-label {
     font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 500;
-    fill: var(--text-primary);
-  }
-
-  .popup-item {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    fill: var(--text-secondary);
-  }
-
-  /* Legend */
-  .legend-title {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    fill: var(--text-tertiary);
+    fill: #78716c;
+    text-anchor: middle;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.03em;
+  }
+
+  .code-box {
+    fill: #1c1917;
+    stroke: #292524;
+    stroke-width: 1;
+  }
+
+  .code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: #a8a29e;
+  }
+
+  .code.mono {
+    fill: #e7e5e4;
+  }
+
+  .code.mono.small {
+    font-size: 10px;
+  }
+
+  .code-hint {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    fill: #78716c;
+  }
+
+  .code-comment {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    fill: #6b7280;
+  }
+
+  .code-comment.small {
+    font-size: 9px;
+  }
+
+  .code-string {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: #a3e635;
+  }
+
+  .code-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: #f28e2c;
+  }
+
+  .flow-line {
+    fill: none;
+    stroke: #d6d3d1;
+    stroke-width: 2;
+    stroke-linecap: round;
+    transition: stroke 0.2s ease;
+  }
+
+  .flow-line.active {
+    stroke: #4e79a7;
+  }
+
+  .connector-line {
+    fill: none;
+    stroke: #d6d3d1;
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+  }
+
+  .connector-line.active {
+    stroke: #4e79a7;
+  }
+
+  .session-name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    fill: white;
+  }
+
+  .session-tier {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    fill: rgba(255,255,255,0.7);
+    text-anchor: end;
+  }
+
+  .transcript-row {
+    stroke: none;
+  }
+
+  .transcript-row.hidden {
+    fill: rgba(0,0,0,0.03);
+  }
+
+  .transcript-row.visible {
+    fill: rgba(242, 142, 44, 0.1);
+    stroke: #f28e2c;
+    stroke-width: 1;
+  }
+
+  .transcript-text {
+    font-family: var(--font-mono);
+    font-size: 9px;
+  }
+
+  .transcript-text.dim {
+    fill: #a8a29e;
+  }
+
+  .transcript-text.bright {
+    fill: #f28e2c;
+  }
+
+  .folder-name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    fill: #57534e;
+  }
+
+  .folder-item {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    fill: #78716c;
+  }
+
+  .folder-note {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    fill: #a8a29e;
+    text-anchor: middle;
+  }
+
+  .tree-connector {
+    stroke: #d6d3d1;
+    stroke-width: 1;
+    fill: none;
+  }
+
+  .tier-pill {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 500;
+    text-anchor: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+
+  .response-arc {
+    stroke: #59a14f;
+    stroke-width: 2;
+    stroke-dasharray: 6 4;
+  }
+
+  .legend-box {
+    fill: white;
+    stroke: #e7e5e4;
+    stroke-width: 1;
+  }
+
+  .legend-title {
+    font-family: var(--font-sans);
+    font-size: 10px;
+    font-weight: 600;
+    fill: #78716c;
+    text-anchor: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
 
   .legend-item {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    fill: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 10px;
+    fill: #57534e;
   }
 
-  /* Principles Grid */
-  .principles-grid {
-    display: grid;
-    gap: var(--space-4);
-  }
-
-  .principle {
-    display: flex;
-    gap: var(--space-4);
-    padding: var(--space-4);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
-  }
-
-  .principle-icon {
-    flex-shrink: 0;
-    width: 40px;
-    height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--bg-inset);
-    color: var(--text-tertiary);
-  }
-
-  .principle-icon svg {
-    width: 20px;
-    height: 20px;
-  }
-
-  .principle-content h3 {
-    font-size: 13px;
-    margin: 0 0 var(--space-2);
-  }
-
-  .principle-content p {
-    font-size: 12px;
-    margin: 0;
-    color: var(--text-secondary);
-  }
-
-  .principle-content .detail {
-    margin-top: var(--space-2);
-    color: var(--text-tertiary);
-  }
-
-  /* Flow Steps */
-  .flow-steps {
+  /* Concepts */
+  .concepts {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
   }
 
-  .flow-step-item {
+  .concept {
     display: flex;
     gap: var(--space-4);
-    padding: var(--space-3) var(--space-4);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
-  }
-
-  .step-number {
-    flex-shrink: 0;
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--text-primary);
-    color: var(--bg-surface);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-  }
-
-  .step-content h3 {
-    font-size: 12px;
-    margin: 0 0 var(--space-1);
-  }
-
-  .step-content p {
-    font-size: 12px;
-    margin: 0;
-    color: var(--text-secondary);
-  }
-
-  /* Components Grid */
-  .components-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: var(--space-4);
-  }
-
-  .component-card {
     padding: var(--space-4);
-    background: var(--bg-elevated);
+    background: white;
     border: 1px solid var(--border-default);
+    border-radius: 6px;
   }
 
-  .component-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--space-3);
-    padding-bottom: var(--space-2);
-    border-bottom: 1px solid var(--border-subtle);
+  .concept-marker {
+    width: 4px;
+    flex-shrink: 0;
+    border-radius: 2px;
   }
 
-  .component-name {
+  .concept-content h3 {
     font-family: var(--font-mono);
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
+    margin: 0 0 var(--space-1);
     color: var(--text-primary);
   }
 
-  .component-role {
-    font-size: 10px;
-    color: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .component-card ul {
-    margin: 0;
-    padding-left: var(--space-4);
-  }
-
-  .component-card li {
-    font-size: 12px;
+  .concept-content p {
+    font-size: 13px;
     color: var(--text-secondary);
-    margin: var(--space-1) 0;
+    margin: 0;
+    line-height: 1.5;
   }
 
-  /* Mobile */
-  @media (max-width: 768px) {
-    .diagram-header {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: var(--space-3);
-    }
+  .concept-content code {
+    font-size: 11px;
+    background: #f5f5f4;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
 
+  @media (max-width: 900px) {
     .diagram-container {
-      overflow-x: auto;
-    }
-
-    .architecture-svg {
-      min-width: 700px;
+      padding: var(--space-2);
     }
   }
 </style>
