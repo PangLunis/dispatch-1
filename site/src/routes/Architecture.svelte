@@ -114,15 +114,15 @@
           <text x="47" y="55" class="db-sublabel">database</text>
         </g>
 
-        <!-- Arrows from chats DOWN to chat.db -->
+        <!-- Arrows from chats DOWN to chat.db (staggered, no overlap) -->
         <g class="flow-to-db">
-          <!-- 1:1 chat arrow: goes down from left side of chat, then left to chat.db top -->
-          <path d="M 120 85 L 120 95 L 67 95 L 67 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
-          <!-- Group chat arrow: goes down from chat, curves around to chat.db right side -->
-          <path d="M 335 85 L 335 95 L 115 95 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <!-- 1:1 chat arrow: straight down from bottom-left, then left to chat.db top-right -->
+          <path d="M 115 85 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <!-- Group chat arrow: down then left along y=92, enters chat.db from right side -->
+          <path d="M 335 85 L 335 92 L 115 92 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
           {#if step === 1}
             <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.5s" fill="freeze" path="M 120 85 L 120 95 L 67 95 L 67 100"/>
+              <animateMotion dur="0.5s" fill="freeze" path="M 115 85 L 115 100"/>
             </circle>
           {/if}
         </g>
@@ -131,13 +131,13 @@
         <!-- DAEMON polls chat.db (arrow FROM daemon TO chat.db) -->
         <!-- ════════════════════════════════════════════════════════════ -->
 
-        <!-- Arrow from daemon pointing LEFT to chat.db (daemon polls it) -->
+        <!-- Arrow from daemon pointing LEFT to chat.db (daemon polls it) - direct diagonal -->
         <g class="flow-poll">
-          <path d="M 155 215 L 115 215 L 115 170" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
-          <text x="130" y="228" class="flow-label-small" fill="{colors.gray}">polls 100ms</text>
+          <path d="M 155 195 L 115 170" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
+          <text x="110" y="195" class="flow-label-small" fill="{colors.gray}">polls</text>
           {#if step === 2}
             <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.4s" fill="freeze" path="M 155 215 L 115 215 L 115 170"/>
+              <animateMotion dur="0.4s" fill="freeze" path="M 155 195 L 115 170"/>
             </circle>
           {/if}
         </g>
@@ -165,30 +165,35 @@
         </g>
 
         <!-- Watchdog -->
-        <g transform="translate(20, 260)">
+        <g transform="translate(20, 200)">
           <rect x="0" y="0" width="95" height="50" rx="6" fill="{colors.red}" opacity="0.15"/>
           <text x="47" y="18" class="watchdog-label">🛡️ Watchdog</text>
           <text x="47" y="32" class="watchdog-desc">monitors health</text>
           <text x="47" y="44" class="watchdog-desc">auto-restarts</text>
-          <path d="M 95 25 L 115 25 L 115 40" class="watchdog-line" stroke-dasharray="2,2"/>
+          <!-- Dashed line to left side of daemon -->
+          <path d="M 115 25 L 155 25" class="watchdog-line" stroke-dasharray="3,3"/>
         </g>
 
         <!-- ════════════════════════════════════════════════════════════ -->
         <!-- FAN OUT: Daemon to Sessions -->
         <!-- ════════════════════════════════════════════════════════════ -->
         <g class="fan-out">
-          <path d="M 295 275 L 295 310" class="flow-path-solid incoming"/>
+          <!-- Main line down from daemon -->
+          <path d="M 295 275 L 295 305" class="flow-path-solid incoming"/>
 
-          <!-- Fan lines to each session -->
-          <path d="M 295 310 L 100 360" class="flow-path-thin faded"/>
-          <path d="M 295 310 L 210 360" class="flow-path-thin faded"/>
-          <path d="M 295 310 L 350 360" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
+          <!-- Branch node (small circle) -->
+          <circle cx="295" cy="310" r="5" fill="{colors.blue}"/>
 
-          <text x="370" y="340" class="flow-label-small" fill="{colors.blue}">selected</text>
+          <!-- Fan lines from branch node - straight lines to session centers -->
+          <path d="M 295 315 L 100 365" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
+          <path d="M 295 315 L 210 365" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
+          <path d="M 295 315 L 350 365" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+
+          <text x="365" y="345" class="flow-label-small" fill="{colors.blue}">→ selected</text>
 
           {#if step === 5}
-            <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.5s" fill="freeze" path="M 295 310 L 350 360"/>
+            <circle r="4" fill="{colors.orange}" filter="url(#glow)">
+              <animateMotion dur="0.5s" fill="freeze" path="M 295 315 L 350 365"/>
             </circle>
           {/if}
         </g>
@@ -286,16 +291,16 @@
           <text x="100" y="30" class="node-sublabel">delivers response</text>
         </g>
 
-        <!-- Return path to 1:1 chat (goes right, up the right side, points to chat's right edge) -->
+        <!-- Return path to 1:1 chat - goes LEFT side to avoid crossing diagram -->
         <g class="flow-return">
-          <!-- Path goes: right from send-sms, up the right edge, left to point at 1:1 chat's right edge -->
-          <path d="M 370 695 L 470 695 L 470 50 L 230 50"
+          <!-- Path: left from send-sms, up the left edge, right to 1:1 chat bottom -->
+          <path d="M 170 695 L 40 695 L 40 95 L 100 95 L 100 85"
                 class="flow-path-solid outgoing" marker-end="url(#arrowGreen)"/>
-          <text x="480" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
+          <text x="25" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
           {#if step === 9}
             <circle r="5" fill="{colors.green}" filter="url(#glow)">
               <animateMotion dur="1.0s" fill="freeze"
-                path="M 370 695 L 470 695 L 470 50 L 230 50"/>
+                path="M 170 695 L 40 695 L 40 95 L 100 95 L 100 85"/>
             </circle>
           {/if}
         </g>
