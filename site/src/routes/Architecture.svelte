@@ -116,11 +116,13 @@
 
         <!-- Arrows from chats DOWN to chat.db -->
         <g class="flow-to-db">
-          <path d="M 165 85 L 165 120 L 115 135" class="flow-path-thin" marker-end="url(#arrowGray)"/>
-          <path d="M 335 85 L 335 100 L 115 100 L 115 120" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <!-- 1:1 chat arrow: goes down from left side of chat, then left to chat.db top -->
+          <path d="M 120 85 L 120 95 L 67 95 L 67 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <!-- Group chat arrow: goes down from chat, curves around to chat.db right side -->
+          <path d="M 335 85 L 335 95 L 115 95 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
           {#if step === 1}
             <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.5s" fill="freeze" path="M 165 85 L 165 120 L 115 135"/>
+              <animateMotion dur="0.5s" fill="freeze" path="M 120 85 L 120 95 L 67 95 L 67 100"/>
             </circle>
           {/if}
         </g>
@@ -284,16 +286,16 @@
           <text x="100" y="30" class="node-sublabel">delivers response</text>
         </g>
 
-        <!-- Return path to 1:1 chat (goes right, up the right side, curves left to 1:1 chat) -->
+        <!-- Return path to 1:1 chat (goes right, up the right side, points to chat's right edge) -->
         <g class="flow-return">
-          <!-- Path goes: right from send-sms, up the right edge, curves left to 1:1 chat -->
-          <path d="M 370 695 L 470 695 L 470 50 L 230 50 L 230 85"
+          <!-- Path goes: right from send-sms, up the right edge, left to point at 1:1 chat's right edge -->
+          <path d="M 370 695 L 470 695 L 470 50 L 230 50"
                 class="flow-path-solid outgoing" marker-end="url(#arrowGreen)"/>
           <text x="480" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
           {#if step === 9}
             <circle r="5" fill="{colors.green}" filter="url(#glow)">
               <animateMotion dur="1.0s" fill="freeze"
-                path="M 370 695 L 470 695 L 470 50 L 230 50 L 230 85"/>
+                path="M 370 695 L 470 695 L 470 50 L 230 50"/>
             </circle>
           {/if}
         </g>
