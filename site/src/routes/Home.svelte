@@ -1,5 +1,5 @@
 <script>
-  let { navigateTo } = $props();
+  export let navigateTo;
 </script>
 
 <article class="page">
@@ -12,10 +12,10 @@
   </header>
 
   <div class="quick-actions">
-    <button class="action-btn primary" onclick={() => navigateTo('setup')}>
+    <button class="action-btn primary" on:click={() => navigateTo('setup')}>
       Setup Guide
     </button>
-    <button class="action-btn" onclick={() => navigateTo('philosophy')}>
+    <button class="action-btn" on:click={() => navigateTo('philosophy')}>
       Philosophy
     </button>
     <a href="https://github.com/svenflow/dispatch" class="action-btn" target="_blank" rel="noopener">
@@ -146,7 +146,7 @@ cp config.example.yaml config.local.yaml
     <p class="note">
       Full setup requires configuring macOS permissions, creating the assistant's
       iCloud account, and setting up Contacts groups. See the
-      <button class="text-link" onclick={() => navigateTo('getting-started')}>Getting Started</button>
+      <button class="text-link" on:click={() => navigateTo('getting-started')}>Getting Started</button>
       guide.
     </p>
   </section>

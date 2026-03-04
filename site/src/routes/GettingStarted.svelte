@@ -1,5 +1,5 @@
 <script>
-  let { navigateTo } = $props();
+  export let navigateTo;
 </script>
 
 <article class="page">
@@ -74,15 +74,15 @@ uv sync</code></pre>
     <h2>Next steps</h2>
     <ul>
       <li>
-        <button class="text-link" onclick={() => navigateTo('tiers')}>Contact Tiers</button>
+        <button class="text-link" on:click={() => navigateTo('tiers')}>Contact Tiers</button>
         <span class="link-desc">- Access control system</span>
       </li>
       <li>
-        <button class="text-link" onclick={() => navigateTo('skills')}>Skills</button>
+        <button class="text-link" on:click={() => navigateTo('skills')}>Skills</button>
         <span class="link-desc">- Built-in capabilities</span>
       </li>
       <li>
-        <button class="text-link" onclick={() => navigateTo('cli')}>CLI Reference</button>
+        <button class="text-link" on:click={() => navigateTo('cli')}>CLI Reference</button>
         <span class="link-desc">- Full command docs</span>
       </li>
     </ul>

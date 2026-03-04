@@ -1,5 +1,5 @@
 <script>
-  let { navigateTo } = $props();
+  export let navigateTo;
 </script>
 
 <article class="page">
@@ -116,15 +116,15 @@ claude</code></pre>
     <h2>Next Steps</h2>
     <ul>
       <li>
-        <button class="text-link" onclick={() => navigateTo('cli')}>CLI Reference</button>
+        <button class="text-link" on:click={() => navigateTo('cli')}>CLI Reference</button>
         <span class="link-desc">- All commands and options</span>
       </li>
       <li>
-        <button class="text-link" onclick={() => navigateTo('tiers')}>Contact Tiers</button>
+        <button class="text-link" on:click={() => navigateTo('tiers')}>Contact Tiers</button>
         <span class="link-desc">- Access control system</span>
       </li>
       <li>
-        <button class="text-link" onclick={() => navigateTo('philosophy')}>Philosophy</button>
+        <button class="text-link" on:click={() => navigateTo('philosophy')}>Philosophy</button>
         <span class="link-desc">- Why a separate entity?</span>
       </li>
     </ul>
