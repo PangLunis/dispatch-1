@@ -75,36 +75,58 @@
         </defs>
 
         <!-- ════════════════════════════════════════════════════════════ -->
-        <!-- ROW 1: CHATS (1:1 + Group) -->
+        <!-- ROW 1: CHATS (1:1 + Group) - Mini iPhone mockups -->
         <!-- ════════════════════════════════════════════════════════════ -->
-        <g transform="translate(100, 15)">
-          <!-- 1:1 DM -->
-          <rect x="0" y="0" width="130" height="70" rx="10" class="phone-frame"/>
-          <rect x="3" y="3" width="124" height="64" rx="8" class="phone-screen"/>
-          <text x="65" y="20" class="phone-label">💬 You → Me</text>
-          <text x="65" y="32" class="phone-sublabel">1:1 chat</text>
-          <g transform="translate(12, 40)">
-            <rect x="0" y="0" width="48" height="13" rx="5" fill="#e7e5e4"/>
-            <text x="6" y="10" class="bubble-text-tiny">weather?</text>
-            <rect x="58" y="0" width="45" height="13" rx="5" fill="{colors.blue}"/>
-            <text x="65" y="10" class="bubble-text-tiny-out">45°F</text>
+        <g transform="translate(90, 5)">
+          <!-- 1:1 DM - iPhone mockup -->
+          <!-- Phone outer frame -->
+          <rect x="0" y="0" width="140" height="90" rx="14" fill="#1a1a1a"/>
+          <!-- Dynamic Island -->
+          <rect x="50" y="4" width="40" height="10" rx="5" fill="#000"/>
+          <!-- Screen -->
+          <rect x="4" y="16" width="132" height="70" rx="10" fill="#f2f2f7"/>
+          <!-- Nav bar -->
+          <rect x="4" y="16" width="132" height="16" rx="10" fill="#f9f9f9"/>
+          <rect x="4" y="26" width="132" height="6" fill="#f9f9f9"/>
+          <text x="70" y="27" class="iphone-nav-title">Nikhil</text>
+          <!-- Chat bubbles -->
+          <g transform="translate(10, 38)">
+            <!-- Received bubble (gray, left aligned) -->
+            <rect x="0" y="0" width="55" height="16" rx="8" fill="#e5e5ea"/>
+            <text x="8" y="11" class="imessage-text">weather?</text>
+            <!-- Sent bubble (blue, right aligned) -->
+            <rect x="67" y="0" width="55" height="16" rx="8" fill="#0b93f6"/>
+            <text x="75" y="11" class="imessage-text-sent">45°F ☀️</text>
           </g>
-          <text x="65" y="63" class="phone-tier admin">admin</text>
+          <!-- Tier badge -->
+          <rect x="4" y="74" width="132" height="12" rx="0 0 10 10" fill="rgba(242,142,44,0.15)"/>
+          <text x="70" y="83" class="phone-tier admin">admin</text>
         </g>
 
-        <g transform="translate(270, 15)">
-          <!-- Group chat -->
-          <rect x="0" y="0" width="130" height="70" rx="10" class="phone-frame"/>
-          <rect x="3" y="3" width="124" height="64" rx="8" class="phone-screen"/>
-          <text x="65" y="20" class="phone-label">👥 Family Chat</text>
-          <text x="65" y="32" class="phone-sublabel">group (3)</text>
-          <g transform="translate(12, 40)">
-            <rect x="0" y="0" width="45" height="13" rx="5" fill="#e7e5e4"/>
-            <text x="5" y="10" class="bubble-text-tiny">Mom: hi!</text>
-            <rect x="52" y="0" width="50" height="13" rx="5" fill="#d4d4d4"/>
-            <text x="57" y="10" class="bubble-text-tiny">Dad: hey</text>
+        <g transform="translate(260, 5)">
+          <!-- Group chat - iPhone mockup -->
+          <!-- Phone outer frame -->
+          <rect x="0" y="0" width="140" height="90" rx="14" fill="#1a1a1a"/>
+          <!-- Dynamic Island -->
+          <rect x="50" y="4" width="40" height="10" rx="5" fill="#000"/>
+          <!-- Screen -->
+          <rect x="4" y="16" width="132" height="70" rx="10" fill="#f2f2f7"/>
+          <!-- Nav bar -->
+          <rect x="4" y="16" width="132" height="16" rx="10" fill="#f9f9f9"/>
+          <rect x="4" y="26" width="132" height="6" fill="#f9f9f9"/>
+          <text x="70" y="27" class="iphone-nav-title">Family (3)</text>
+          <!-- Chat bubbles -->
+          <g transform="translate(10, 38)">
+            <!-- Received bubble 1 -->
+            <rect x="0" y="0" width="45" height="16" rx="8" fill="#e5e5ea"/>
+            <text x="6" y="11" class="imessage-text">Mom: hi!</text>
+            <!-- Received bubble 2 -->
+            <rect x="50" y="0" width="50" height="16" rx="8" fill="#e5e5ea"/>
+            <text x="56" y="11" class="imessage-text">Dad: hey</text>
           </g>
-          <text x="65" y="63" class="phone-tier">family</text>
+          <!-- Tier badge -->
+          <rect x="4" y="74" width="132" height="12" rx="0 0 10 10" fill="rgba(118,183,178,0.2)"/>
+          <text x="70" y="83" class="phone-tier">family</text>
         </g>
 
         <!-- ════════════════════════════════════════════════════════════ -->
@@ -119,13 +141,13 @@
 
         <!-- Arrows from chats DOWN to chat.db (staggered, no overlap) -->
         <g class="flow-to-db">
-          <!-- 1:1 chat arrow: straight down from bottom-left, then left to chat.db top-right -->
-          <path d="M 115 85 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
-          <!-- Group chat arrow: down then left along y=92, enters chat.db from right side -->
-          <path d="M 335 85 L 335 92 L 115 92 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <!-- 1:1 chat arrow: straight down from bottom-left of iPhone -->
+          <path d="M 115 95 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <!-- Group chat arrow: down then left along y=102, enters chat.db from right side -->
+          <path d="M 330 95 L 330 102 L 115 102 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
           {#if step === 1}
             <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.5s" fill="freeze" path="M 115 85 L 115 100"/>
+              <animateMotion dur="0.5s" fill="freeze" path="M 115 95 L 115 100"/>
             </circle>
           {/if}
         </g>
@@ -293,16 +315,16 @@
           <text x="100" y="30" class="node-sublabel">delivers response</text>
         </g>
 
-        <!-- Return path - goes RIGHT side, enters 1:1 chat from bottom-right -->
+        <!-- Return path - goes RIGHT side, enters 1:1 iPhone from bottom -->
         <g class="flow-return">
-          <!-- Path: right from send-sms, up the right side, then to 1:1 chat bottom edge -->
-          <path d="M 370 695 L 460 695 L 460 95 L 225 95 L 225 85"
+          <!-- Path: right from send-sms, up the right side, then to 1:1 iPhone bottom edge -->
+          <path d="M 370 695 L 460 695 L 460 105 L 160 105 L 160 95"
                 class="flow-path-solid outgoing" marker-end="url(#arrowGreen)"/>
           <text x="470" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
           {#if step === 9}
             <circle r="5" fill="{colors.green}" filter="url(#glow)">
               <animateMotion dur="1.0s" fill="freeze"
-                path="M 370 695 L 460 695 L 460 95 L 225 95 L 225 85"/>
+                path="M 370 695 L 460 695 L 460 105 L 160 105 L 160 95"/>
             </circle>
           {/if}
         </g>
@@ -415,29 +437,25 @@
     display: block;
   }
 
-  /* Phone styles */
-  .phone-frame {
-    fill: #1a1a1a;
-    filter: url(#shadow);
-  }
-
-  .phone-screen {
-    fill: #292524;
-  }
-
-  .phone-label {
+  /* iPhone mockup styles */
+  .iphone-nav-title {
     font-family: var(--font-sans);
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 600;
-    fill: white;
+    fill: #000;
     text-anchor: middle;
   }
 
-  .phone-sublabel {
-    font-family: var(--font-mono);
-    font-size: 8px;
-    fill: #a8a29e;
-    text-anchor: middle;
+  .imessage-text {
+    font-family: var(--font-sans);
+    font-size: 7px;
+    fill: #000;
+  }
+
+  .imessage-text-sent {
+    font-family: var(--font-sans);
+    font-size: 7px;
+    fill: #fff;
   }
 
   .phone-tier {
