@@ -479,6 +479,13 @@ def consolidate_chat(chat_id: str, dry_run: bool = False, verbose: bool = False)
         result["error"] = "No transcript directory found"
         return result
 
+    # Skip chats with no new messages since last consolidation
+    if not has_new_messages_since_last_consolidation(chat_id, transcript_dir):
+        result["status"] = "skipped"
+        result["error"] = "No new messages since last consolidation"
+        log(f"Skipped {chat_id}: no new messages since last consolidation")
+        return result
+
     contact_name = get_contact_name(chat_id)
     is_group = is_group_chat(chat_id)
 
@@ -634,6 +641,47 @@ Verify quotes and merge with existing context."""
         log(f"Write error for {chat_id}: {e}")
 
     return result
+
+
+def has_new_messages_since_last_consolidation(chat_id: str, transcript_dir: Path) -> bool:
+    """Check if there are new messages since the last CONTEXT.md update.
+
+    Returns True if there are new messages or if we can't determine (erring on side of processing).
+    """
+    context_file = transcript_dir / "CONTEXT.md"
+    if not context_file.exists():
+        return True  # No existing context = needs consolidation
+
+    # Get CONTEXT.md last modified time
+    context_mtime = context_file.stat().st_mtime
+    context_date = datetime.fromtimestamp(context_mtime)
+
+    # Check for recent messages using read-sms CLI
+    try:
+        result = subprocess.run(
+            [str(READ_SMS_CLI), "--chat", chat_id, "--limit", "1"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return True  # Can't determine, process it
+
+        # Parse the most recent message timestamp
+        # Format: "2026-03-13 07:35:39 | +16175969496 | IN | message text"
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(" | ", 3)
+            if len(parts) >= 3:
+                try:
+                    msg_date = datetime.strptime(parts[0].strip(), "%Y-%m-%d %H:%M:%S")
+                    return msg_date > context_date
+                except ValueError:
+                    continue
+
+        return True  # Can't parse, process it
+    except (subprocess.TimeoutExpired, OSError):
+        return True  # Can't determine, process it
 
 
 def get_active_chats() -> list[str]:

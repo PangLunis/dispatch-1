@@ -104,17 +104,26 @@ TIER_EMPHASIS = {
 # PASS A: SUGGESTER
 # ============================================================
 
-def get_suggester_prompt(contact_name: str, phone: str, tier: str, existing_memories: str) -> str:
+def get_suggester_prompt(contact_name: str, phone: str, tier: str, existing_memories: str, since_filter: str = "") -> str:
     """System prompt for Pass A - the suggester agent."""
     tier_emphasis = TIER_EMPHASIS.get(tier, "")
+
+    if since_filter:
+        read_instructions = f"""You have access to the Bash tool. Use it to:
+1. Read NEW messages only: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "{phone}" --since "{since_filter}" --limit 500`
+2. Search for specific topics: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "{phone}" --since "{since_filter}" --grep "birthday"`
+
+CRITICAL: ONLY use --since "{since_filter}" to read messages. Do NOT read older messages - they have already been processed."""
+    else:
+        read_instructions = f"""You have access to the Bash tool. Use it to:
+1. Read recent messages: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "{phone}" --limit 100`
+2. Read more messages if needed: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "{phone}" --limit 500`"""
 
     return f"""You are extracting personal facts about {contact_name} from their messages.
 
 ## YOUR TOOLS
 
-You have access to the Bash tool. Use it to:
-1. Read recent messages: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "{phone}" --limit 100`
-2. Search for specific topics: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "{phone}" --grep "birthday"`
+{read_instructions}
 
 ## CRITICAL RULES
 
@@ -483,16 +492,44 @@ def consolidate_contact(contact_name: str, phone: str, tier: str = "unknown",
 
     log(f"Starting 3-pass consolidation for {contact_name} ({phone}, tier={tier})")
 
-    # Check message count first
-    msg_count = count_messages(phone)
+    # Check checkpoint - only process messages since last run
+    checkpoints = load_checkpoints()
+    last_processed = checkpoints.get(phone, {}).get("last_processed_ts")
+    since_filter = ""
+    if last_processed:
+        # Parse the ISO timestamp and format for read-sms
+        since_dt = datetime.fromisoformat(last_processed)
+        since_filter = since_dt.strftime("%Y-%m-%d %H:%M:%S")
+        if verbose:
+            print(f"  Checkpoint: processing messages since {since_filter}")
+
+    # Check message count first (only new messages if we have a checkpoint)
+    if since_filter:
+        msg_result = subprocess.run(
+            [str(READ_SMS_CLI), "--chat", phone, "--since", since_filter, "--limit", "1000"],
+            capture_output=True, text=True
+        )
+        if msg_result.returncode == 0:
+            msg_count = sum(1 for line in msg_result.stdout.split('\n') if '| IN |' in line)
+        else:
+            msg_count = 0
+    else:
+        msg_count = count_messages(phone)
+
     if msg_count == 0:
         result["status"] = "skipped"
-        result["error"] = "No messages from this contact"
-        log(f"Skipped {contact_name}: 0 messages")
+        result["error"] = "No new messages from this contact"
+        log(f"Skipped {contact_name}: 0 new messages since {since_filter or 'ever'}")
+        # Still update checkpoint so we don't re-check
+        checkpoints[phone] = {
+            "last_processed_ts": datetime.now().isoformat(),
+            "contact_name": contact_name,
+        }
+        save_checkpoints(checkpoints)
         return result
 
     if verbose:
-        print(f"  Messages from contact: {msg_count}")
+        print(f"  New messages from contact: {msg_count}")
 
     # Get existing notes for context
     existing_notes = get_contact_notes(contact_name)
@@ -502,8 +539,11 @@ def consolidate_contact(contact_name: str, phone: str, tier: str = "unknown",
     if verbose:
         print(f"\n  === PASS A: SUGGESTER ===")
 
-    suggester_system = get_suggester_prompt(contact_name, phone, tier, existing_memories)
-    suggester_user = f"Extract candidate facts about {contact_name}. Start by reading their messages."
+    suggester_system = get_suggester_prompt(contact_name, phone, tier, existing_memories, since_filter)
+    if since_filter:
+        suggester_user = f"Extract candidate facts about {contact_name}. ONLY read messages since {since_filter} using --since flag. Do NOT re-extract facts that are already in existing memories."
+    else:
+        suggester_user = f"Extract candidate facts about {contact_name}. Start by reading their messages."
 
     try:
         suggester_output = call_claude_agent(suggester_system, suggester_user, verbose, "PASS A")
