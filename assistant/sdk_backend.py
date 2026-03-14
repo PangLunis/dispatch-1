@@ -34,8 +34,40 @@ from assistant.common import (
 from assistant.health import get_transcript_entries_since, check_fatal_regex, check_deep_haiku
 from assistant.sdk_session import SDKSession
 from assistant import perf
+from assistant.bus_helpers import (
+    produce_event, produce_session_event,
+    session_injected_payload, health_check_payload,
+    vision_payload,
+)
 
 log = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────
+# Fire-and-forget task tracking
+# ──────────────────────────────────────────────────────────────
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _fire_and_forget(coro, *, name: str | None = None) -> asyncio.Task:
+    """Create a task with automatic cleanup and exception logging.
+
+    Prevents exceptions from being silently lost in fire-and-forget patterns.
+    """
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+
+    def _task_done(t: asyncio.Task):
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            log.error(f"Background task {t.get_name()!r} failed: {exc}")
+
+    task.add_done_callback(_task_done)
+    return task
+
 
 # ──────────────────────────────────────────────────────────────
 # Gemini Vision Analysis (async image understanding)
@@ -70,6 +102,7 @@ async def analyze_image_with_gemini(image_path: str, message_context: str | None
 
     # Convert HEIC to JPEG if needed (Gemini doesn't support HEIC directly)
     actual_path = image_path
+    heic_temp_path: Path | None = None
     if suffix in {".heic", ".heif"}:
         try:
             import tempfile
@@ -82,6 +115,7 @@ async def analyze_image_with_gemini(image_path: str, message_context: str | None
             await proc.wait()
             if jpeg_path.exists():
                 actual_path = str(jpeg_path)
+                heic_temp_path = jpeg_path
                 log.debug(f"Gemini vision: converted HEIC to JPEG: {jpeg_path}")
             else:
                 log.warning(f"Gemini vision: HEIC conversion failed for {image_path}")
@@ -135,6 +169,13 @@ Briefly describe what you see in this image, keeping the sender's context in min
     except Exception as e:
         log.warning(f"Gemini vision error: {e}")
         return None
+    finally:
+        # Clean up HEIC temp file to prevent /tmp accumulation
+        if heic_temp_path and heic_temp_path.exists():
+            try:
+                heic_temp_path.unlink()
+            except Exception:
+                pass
 
 # Lifecycle logger (matches current format)
 lifecycle_log = logging.getLogger("lifecycle")
@@ -186,7 +227,7 @@ class SessionRegistry:
             **metadata,
         }
         self._registry[chat_id] = session_data
-        self._save()
+        self._save_debounced()
         return session_data
 
     def get(self, chat_id: str) -> Optional[Dict[str, Any]]:
@@ -237,6 +278,19 @@ class SessionRegistry:
             self._registry[chat_id]["updated_at"] = datetime.now().isoformat()
             self._save_debounced()
 
+    def mark_was_active(self, chat_id: str):
+        """Mark a session as active before shutdown, so it gets recreated on startup."""
+        if chat_id in self._registry:
+            self._registry[chat_id]["was_active"] = True
+            self._registry[chat_id]["updated_at"] = datetime.now().isoformat()
+            self._save()
+
+    def clear_was_active(self, chat_id: str):
+        """Clear the was_active flag after successful recreation."""
+        if chat_id in self._registry:
+            self._registry[chat_id].pop("was_active", None)
+            self._save()
+
 
 class SDKBackend:
     """Agent SDK-based session management using ClaudeSDKClient.
@@ -248,9 +302,11 @@ class SDKBackend:
         self,
         registry: SessionRegistry,
         contacts_manager=None,
+        producer=None,
     ):
         self.registry = registry
         self.contacts = contacts_manager
+        self._producer = producer
         self.sessions: Dict[str, SDKSession] = {}  # chat_id -> SDKSession
         self._lock = asyncio.Lock()
 
@@ -259,25 +315,51 @@ class SDKBackend:
         self._recently_healed: Dict[str, datetime] = {}  # chat_id -> heal timestamp
         self._last_auth_error_notification: Optional[datetime] = None  # debounce auth error SMS
 
+    def _read_restart_initiator(self) -> str | None:
+        """Read the restart initiator chat_id from the graceful restart marker.
+
+        Returns the chat_id of the session that triggered the restart, or None
+        if this was a crash/external restart or the marker doesn't exist.
+        """
+        import json
+        marker = Path("/tmp/dispatch-graceful-restart")
+        if not marker.exists():
+            return None
+        try:
+            data = json.loads(marker.read_text())
+            return data.get("initiator_chat_id")
+        except (json.JSONDecodeError, ValueError):
+            return None
+
     async def recreate_sessions_with_pending_summaries(self) -> int:
-        """Recreate sessions that have pending summaries from previous daemon shutdown.
+        """Recreate sessions that were active during previous daemon shutdown.
 
         Called at startup to preserve context across daemon restarts.
+        Recreates sessions that either:
+        1. Have a .pending-summary.md file (summary was generated before shutdown)
+        2. Were marked as was_active in registry (catches cases where shutdown
+           was too fast for summary generation, e.g. SIGTERM during self-restart)
+
         Returns the number of sessions recreated.
         """
         recreated = 0
 
-        # Iterate through registry to find sessions with pending summaries
+        # Determine which session (if any) initiated this restart
+        restart_initiator = self._read_restart_initiator()
+
+        # Iterate through registry to find sessions to recreate
         for chat_id, entry in self.registry.all().items():
             session_name = entry.get("session_name")
             if not session_name:
                 continue
 
-            # Check if there's a pending summary
+            # Check if there's a pending summary OR the session was marked active
             transcript_dir = TRANSCRIPTS_DIR / session_name
             pending_file = transcript_dir / ".pending-summary.md"
+            has_pending = pending_file.exists()
+            was_active = entry.get("was_active", False)
 
-            if not pending_file.exists():
+            if not has_pending and not was_active:
                 continue
 
             # Get session metadata from registry
@@ -290,8 +372,17 @@ class SDKBackend:
             if "/" in session_name:
                 source = session_name.split("/")[0]
 
-            log.info(f"STARTUP | Recreating session with pending summary: {session_name}")
-            lifecycle_log.info(f"STARTUP | RECREATE_PENDING | {session_name}")
+            # Determine restart role: "initiator" if this session triggered the restart,
+            # "passive" if restarted by something else
+            if restart_initiator is not None and chat_id == restart_initiator:
+                restart_role = "initiator"
+            else:
+                restart_role = "passive"
+
+            reason = "pending_summary" if has_pending else "was_active"
+            log.info(f"STARTUP | Recreating session ({reason}): {session_name}"
+                     f" [restart_role={restart_role}]")
+            lifecycle_log.info(f"STARTUP | RECREATE_{reason.upper()} | {session_name}")
 
             try:
                 if session_type == "group":
@@ -300,6 +391,7 @@ class SDKBackend:
                         chat_id=chat_id,
                         display_name=display_name,
                         source=source,
+                        restart_role=restart_role,
                     )
                 else:
                     await self.create_session(
@@ -308,14 +400,20 @@ class SDKBackend:
                         tier=tier,
                         source=source,
                         session_type=session_type,
+                        restart_role=restart_role,
                     )
                 recreated += 1
             except Exception as e:
                 log.error(f"STARTUP | Failed to recreate {session_name}: {e}")
 
+            # Clear the was_active flag after successful recreation
+            self.registry.clear_was_active(chat_id)
+
         if recreated:
-            log.info(f"STARTUP | Recreated {recreated} sessions with pending summaries")
+            log.info(f"STARTUP | Recreated {recreated} sessions")
             lifecycle_log.info(f"STARTUP | RECREATE_COMPLETE | count={recreated}")
+            # Flush any debounced registry writes from batch session creation
+            self.registry.flush()
 
         return recreated
 
@@ -330,6 +428,7 @@ class SDKBackend:
         tier: str,
         source: str = "imessage",
         session_type: str = "individual",
+        restart_role: str | None = None,
     ) -> SDKSession:
         """Create a new SDK session for an individual contact."""
         async with self._lock:
@@ -369,6 +468,7 @@ class SDKBackend:
                 session_type=session_type,
                 source=source,
                 model=model,
+                producer=self._producer,
             )
             await session.start(resume_session_id=None)
             self.sessions[chat_id] = session
@@ -376,6 +476,7 @@ class SDKBackend:
             # Defer system prompt to outside the lock
             session._needs_system_prompt = True
             session._system_prompt_args = (session_name, contact_name, tier, chat_id, source)
+            session._restart_role = restart_role
 
             # Register in persistent registry (preserve model if already set)
             self.registry.register(
@@ -393,6 +494,10 @@ class SDKBackend:
                 f"CREATE | {session_name} | SUCCESS | contact={contact_name} "
                 f"tier={tier}"
             )
+            produce_session_event(self._producer, chat_id, "session.created", {
+                "contact_name": contact_name, "tier": tier,
+                "session_type": session_type, "source": source,
+            }, source="daemon")
 
         # Inject system prompt outside lock (includes slow subprocess for memory)
         await self._inject_system_prompt_if_needed(session)
@@ -445,6 +550,7 @@ class SDKBackend:
             session_type=session_type,
             source=source,
             model=model,
+            producer=self._producer,
         )
         import time
         spawn_start = time.perf_counter()
@@ -472,6 +578,11 @@ class SDKBackend:
         lifecycle_log.info(
             f"CREATE | {session_name} | SUCCESS | contact={contact_name} tier={tier}"
         )
+        produce_session_event(self._producer, chat_id, "session.created", {
+            "contact_name": contact_name, "tier": tier,
+            "session_type": session_type, "source": source,
+            "spawn_ms": round(spawn_ms, 1),
+        }, source="daemon")
         # Yield control to event loop so other tasks can run during concurrent creations
         await asyncio.sleep(0)
         return session
@@ -488,11 +599,12 @@ class SDKBackend:
         args = getattr(session, '_system_prompt_args', None)
         if not args:
             return
+        restart_role = getattr(session, '_restart_role', None)
         prompt_type = getattr(session, '_system_prompt_type', 'individual')
         if prompt_type == 'group':
-            system_prompt = await self._build_group_system_prompt(*args)
+            system_prompt = await self._build_group_system_prompt(*args, restart_role=restart_role)
         else:
-            system_prompt = await self._build_individual_system_prompt(*args)
+            system_prompt = await self._build_individual_system_prompt(*args, restart_role=restart_role)
         await session.inject(system_prompt)
 
     async def inject_message(
@@ -530,6 +642,7 @@ class SDKBackend:
 
         # Only hold the lock for session creation check + creation.
         # Once we have the session, inject outside the lock (session has its own queue).
+        needs_restart = False
         async with self._lock:
             existing = self.sessions.get(normalized)
             if not existing or not existing.is_alive():
@@ -538,12 +651,13 @@ class SDKBackend:
                 # Tier mismatch! Session was created with different tier.
                 # Must restart to apply correct permissions (e.g., favorite -> admin).
                 log.info(f"Tier mismatch for {chat_id}: session has {existing.tier}, inject wants {tier}. Restarting...")
-                # Release lock, restart, and re-acquire
-                self._lock.release()
-                try:
-                    await self.restart_session(normalized, tier_override=tier)
-                finally:
-                    await self._lock.acquire()
+                needs_restart = True
+
+        # Do restart outside the lock to avoid manual release/re-acquire
+        if needs_restart:
+            await self.restart_session(normalized, tier_override=tier)
+
+        async with self._lock:
             session = self.sessions.get(normalized)
 
         if not session:
@@ -562,13 +676,16 @@ class SDKBackend:
         inject_ms = (time.perf_counter() - inject_start) * 1000
         perf.timing("inject_ms", inject_ms, component="daemon", source=source, tier=tier)
         log.info(f"Injected message for {chat_id} via {source}")
+        produce_session_event(self._producer, normalized, "session.injected",
+            session_injected_payload(normalized, "message", contact_name, tier),
+            source="inject")
 
         # Spawn async Gemini vision analysis for image attachments
         if attachments:
             for att in attachments:
                 image_path = att.get("path")
                 if image_path and Path(image_path).suffix.lower() in IMAGE_EXTENSIONS:
-                    asyncio.create_task(
+                    _fire_and_forget(
                         self._inject_gemini_vision(
                             session, normalized, image_path,
                             source=source,
@@ -612,6 +729,10 @@ class SDKBackend:
         # Inject the reaction notification (no wrapping needed, it's already formatted)
         await session.inject(reaction_text)
         log.info(f"Injected reaction {emoji} from {sender_name} for {chat_id}")
+        produce_session_event(self._producer, normalized, "session.injected",
+            session_injected_payload(normalized, "reaction", sender_name, sender_tier,
+                                     emoji=emoji),
+            source="inject")
         return True
 
     async def _inject_gemini_vision(
@@ -671,10 +792,21 @@ Gemini analyzed the attached image:
 """
                     await session.inject(vision_msg)
                     log.info(f"Injected Gemini vision for {normalized_chat_id}")
+                    produce_event(self._producer, "system", "vision.analyzed",
+                        vision_payload(normalized_chat_id, image_path, True,
+                                       description_length=len(description)),
+                        source="vision")
                 else:
                     log.debug(f"Session {normalized_chat_id} died before vision inject")
+            else:
+                produce_event(self._producer, "system", "vision.failed",
+                    vision_payload(normalized_chat_id, image_path, False),
+                    source="vision")
         except Exception as e:
             log.warning(f"Gemini vision task failed for {normalized_chat_id}: {e}")
+            produce_event(self._producer, "system", "vision.failed",
+                vision_payload(normalized_chat_id, image_path, False, error=str(e)),
+                source="vision")
 
     # ──────────────────────────────────────────────────────────────
     # Group sessions
@@ -693,6 +825,7 @@ Gemini analyzed the attached image:
         display_name: str | None = None,
         participants: list | None = None,
         source: str = "imessage",
+        restart_role: str | None = None,
     ) -> SDKSession:
         """Create a group session."""
         async with self._lock:
@@ -713,7 +846,7 @@ Gemini analyzed the attached image:
                 from assistant.backends import get_backend
                 backend = get_backend(source)
                 if not backend.registry_prefix:  # iMessage has no prefix
-                    participants = self._resolve_group_participants(chat_id)
+                    participants = await self._resolve_group_participants(chat_id)
 
             session_name = self.get_group_session_name(chat_id, display_name, source)
             transcript_dir = ensure_transcript_dir(session_name)
@@ -725,13 +858,15 @@ Gemini analyzed the attached image:
                 cwd=str(transcript_dir),
                 session_type="group",
                 source=source,
+                producer=self._producer,
             )
             await session.start(resume_session_id=None)
             self.sessions[chat_id] = session
 
             # Always inject system prompt - session reads old messages for context
             startup = await self._build_group_system_prompt(
-                session_name, chat_id, display_name, participants, source
+                session_name, chat_id, display_name, participants, source,
+                restart_role=restart_role,
             )
             await session.inject(startup)
 
@@ -746,6 +881,10 @@ Gemini analyzed the attached image:
             )
 
             lifecycle_log.info(f"CREATE | {session_name} | SUCCESS | type=group chat_id={chat_id}")
+            produce_session_event(self._producer, chat_id, "session.created", {
+                "contact_name": display_name or chat_id, "tier": "admin",
+                "session_type": "group", "source": source,
+            }, source="daemon")
             return session
 
     async def _create_group_session_unlocked(
@@ -773,7 +912,7 @@ Gemini analyzed the attached image:
             from assistant.backends import get_backend
             backend = get_backend(source)
             if not backend.registry_prefix:  # iMessage has no prefix
-                participants = self._resolve_group_participants(chat_id)
+                participants = await self._resolve_group_participants(chat_id)
 
         session_name = self.get_group_session_name(chat_id, display_name, source)
         transcript_dir = ensure_transcript_dir(session_name)
@@ -785,6 +924,7 @@ Gemini analyzed the attached image:
             cwd=str(transcript_dir),
             session_type="group",
             source=source,
+            producer=self._producer,
         )
         await session.start(resume_session_id=None)
         self.sessions[chat_id] = session
@@ -805,6 +945,10 @@ Gemini analyzed the attached image:
         )
 
         lifecycle_log.info(f"CREATE | {session_name} | SUCCESS | type=group chat_id={chat_id}")
+        produce_session_event(self._producer, chat_id, "session.created", {
+            "contact_name": display_name or chat_id, "tier": "admin",
+            "session_type": "group", "source": source,
+        }, source="daemon")
         return session
 
     async def inject_group_message(
@@ -845,13 +989,17 @@ Gemini analyzed the attached image:
         )
         await session.inject(wrapped)
         self.registry.update_last_message_time(chat_id)
+        produce_session_event(self._producer, chat_id, "session.injected",
+            session_injected_payload(chat_id, "group", sender_name, sender_tier,
+                                     group_name=display_name),
+            source="inject")
 
         # Spawn async Gemini vision analysis for image attachments
         if attachments:
             for att in attachments:
                 image_path = att.get("path")
                 if image_path and Path(image_path).suffix.lower() in IMAGE_EXTENSIONS:
-                    asyncio.create_task(
+                    _fire_and_forget(
                         self._inject_gemini_vision(
                             session, chat_id, image_path,
                             source=source,
@@ -900,6 +1048,7 @@ Gemini analyzed the attached image:
                 cwd=str(transcript_dir),
                 session_type="background",
                 source=source,
+                producer=self._producer,
             )
             await session.start()
             self.sessions[bg_id] = session
@@ -922,6 +1071,10 @@ Ready for tasks...
             await session.inject(bg_prompt)
 
             lifecycle_log.info(f"CREATE | {fg_session_name}-bg | SUCCESS | background for {contact_name}")
+            produce_session_event(self._producer, bg_id, "session.created", {
+                "contact_name": f"{contact_name} (BG)", "tier": tier,
+                "session_type": "background", "source": source,
+            }, source="daemon")
             return session
 
     async def inject_consolidation(self, contact_name: str, chat_id: str):
@@ -998,11 +1151,16 @@ Start now!
                 tier="admin",
                 cwd=str(MASTER_TRANSCRIPT_DIR),
                 session_type="master",
+                producer=self._producer,
             )
             await session.start()
             self.sessions[MASTER_SESSION] = session
 
             lifecycle_log.info("MASTER | CREATED")
+            produce_session_event(self._producer, MASTER_SESSION, "session.created", {
+                "contact_name": "Master", "tier": "admin",
+                "session_type": "master", "source": "imessage",
+            }, source="daemon")
             return session
 
     async def inject_master_prompt(self, admin_phone: str, prompt: str) -> bool:
@@ -1023,6 +1181,10 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
 """
         await session.inject(wrapped)
         lifecycle_log.info(f"MASTER | INJECTED | prompt_len={len(prompt)}")
+        produce_session_event(self._producer, MASTER_SESSION, "session.injected", {
+            "chat_id": MASTER_SESSION, "injection_type": "master",
+            "contact_name": "Master", "tier": "admin",
+        }, source="inject")
         return True
 
     # ──────────────────────────────────────────────────────────────
@@ -1039,6 +1201,12 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             # Save session_id before stopping
             if session.session_id:
                 self.registry.update_session_id(chat_id, session.session_id)
+            uptime = (datetime.now() - session.created_at).total_seconds()
+            produce_session_event(self._producer, chat_id, "session.killed", {
+                "contact_name": session.contact_name, "tier": session.tier,
+                "turn_count": session.turn_count, "uptime_seconds": round(uptime, 1),
+                "error_count": session._error_count,
+            }, source="daemon")
             await session.stop()
         if bg_session:
             await bg_session.stop()
@@ -1116,11 +1284,16 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             contact_name = reg.get("contact_name") or reg.get("display_name", "Unknown")
             # Use tier_override if provided, else fall back to registry or default
             tier = tier_override or reg.get("tier", "admin")
+            source = reg.get("source", "imessage")
+            produce_session_event(self._producer, chat_id, "session.restarted", {
+                "contact_name": contact_name, "tier": tier,
+                "reason": "restart_requested",
+            }, source="daemon")
             session = await self.create_session(
                 contact_name,
                 chat_id,
                 tier,
-                reg.get("source", "imessage"),
+                source,
                 reg.get("type", "individual"),
             )
             lifecycle_log.info(f"RESTART | {reg.get('session_name', chat_id)} | COMPLETE")
@@ -1137,6 +1310,11 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                 f"HEALTH_CHECK | {session.contact_name} | UNHEALTHY | "
                 f"alive={session.is_alive()} errors={session._error_count}"
             )
+            produce_session_event(self._producer, chat_id, "session.crashed", {
+                "contact_name": session.contact_name,
+                "error_count": session._error_count,
+                "turn_count": session.turn_count,
+            }, source="daemon")
             # Fire-and-forget: do NOT await restart_session at all.
             async def _isolated_restart(cid: str):
                 try:
@@ -1144,7 +1322,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                 except Exception as e:
                     log.error(f"Health check restart failed for {cid}: {e}")
 
-            asyncio.create_task(_isolated_restart(chat_id), name=f"health-restart-{chat_id}")
+            _fire_and_forget(_isolated_restart(chat_id), name=f"health-restart-{chat_id}")
             return False
         return True
 
@@ -1169,6 +1347,10 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             )
             if result.returncode == 0:
                 lifecycle_log.info(f"AUTH_ERROR_NOTIFY | Sent SMS to admin: {message}")
+                produce_event(self._producer, "messages", "message.sent", {
+                    "chat_id": admin_phone, "text": message,
+                    "is_group": False, "success": True, "context": "auth_error",
+                }, key=admin_phone, source="daemon")
             else:
                 log.warning(f"AUTH_ERROR_NOTIFY | SMS failed: {result.stderr}")
         except Exception as e:
@@ -1185,6 +1367,11 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         perf.gauge("active_sessions", alive_count, component="daemon")
 
         lifecycle_log.info(f"HEALTH_CHECK_ALL | COMPLETE | {sum(results.values())}/{len(results)} healthy")
+        produce_event(self._producer, "system", "health.check_completed",
+            health_check_payload(active_sessions=alive_count,
+                                 healthy=sum(results.values()),
+                                 total=len(results)),
+            source="health")
         return results
 
     async def fast_health_check(self) -> List[str]:
@@ -1229,7 +1416,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                     except Exception as e:
                         log.error(f"Fast heal restart failed for {cid}: {e}")
 
-                asyncio.create_task(
+                _fire_and_forget(
                     _isolated_restart(chat_id),
                     name=f"fast-heal-dead-{chat_id}",
                 )
@@ -1272,7 +1459,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                     except Exception as e:
                         log.error(f"Fast heal restart failed for {cid}: {e}")
 
-                asyncio.create_task(
+                _fire_and_forget(
                     _isolated_restart(chat_id),
                     name=f"fast-heal-{chat_id}",
                 )
@@ -1282,6 +1469,10 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             f"FAST_HEAL | SCAN | {len(self.sessions)} sessions checked | "
             f"{len(restarted)} fatal"
         )
+        produce_event(self._producer, "system", "health.fast_check_completed", {
+            "sessions_checked": len(self.sessions),
+            "restarted": len(restarted),
+        }, source="health")
         return restarted
 
     async def deep_health_check(self, skip_chat_ids: set | None = None) -> List[str]:
@@ -1329,7 +1520,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                     except Exception as e:
                         log.error(f"Deep heal restart failed for {cid}: {e}")
 
-                asyncio.create_task(
+                _fire_and_forget(
                     _isolated_restart(chat_id),
                     name=f"deep-heal-{chat_id}",
                 )
@@ -1339,6 +1530,10 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             f"DEEP_HEAL | SCAN | {len(self.sessions) - len(skip)} sessions checked | "
             f"{len(restarted)} fatal"
         )
+        produce_event(self._producer, "system", "health.deep_check_completed", {
+            "sessions_checked": len(self.sessions) - len(skip),
+            "restarted": len(restarted),
+        }, source="health")
         return restarted
 
     async def check_idle_sessions(self, timeout_hours: float) -> List[str]:
@@ -1359,6 +1554,9 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                     f"IDLE_TIMEOUT | {session.contact_name} | KILLING | "
                     f"idle_hours={idle_hours:.1f} threshold={timeout_hours}"
                 )
+                produce_session_event(self._producer, chat_id, "session.idle_killed", {
+                    "contact_name": session.contact_name, "idle_hours": round(idle_hours, 1),
+                }, source="health")
                 # Fire-and-forget: do NOT await kill_session at all.
                 # Awaiting (even via wait_for on a separate task) allows anyio
                 # cancel scopes to leak CancelledError to this task.
@@ -1368,7 +1566,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                     except Exception as e:
                         log.error(f"Idle kill failed for {cid}: {e}")
 
-                asyncio.create_task(_isolated_kill(chat_id), name=f"idle-kill-{chat_id}")
+                _fire_and_forget(_isolated_kill(chat_id), name=f"idle-kill-{chat_id}")
                 killed.append(chat_id)
         return killed
 
@@ -1494,6 +1692,12 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             sessions = list(self.sessions.values())
             self.sessions.clear()
 
+        # Mark all active sessions in registry so they get recreated on startup
+        # (even if summary generation fails or is killed before completing)
+        for s in sessions:
+            if s.chat_id:
+                self.registry.mark_was_active(s.chat_id)
+
         # Generate summaries for active sessions before stopping them
         # This preserves context across daemon restarts
         if sessions:
@@ -1563,6 +1767,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         tier: str,
         chat_id: str,
         source: str = "imessage",
+        restart_role: str | None = None,
     ) -> str:
         """Build the startup prompt for an individual session.
 
@@ -1596,6 +1801,38 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         else:
             history_note = f"({backend.label} session - no message history command available yet)"
 
+        # Restart notification behavior depends on how this session was created
+        # Only the session that initiated the restart sends a back-online message.
+        # All other sessions stay silent — users shouldn't notice restarts.
+        if restart_role == "initiator":
+            # This session triggered the restart — let the user know we're back
+            restart_instruction = (
+                "IMPORTANT: You asked for a daemon restart and it completed successfully. "
+                "Send a brief back-online message to let the user know you're back. "
+                "Keep it short and casual (e.g. 'back online 👍'). "
+                "Do this BEFORE resuming any work."
+            )
+        elif restart_role == "passive":
+            # Restarted by something else — stay silent, user shouldn't notice
+            restart_instruction = (
+                "CRITICAL: Do NOT send any restart notification, 'back online' message, or any greeting. "
+                "Users should NOT notice session restarts. Just silently resume — read history and act on it "
+                "without announcing yourself.\n\n"
+                "EXCEPTION: If the last IN message from the user explicitly asked for a restart/deploy "
+                "(e.g. 'restart', 'deploy', 'yes restart'), send a brief back-online confirmation "
+                "(e.g. 'back online 👍'). The user asked for this and is waiting to know it worked."
+            )
+        else:
+            # Fresh session creation (not a restart) — no notification needed
+            restart_instruction = (
+                "CRITICAL: Do NOT send any restart notification, 'back online' message, or any greeting. "
+                "Users should NOT notice session restarts. Just silently resume — read history and act on it "
+                "without announcing yourself.\n\n"
+                "EXCEPTION: If the last IN message from the user explicitly asked for a restart/deploy "
+                "(e.g. 'restart', 'deploy', 'yes restart'), send a brief back-online confirmation "
+                "(e.g. 'back online 👍'). The user asked for this and is waiting to know it worked."
+            )
+
         return f"""SESSION START - INDIVIDUAL {backend.label} CHAT: {contact_name} ({tier} tier)
 Chat ID: {chat_id}
 {soul_section}{notes_section}{memory_section}{context_section}{summary_section}
@@ -1614,7 +1851,7 @@ After reading, act based on what you see:
 3. **Conversation was idle** (no pending work or questions):
    - Wait silently for new messages
 
-CRITICAL: Never send restart notifications. Users shouldn't notice session restarts.
+{restart_instruction}
 
 **If you need more context** about what you were doing before restart:
 uv run ~/.claude/skills/sms-assistant/scripts/read_transcript.py --session {session_name}
@@ -1636,6 +1873,7 @@ Quick reference:
         display_name: str | None = None,
         participants: list | None = None,
         source: str = "imessage",
+        restart_role: str | None = None,
     ) -> str:
         """Build the startup prompt for a group session.
 
@@ -1712,7 +1950,7 @@ Participants:
 
 After reading, act based on what you see - respond to unanswered messages, continue work in progress, or wait silently.
 
-CRITICAL: Never send restart notifications. Users shouldn't notice session restarts.
+{"CRITICAL: Do NOT send any restart notification, 'back online' message, or any greeting. Users should NOT notice session restarts. Just silently resume — read history and act on it without announcing yourself."}
 
 **To send a message to this group using heredoc (no temp files - avoids race conditions between sessions):**
 {send_cmd} "$(cat <<'ENDMSG'
@@ -1773,37 +2011,41 @@ All other system documentation applies normally (see ~/.claude/CLAUDE.md via sym
         claude_md_path.write_text(content)
         log.info(f"Created {backend.label}-specific CLAUDE.md at {claude_md_path}")
 
-    def _resolve_group_participants(self, chat_id: str) -> list:
-        """Resolve group participants from chat.db and contacts."""
-        import sqlite3
-        from assistant.common import MESSAGES_DB
-        try:
-            conn = sqlite3.connect(str(MESSAGES_DB))
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT h.id
-                FROM handle h
-                JOIN chat_handle_join chj ON h.ROWID = chj.handle_id
-                JOIN chat c ON chj.chat_id = c.ROWID
-                WHERE c.chat_identifier = ?
-            """, (chat_id,))
-            phones = [row[0] for row in cursor.fetchall()]
-            conn.close()
+    async def _resolve_group_participants(self, chat_id: str) -> list:
+        """Resolve group participants from chat.db and contacts (async, non-blocking)."""
+        def _sync_resolve():
+            import sqlite3
+            from assistant.common import MESSAGES_DB
+            try:
+                conn = sqlite3.connect(str(MESSAGES_DB), timeout=5)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT h.id
+                    FROM handle h
+                    JOIN chat_handle_join chj ON h.ROWID = chj.handle_id
+                    JOIN chat c ON chj.chat_id = c.ROWID
+                    WHERE c.chat_identifier = ?
+                """, (chat_id,))
+                phones = [row[0] for row in cursor.fetchall()]
+                conn.close()
+                return phones
+            except Exception as e:
+                log.warning(f"Failed to resolve group participants for {chat_id}: {e}")
+                return []
 
-            names = []
-            for phone in phones:
-                if self.contacts:
-                    contact = self.contacts.lookup_identifier(phone)
-                    if contact:
-                        names.append(contact["name"])
-                    else:
-                        names.append(phone)
+        phones = await asyncio.get_event_loop().run_in_executor(None, _sync_resolve)
+
+        names = []
+        for phone in phones:
+            if self.contacts:
+                contact = self.contacts.lookup_identifier(phone)
+                if contact:
+                    names.append(contact["name"])
                 else:
                     names.append(phone)
-            return names
-        except Exception as e:
-            log.warning(f"Failed to resolve group participants for {chat_id}: {e}")
-            return []
+            else:
+                names.append(phone)
+        return names
 
     async def _get_memory_summary(self, contact_name: str) -> str:
         """Get memory summary for a contact from DuckDB (async, non-blocking)."""
@@ -1831,7 +2073,9 @@ All other system documentation applies normally (see ~/.claude/CLAUDE.md via sym
         try:
             soul_path = HOME / ".claude" / "SOUL.md"
             if soul_path.exists():
-                return soul_path.read_text()
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, soul_path.read_text
+                )
         except Exception as e:
             log.warning(f"Could not load SOUL.md: {e}")
         return ""
@@ -1873,7 +2117,7 @@ All other system documentation applies normally (see ~/.claude/CLAUDE.md via sym
                         None, context_file.read_text
                     )
                     # Skip empty or just-header files
-                    if content and "## Ongoing" in content or "## Pending" in content or "## Recent Topics" in content:
+                    if content and ("## Ongoing" in content or "## Pending" in content or "## Recent Topics" in content):
                         return content
         except Exception as e:
             log.warning(f"Could not load CONTEXT.md for {session_name}: {e}")

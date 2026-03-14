@@ -1,0 +1,383 @@
+"""
+Shared bus event production helpers.
+
+All event production is non-blocking and fire-and-forget.
+Failures are logged but never block the caller.
+
+Topic/type taxonomy (v6):
+    messages  — message.received, message.sent, message.failed,
+                message.produce_failed, message.processing_failed,
+                message.ignored,
+                reaction.received, reaction.ignored (keyed by chat_id)
+    sessions  — session.created/restarted/killed/compacted/crashed/injected,
+                session.idle_killed, session.prewarmed, session.tier_mismatch,
+                session.prompt_built, session.receive_error,
+                session.stop_failed, session.model_changed,
+                permission.denied, command.restart (keyed by chat_id)
+    system    — daemon.started/stopped/crashed/recovered,
+                health.check_completed, health.check_failed,
+                health.fast_check_completed,
+                health.deep_check_completed, health.service_restarted,
+                health.service_spawned,
+                consolidation.started, consolidation.completed, consolidation.failed,
+                consumer.crashed, consumer.restart_failed,
+                skillify.started, skillify.completed,
+                reminder.fired, reminder.failed,
+                healme.triggered, healme.completed,
+                vision.analyzed, vision.failed,
+                compaction.triggered,
+                master.triggered,
+                signal.connection_state,
+                sdk.turn_complete (keyed by component/session_name)
+
+Source column semantics per topic:
+    messages: transport layer — "imessage", "signal", "test"
+    sessions: origin context — "daemon", "health", "ipc", "inject", "sdk"
+    system:   component name — "daemon", "watchdog", "health", "consolidation",
+              "consumer", "reminder", "healme", "vision", "compaction", "sdk", "signal"
+"""
+import json
+import logging
+
+log = logging.getLogger(__name__)
+
+
+def _ensure_json_safe(payload: dict) -> dict:
+    """Ensure all values in payload are JSON-serializable, including nested.
+
+    Returns a new dict with non-serializable values replaced by their repr().
+    Fast path: try json.dumps() directly; only fall back to default=repr if needed.
+    """
+    try:
+        json.dumps(payload)
+        return payload  # Already safe, no copy needed
+    except (TypeError, ValueError):
+        return json.loads(json.dumps(payload, default=repr))
+
+
+def produce_event(producer, topic: str, event_type: str, payload: dict,
+                  key: str | None = None, source: str = "daemon"):
+    """Non-blocking event production (fire-and-forget).
+
+    Args:
+        producer: Bus Producer instance (or None — silently no-ops).
+        topic: Target topic ("messages", "sessions", "system").
+        event_type: Event type (e.g. "message.received", "session.created").
+        payload: JSON-serializable dict.
+        key: Partition key (usually chat_id).
+        source: Origin context (semantics vary by topic — see module docstring).
+    """
+    if not producer:
+        return
+    try:
+        safe_payload = _ensure_json_safe(payload)
+        producer.send(
+            topic,
+            payload=safe_payload,
+            key=key,
+            type=event_type,
+            source=source,
+        )
+    except Exception as e:
+        log.warning(f"Bus produce [{topic}/{event_type}] failed (non-fatal): {e}")
+
+
+def produce_session_event(producer, chat_id: str, event_type: str, payload: dict,
+                          source: str = "daemon"):
+    """Convenience wrapper for session topic events."""
+    produce_event(producer, "sessions", event_type, payload, key=chat_id, source=source)
+
+
+# ─── Payload builders ──────────────────────────────────────────────
+# Canonical schemas for event payloads. Ensures consistency across producers.
+
+def message_sent_payload(chat_id: str, text: str | None, is_group: bool,
+                         success: bool, **extra) -> dict:
+    """Build a consistent message.sent / message.failed payload.
+
+    Required fields (always present):
+        chat_id, text, is_group, success
+    Optional fields (transport-specific):
+        elapsed_ms, has_image, has_file, etc.
+    """
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "is_group": is_group,
+        "success": success,
+    }
+    payload.update(extra)
+    return payload
+
+
+def reaction_received_payload(chat_id: str, phone: str, emoji: str,
+                              target_text: str | None = None,
+                              is_removal: bool = False,
+                              **extra) -> dict:
+    """Build a reaction.received payload."""
+    payload = {
+        "chat_id": chat_id,
+        "phone": phone,
+        "emoji": emoji,
+        "is_removal": is_removal,
+    }
+    if target_text is not None:
+        payload["target_text"] = target_text
+    payload.update(extra)
+    return payload
+
+
+def health_check_payload(services_restarted: list[str] | None = None,
+                         **extra) -> dict:
+    """Build a health.check_completed payload."""
+    payload = {
+        "services_restarted": services_restarted or [],
+    }
+    payload.update(extra)
+    return payload
+
+
+def service_restarted_payload(service: str, reason: str, **extra) -> dict:
+    """Build a health.service_restarted payload."""
+    payload = {
+        "service": service,
+        "reason": reason,
+    }
+    payload.update(extra)
+    return payload
+
+
+def consolidation_payload(stage: str, success: bool = True, **extra) -> dict:
+    """Build a consolidation.started/completed/failed payload."""
+    payload = {
+        "stage": stage,
+        "success": success,
+    }
+    payload.update(extra)
+    return payload
+
+
+def reminder_payload(reminder_id: str, contact: str, chat_id: str,
+                     title: str, schedule_type: str, success: bool = True,
+                     **extra) -> dict:
+    """Build a reminder.fired/failed payload."""
+    payload = {
+        "reminder_id": reminder_id,
+        "contact": contact,
+        "chat_id": chat_id,
+        "title": title,
+        "schedule_type": schedule_type,
+        "success": success,
+    }
+    payload.update(extra)
+    return payload
+
+
+def session_injected_payload(chat_id: str, injection_type: str,
+                             contact_name: str | None = None,
+                             tier: str | None = None, **extra) -> dict:
+    """Build a session.injected payload.
+
+    injection_type: "message", "reaction", "group", "consolidation", "reminder"
+    """
+    payload = {
+        "chat_id": chat_id,
+        "injection_type": injection_type,
+    }
+    if contact_name:
+        payload["contact_name"] = contact_name
+    if tier:
+        payload["tier"] = tier
+    payload.update(extra)
+    return payload
+
+
+def healme_payload(admin_phone: str, admin_name: str, stage: str,
+                   custom_prompt: str | None = None, **extra) -> dict:
+    """Build a healme.triggered/completed payload."""
+    payload = {
+        "admin_phone": admin_phone,
+        "admin_name": admin_name,
+        "stage": stage,
+    }
+    if custom_prompt is not None:
+        payload["custom_prompt"] = custom_prompt
+    payload.update(extra)
+    return payload
+
+
+def vision_payload(chat_id: str, image_path: str, success: bool,
+                   description_length: int = 0, **extra) -> dict:
+    """Build a vision.analyzed/failed payload."""
+    payload = {
+        "chat_id": chat_id,
+        "image_path": image_path,
+        "success": success,
+        "description_length": description_length,
+    }
+    payload.update(extra)
+    return payload
+
+
+def compaction_triggered_payload(session_name: str, chat_id: str,
+                                  contact_name: str, turn_count: int,
+                                  **extra) -> dict:
+    """Build a compaction.triggered payload."""
+    payload = {
+        "session_name": session_name,
+        "chat_id": chat_id,
+        "contact_name": contact_name,
+        "turn_count": turn_count,
+    }
+    payload.update(extra)
+    return payload
+
+
+def service_spawned_payload(service: str, pid: int, **extra) -> dict:
+    """Build a health.service_spawned payload."""
+    payload = {
+        "service": service,
+        "pid": pid,
+    }
+    payload.update(extra)
+    return payload
+
+
+def sanitize_reaction_for_bus(reaction: dict) -> dict:
+    """Convert a raw reaction dict to a JSON-safe bus payload.
+
+    Whitelists known fields and converts non-JSON-safe types.
+    """
+    FIELDS = {
+        "rowid", "phone", "emoji", "is_removal", "target_guid",
+        "target_text", "target_is_from_me", "is_group",
+        "chat_identifier", "source",
+    }
+    payload = {}
+    for k, v in reaction.items():
+        if k == "timestamp" and hasattr(v, "timestamp"):
+            payload["timestamp_ms"] = int(v.timestamp() * 1000)
+        elif k in FIELDS:
+            payload[k] = v
+        else:
+            try:
+                json.dumps(v)
+                payload[k] = v
+            except (TypeError, ValueError):
+                pass
+
+    # Ensure chat_id is set
+    if "chat_id" not in payload:
+        is_group = reaction.get("is_group", False)
+        chat_id = reaction.get("chat_identifier") if is_group else reaction.get("phone")
+        if chat_id:
+            payload["chat_id"] = chat_id
+
+    return payload
+
+
+def reconstruct_reaction_from_bus(payload: dict) -> dict:
+    """Reconstruct a raw reaction dict from a bus payload.
+
+    Reverses sanitize_reaction_for_bus().
+    """
+    from datetime import datetime
+
+    reaction = dict(payload)
+
+    if "timestamp_ms" in reaction:
+        reaction["timestamp"] = datetime.fromtimestamp(reaction.pop("timestamp_ms") / 1000)
+
+    reaction.pop("chat_id", None)
+
+    return reaction
+
+
+def sanitize_msg_for_bus(msg: dict) -> dict:
+    """Convert a raw message dict (from chat.db/signal) to a JSON-safe bus payload.
+
+    Lossless: preserves all fields needed by process_message() for consumer-driven
+    processing. Converts non-JSON-safe types (datetime → timestamp_ms, Path → str).
+
+    Includes original timestamp for latency measurement:
+        bus record timestamp - payload.timestamp_ms = ingestion latency.
+    """
+    payload = {}
+
+    # Whitelist of known fields from MessagesReader and SignalListener
+    DIRECT_FIELDS = {
+        "rowid", "phone", "text", "is_group", "group_name",
+        "chat_identifier", "is_audio_message", "audio_transcription",
+        "thread_originator_guid", "source",
+    }
+
+    for k, v in msg.items():
+        if k == "timestamp" and hasattr(v, "timestamp"):
+            # Convert datetime to unix ms for JSON safety
+            payload["timestamp_ms"] = int(v.timestamp() * 1000)
+        elif k == "attachments":
+            # Preserve full attachment dicts (path, mime_type, name, size)
+            # for downstream consumers (Gemini vision, format_message_body).
+            # Paths are already strings from MessagesReader; safety-convert any Path objects.
+            payload["has_attachments"] = bool(v)
+            payload["attachment_count"] = len(v) if v else 0
+            if v:
+                safe_attachments = []
+                for att in v:
+                    safe_att = {}
+                    for ak, av in att.items():
+                        try:
+                            json.dumps(av)
+                            safe_att[ak] = av
+                        except (TypeError, ValueError):
+                            safe_att[ak] = str(av)
+                    safe_attachments.append(safe_att)
+                payload["attachments"] = safe_attachments
+        elif k in DIRECT_FIELDS:
+            payload[k] = v
+        else:
+            # Unknown field — include if JSON-safe, skip otherwise.
+            # Fast path: common types are always safe.
+            if isinstance(v, (str, int, float, bool, type(None))):
+                payload[k] = v
+            else:
+                try:
+                    json.dumps(v)
+                    payload[k] = v
+                except (TypeError, ValueError):
+                    pass
+
+    # Ensure chat_id is always set
+    if "chat_id" not in payload:
+        is_group = msg.get("is_group", False)
+        chat_id = msg.get("chat_identifier") if is_group else msg.get("phone")
+        if chat_id:
+            payload["chat_id"] = chat_id
+
+    return payload
+
+
+def reconstruct_msg_from_bus(payload: dict) -> dict:
+    """Reconstruct a raw message dict from a bus payload.
+
+    Reverses sanitize_msg_for_bus() so that process_message() can consume
+    bus records identically to raw message dicts.
+
+    Conversions:
+        timestamp_ms (int) → timestamp (datetime)
+        attachments: kept as-is (string paths work for process_message)
+    """
+    from datetime import datetime
+
+    msg = dict(payload)  # shallow copy
+
+    # Restore datetime timestamp from timestamp_ms
+    if "timestamp_ms" in msg:
+        msg["timestamp"] = datetime.fromtimestamp(msg.pop("timestamp_ms") / 1000)
+
+    # Remove convenience fields that aren't in the original msg dict
+    msg.pop("has_attachments", None)
+    msg.pop("attachment_count", None)
+    msg.pop("chat_id", None)  # process_message derives this from phone/chat_identifier
+
+    return msg

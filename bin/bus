@@ -1,0 +1,392 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""
+bus — CLI for querying, tailing, and inspecting the dispatch message bus.
+
+Usage:
+    bus tail [topic] [--type TYPE] [--source SOURCE] [--key KEY]
+    bus query [topic] [--type TYPE] [--source SOURCE] [--key KEY] [--since DURATION] [--limit N] [--json]
+    bus stats [topic]
+    bus topics
+    bus export [topic] [--since DURATION] [--format json|csv]
+
+Examples:
+    bus tail                              # tail all topics
+    bus tail messages                     # tail message events
+    bus tail sessions --type session.crashed  # tail crashes only
+    bus query messages --since 1h         # last hour of messages
+    bus query sessions --type session.compacted --limit 5
+    bus stats                             # counts per topic/type
+    bus stats messages                    # counts for messages topic
+    bus topics                            # list topics with metadata
+    bus export messages --format csv      # export to CSV
+"""
+
+import argparse
+import csv
+import json
+import io
+import sqlite3
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+DB_PATH = Path.home() / "dispatch" / "state" / "bus.db"
+
+
+def parse_duration(s: str) -> timedelta:
+    """Parse duration strings like '1h', '30m', '7d', '2h30m'."""
+    total = timedelta()
+    current_num = ""
+    for c in s:
+        if c.isdigit():
+            current_num += c
+        elif c in "smhd" and current_num:
+            n = int(current_num)
+            if c == "s":
+                total += timedelta(seconds=n)
+            elif c == "m":
+                total += timedelta(minutes=n)
+            elif c == "h":
+                total += timedelta(hours=n)
+            elif c == "d":
+                total += timedelta(days=n)
+            current_num = ""
+        else:
+            raise ValueError(f"Invalid duration: {s}")
+    if current_num:
+        raise ValueError(f"Invalid duration: {s} (trailing number without unit)")
+    return total
+
+
+def format_timestamp(ts_ms: int) -> str:
+    """Format unix ms timestamp to human-readable local time."""
+    dt = datetime.fromtimestamp(ts_ms / 1000.0)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_ago(ts_ms: int) -> str:
+    """Format unix ms timestamp as relative time (e.g. '2m ago')."""
+    delta = time.time() - ts_ms / 1000.0
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    elif delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    elif delta < 86400:
+        return f"{delta / 3600:.1f}h ago"
+    else:
+        return f"{delta / 86400:.1f}d ago"
+
+
+def get_conn() -> sqlite3.Connection:
+    if not DB_PATH.exists():
+        print(f"Error: Bus database not found at {DB_PATH}", file=sys.stderr)
+        sys.exit(1)
+    return sqlite3.connect(str(DB_PATH))
+
+
+def build_where(args, params: list) -> str:
+    """Build WHERE clause from common filter args."""
+    clauses = []
+    if hasattr(args, "topic") and args.topic:
+        clauses.append("topic = ?")
+        params.append(args.topic)
+    if hasattr(args, "type") and args.type:
+        clauses.append("type = ?")
+        params.append(args.type)
+    if hasattr(args, "source") and args.source:
+        clauses.append("source = ?")
+        params.append(args.source)
+    if hasattr(args, "key") and args.key:
+        clauses.append("key = ?")
+        params.append(args.key)
+    if hasattr(args, "since") and args.since:
+        delta = parse_duration(args.since)
+        since_ms = int((datetime.now() - delta).timestamp() * 1000)
+        clauses.append("timestamp >= ?")
+        params.append(since_ms)
+    return " AND ".join(clauses) if clauses else "1=1"
+
+
+def format_record(row, show_payload=True, json_mode=False):
+    """Format a record row for display."""
+    topic, partition, offset, ts, key, rec_type, source, payload_json, _headers = row
+
+    if json_mode:
+        record = {
+            "topic": topic,
+            "partition": partition,
+            "offset": offset,
+            "timestamp": ts,
+            "time": format_timestamp(ts),
+            "key": key,
+            "type": rec_type,
+            "source": source,
+            "payload": json.loads(payload_json) if payload_json else None,
+        }
+        return json.dumps(record)
+
+    # Compact single-line format for tailing
+    time_str = format_timestamp(ts)
+    type_str = rec_type or "-"
+    source_str = source or "-"
+    key_str = key or "-"
+
+    # Truncate payload for display
+    if show_payload and payload_json:
+        payload = json.loads(payload_json)
+        # Show key fields inline
+        summary_parts = []
+        for k in ("text", "chat_id", "contact_name", "reason", "fatal_label", "summary_length"):
+            if k in payload:
+                v = payload[k]
+                if isinstance(v, str) and len(v) > 80:
+                    v = v[:77] + "..."
+                summary_parts.append(f"{k}={v}")
+        payload_str = " | ".join(summary_parts) if summary_parts else payload_json[:120]
+    else:
+        payload_str = ""
+
+    line = f"{time_str} | {type_str:<22} | {source_str:<10} | {key_str}"
+    if payload_str:
+        line += f" | {payload_str}"
+    return line
+
+
+# ─── Subcommands ──────────────────────────────────────────────────
+
+def cmd_tail(args):
+    """Tail events in real-time (polls every 500ms)."""
+    conn = get_conn()
+    params: list = []
+    where = build_where(args, params)
+
+    # Start from latest offset
+    cursor = conn.execute(
+        f"SELECT MAX(timestamp) FROM records WHERE {where}", params
+    )
+    row = cursor.fetchone()
+    last_ts = row[0] if row and row[0] else int(time.time() * 1000)
+
+    print(f"Tailing {'all topics' if not args.topic else args.topic}... (Ctrl+C to stop)")
+    print("-" * 100)
+
+    try:
+        while True:
+            params_poll: list = []
+            where_poll = build_where(args, params_poll)
+            params_poll.append(last_ts)
+
+            cursor = conn.execute(
+                f"SELECT topic, partition, offset, timestamp, key, type, source, payload, headers "
+                f"FROM records WHERE {where_poll} AND timestamp > ? "
+                f"ORDER BY timestamp ASC, offset ASC LIMIT 100",
+                params_poll,
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                print(format_record(row, json_mode=args.json))
+                if row[3] > last_ts:
+                    last_ts = row[3]
+
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+
+
+def cmd_query(args):
+    """Query historical events with filters."""
+    conn = get_conn()
+    params: list = []
+    where = build_where(args, params)
+    limit = args.limit or 50
+
+    cursor = conn.execute(
+        f"SELECT topic, partition, offset, timestamp, key, type, source, payload, headers "
+        f"FROM records WHERE {where} "
+        f"ORDER BY timestamp DESC, offset DESC LIMIT ?",
+        params + [limit],
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        print("No records found.")
+        return
+
+    # Reverse so oldest first
+    rows.reverse()
+
+    if args.json:
+        for row in rows:
+            print(format_record(row, json_mode=True))
+    else:
+        print(f"{'Time':<20} | {'Type':<22} | {'Source':<10} | {'Key':<20} | Payload")
+        print("-" * 100)
+        for row in rows:
+            print(format_record(row))
+        print(f"\n{len(rows)} records shown (limit={limit})")
+
+
+def cmd_stats(args):
+    """Show event counts per topic/type."""
+    conn = get_conn()
+
+    if args.topic:
+        # Stats for specific topic
+        cursor = conn.execute(
+            "SELECT type, source, COUNT(*), MIN(timestamp), MAX(timestamp) "
+            "FROM records WHERE topic = ? GROUP BY type, source ORDER BY COUNT(*) DESC",
+            (args.topic,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            print(f"No records in topic '{args.topic}'")
+            return
+
+        print(f"\n  Topic: {args.topic}")
+        print(f"  {'Type':<28} {'Source':<12} {'Count':>8}   {'First':<20} {'Last':<20}")
+        print("  " + "-" * 96)
+        total = 0
+        for rec_type, source, count, first_ts, last_ts in rows:
+            print(
+                f"  {rec_type or '-':<28} {source or '-':<12} {count:>8}   "
+                f"{format_timestamp(first_ts):<20} {format_ago(last_ts)}"
+            )
+            total += count
+        print(f"\n  Total: {total} records\n")
+    else:
+        # Stats for all topics
+        cursor = conn.execute(
+            "SELECT topic, type, COUNT(*) FROM records GROUP BY topic, type ORDER BY topic, COUNT(*) DESC"
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            print("No records in bus.")
+            return
+
+        current_topic = None
+        grand_total = 0
+        for topic, rec_type, count in rows:
+            if topic != current_topic:
+                if current_topic:
+                    print()
+                print(f"  {topic}:")
+                current_topic = topic
+            print(f"    {rec_type or '-':<28} {count:>8}")
+            grand_total += count
+        print(f"\n  Grand total: {grand_total} records\n")
+
+
+def cmd_topics(args):
+    """List topics with metadata."""
+    conn = get_conn()
+    cursor = conn.execute(
+        "SELECT name, partitions, retention_ms, created_at FROM topics ORDER BY name"
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        print("No topics.")
+        return
+
+    print(f"\n  {'Topic':<16} {'Partitions':>10} {'Retention':<14} {'Records':>8}")
+    print("  " + "-" * 56)
+    for name, partitions, retention_ms, created_at in rows:
+        # Get record count
+        c2 = conn.execute("SELECT COUNT(*) FROM records WHERE topic = ?", (name,))
+        count = c2.fetchone()[0]
+        retention_str = "infinite" if retention_ms == 0 else f"{retention_ms / 86400000:.0f}d"
+        print(f"  {name:<16} {partitions:>10} {retention_str:<14} {count:>8}")
+    print()
+
+
+def cmd_export(args):
+    """Export records to JSON or CSV."""
+    conn = get_conn()
+    params: list = []
+    where = build_where(args, params)
+
+    cursor = conn.execute(
+        f"SELECT topic, partition, offset, timestamp, key, type, source, payload, headers "
+        f"FROM records WHERE {where} ORDER BY timestamp ASC, offset ASC",
+        params,
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        print("No records to export.", file=sys.stderr)
+        return
+
+    if args.format == "csv":
+        writer = csv.writer(sys.stdout)
+        writer.writerow(["topic", "partition", "offset", "timestamp", "time", "key", "type", "source", "payload"])
+        for row in rows:
+            topic, partition, offset, ts, key, rec_type, source, payload_json, _headers = row
+            writer.writerow([
+                topic, partition, offset, ts, format_timestamp(ts),
+                key, rec_type, source, payload_json,
+            ])
+    else:
+        # JSON lines
+        for row in rows:
+            print(format_record(row, json_mode=True))
+
+    print(f"\nExported {len(rows)} records.", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Dispatch message bus CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # tail
+    p_tail = sub.add_parser("tail", help="Tail events in real-time")
+    p_tail.add_argument("topic", nargs="?", help="Topic to tail (default: all)")
+    p_tail.add_argument("--type", "-t", help="Filter by event type")
+    p_tail.add_argument("--source", "-s", help="Filter by source")
+    p_tail.add_argument("--key", "-k", help="Filter by key (chat_id)")
+    p_tail.add_argument("--json", "-j", action="store_true", help="Output as JSON lines")
+
+    # query
+    p_query = sub.add_parser("query", help="Query historical events")
+    p_query.add_argument("topic", nargs="?", help="Topic to query (default: all)")
+    p_query.add_argument("--type", "-t", help="Filter by event type")
+    p_query.add_argument("--source", "-s", help="Filter by source")
+    p_query.add_argument("--key", "-k", help="Filter by key (chat_id)")
+    p_query.add_argument("--since", help="Time window (e.g. 1h, 30m, 7d)")
+    p_query.add_argument("--limit", "-n", type=int, default=50, help="Max records (default: 50)")
+    p_query.add_argument("--json", "-j", action="store_true", help="Output as JSON lines")
+
+    # stats
+    p_stats = sub.add_parser("stats", help="Event count statistics")
+    p_stats.add_argument("topic", nargs="?", help="Topic to show stats for (default: all)")
+
+    # topics
+    sub.add_parser("topics", help="List topics with metadata")
+
+    # export
+    p_export = sub.add_parser("export", help="Export records to JSON/CSV")
+    p_export.add_argument("topic", nargs="?", help="Topic to export (default: all)")
+    p_export.add_argument("--since", help="Time window (e.g. 1h, 30m, 7d)")
+    p_export.add_argument("--format", "-f", choices=["json", "csv"], default="json", help="Output format")
+
+    args = parser.parse_args()
+
+    commands = {
+        "tail": cmd_tail,
+        "query": cmd_query,
+        "stats": cmd_stats,
+        "topics": cmd_topics,
+        "export": cmd_export,
+    }
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

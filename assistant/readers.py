@@ -116,6 +116,7 @@ class IMessageReader:
 
         anchor_macos = self._datetime_to_macos_timestamp(anchor_timestamp)
 
+        conn = None
         try:
             conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
@@ -160,8 +161,6 @@ class IMessageReader:
             """, (chat_id, anchor_macos, after))
             after_rows = cursor.fetchall()
 
-            conn.close()
-
             # Convert to ContextMessage
             messages = []
             for date_ns, text, is_from_me, sender in before_rows + after_rows:
@@ -178,6 +177,9 @@ class IMessageReader:
         except Exception as e:
             logger.warning(f"IMessageReader.get_context_around failed: {e}")
             return []
+        finally:
+            if conn:
+                conn.close()
 
 
 class SignalReader:
@@ -204,6 +206,7 @@ class SignalReader:
         # Signal uses Unix milliseconds
         anchor_ms = int(anchor_timestamp.timestamp() * 1000)
 
+        conn = None
         try:
             conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
@@ -232,8 +235,6 @@ class SignalReader:
             """, (chat_id, anchor_ms, after))
             after_rows = cursor.fetchall()
 
-            conn.close()
-
             # Convert to ContextMessage
             messages = []
             for ts_ms, text, is_from_me, sender, attachments_json in before_rows + after_rows:
@@ -254,6 +255,9 @@ class SignalReader:
         except Exception as e:
             logger.warning(f"SignalReader.get_context_around failed: {e}")
             return []
+        finally:
+            if conn:
+                conn.close()
 
 
 class DispatchAppReader:
@@ -283,6 +287,7 @@ class DispatchAppReader:
         # sven-app uses ISO format datetime strings
         anchor_str = anchor_timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
+        conn = None
         try:
             conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
@@ -306,8 +311,6 @@ class DispatchAppReader:
                 LIMIT ?
             """, (anchor_str, after))
             after_rows = cursor.fetchall()
-
-            conn.close()
 
             # Convert to ContextMessage
             messages = []
@@ -335,6 +338,9 @@ class DispatchAppReader:
         except Exception as e:
             logger.warning(f"DispatchAppReader.get_context_around failed: {e}")
             return []
+        finally:
+            if conn:
+                conn.close()
 
 
 def get_reader(source: str) -> MessageReader | None:

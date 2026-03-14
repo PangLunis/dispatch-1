@@ -15,12 +15,15 @@ from assistant import perf
 @pytest.fixture
 def temp_perf_dir(tmp_path):
     """Use a temporary directory for perf logs."""
+    perf.reset_state()  # Clean up any prior buffered state
     with patch.object(perf, "PERF_DIR", tmp_path):
         yield tmp_path
+        perf.reset_state()  # Flush and clean up after test
 
 
 def read_perf_log(perf_dir: Path) -> list[dict]:
     """Read all entries from today's perf log."""
+    perf.flush_metrics()  # Ensure buffered metrics are written to disk
     log_file = perf_dir / f"perf-{datetime.now():%Y-%m-%d}.jsonl"
     if not log_file.exists():
         return []

@@ -23,6 +23,7 @@ SKIP_DIRS = {
     "state",  # runtime state dir
     "sessions",  # runtime session data
     ".claude",  # symlink to ~/.claude which has personal data
+    "dist",  # built assets (gitignored, rebuilt from source)
     "skills.bak",  # backup of original skills
     "tests",  # test files legitimately contain PII as test constants
     "skills",  # has dedicated PII test in test_skills_in_repo.py

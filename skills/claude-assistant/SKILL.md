@@ -22,6 +22,7 @@ Manage the SMS assistant daemon and contact sessions.
 │  Daemon (manager.py)                        │
 │  Runs 24/7, polls Messages.app + Signal     │
 │  Routes messages to sessions                │
+│  Event bus (Kafka-on-SQLite) for audit trail│
 └─────────────────────────────────────────────┘
                     │
                     ▼

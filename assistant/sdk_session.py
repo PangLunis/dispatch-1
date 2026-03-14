@@ -75,6 +75,7 @@ if TYPE_CHECKING:
 
 from assistant.common import SKILLS_DIR, UV
 from assistant import perf
+from assistant.bus_helpers import produce_event, produce_session_event, compaction_triggered_payload
 
 log = logging.getLogger(__name__)
 
@@ -88,8 +89,13 @@ def _get_session_logger(session_name: str) -> logging.Logger:
     from logging.handlers import RotatingFileHandler
 
     logger = logging.getLogger(f"session.{session_name}")
-    # Clear existing handlers to prevent accumulation on session restarts
-    logger.handlers.clear()
+    # Close existing handlers to prevent FD leaks on session restarts
+    for h in logger.handlers[:]:
+        try:
+            h.close()
+        except Exception:
+            pass
+        logger.removeHandler(h)
     if True:
         handler = RotatingFileHandler(
             SESSION_LOG_DIR / f"{session_name}.log",
@@ -124,6 +130,7 @@ class SDKSession:
         session_type: str = "individual",
         source: str = "imessage",
         model: str = "opus",
+        producer=None,
     ):
         self.chat_id = chat_id
         self.contact_name = contact_name
@@ -132,6 +139,7 @@ class SDKSession:
         self.session_type = session_type
         self.source = source
         self.model = model
+        self._producer = producer
 
         self._client: Optional[ClaudeSDKClient] = None
         self._message_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -151,6 +159,7 @@ class SDKSession:
         self._needs_system_prompt: bool = False
         self._system_prompt_args: tuple | None = None
         self._system_prompt_type: str | None = None  # "individual" or "group"
+        self._restart_role: str | None = None  # "initiator", "passive", or None (fresh)
 
         # Tool execution timing: maps tool_use_id -> (start_time, tool_input, tool_name)
         self._pending_tools: dict[str, tuple[float, dict, str]] = {}
@@ -285,6 +294,11 @@ class SDKSession:
                 except asyncio.TimeoutError:
                     continue  # Check receiver health every 30s
 
+                # Sentinel from _receive_loop signals shutdown
+                if msg == "__SHUTDOWN__":
+                    self._log.info("SHUTDOWN_SENTINEL | Receiver requested shutdown")
+                    break
+
                 wake_start = time.time()
                 self.last_activity = datetime.now()
                 self._log.info(f"IN | {msg}")
@@ -346,12 +360,27 @@ class SDKSession:
             log.error(f"[{self.contact_name}] Receiver error: {e}")
             # Buffer overflow is fatal - the SDK connection is broken
             error_str = str(e).lower()
-            if "buffer" in error_str or "1048576" in error_str:
+            is_fatal = "buffer" in error_str or "1048576" in error_str
+            produce_session_event(self._producer, self.chat_id, "session.receive_error", {
+                "error": str(e), "error_count": self._error_count,
+                "is_fatal": is_fatal,
+                "contact_name": self.contact_name,
+            }, source="sdk")
+            if is_fatal:
                 self._log.error("RECEIVER_FATAL | Buffer overflow - marking session dead")
                 self.running = False
+                # Wake _run_loop immediately instead of waiting for 30s timeout
+                try:
+                    self._message_queue.put_nowait("__SHUTDOWN__")
+                except Exception:
+                    pass
             elif self._error_count >= 3:
                 self._log.error("RECEIVER_DEAD | Stopping session")
                 self.running = False
+                try:
+                    self._message_queue.put_nowait("__SHUTDOWN__")
+                except Exception:
+                    pass
 
     def _cleanup_stale_pending_tools(self) -> None:
         """Remove pending tools older than 30 minutes.
@@ -449,16 +478,31 @@ class SDKSession:
         if self.tier == "favorite":
             # Block file modifications
             if tool_name in ("Write", "Edit", "NotebookEdit"):
+                produce_session_event(self._producer, self.chat_id, "permission.denied", {
+                    "tool_name": tool_name, "tier": self.tier,
+                    "reason": f"{tool_name} blocked for favorites tier",
+                    "contact_name": self.contact_name,
+                }, source="sdk")
                 return PermissionResultDeny(message=f"{tool_name} blocked for favorites tier")
             # Block dangerous bash
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "")
                 if not cmd.startswith("osascript"):
+                    produce_session_event(self._producer, self.chat_id, "permission.denied", {
+                        "tool_name": tool_name, "tier": self.tier,
+                        "reason": "Only osascript allowed for favorites tier",
+                        "contact_name": self.contact_name,
+                    }, source="sdk")
                     return PermissionResultDeny(message="Only osascript allowed for favorites tier")
             # Block sensitive file reads
             if tool_name == "Read":
                 path = tool_input.get("file_path", "")
                 if any(s in path for s in [".ssh", ".env", "credentials", "secrets"]):
+                    produce_session_event(self._producer, self.chat_id, "permission.denied", {
+                        "tool_name": tool_name, "tier": self.tier,
+                        "reason": "Sensitive file blocked for favorites tier",
+                        "contact_name": self.contact_name,
+                    }, source="sdk")
                     return PermissionResultDeny(message="Sensitive file blocked for favorites tier")
 
         return PermissionResultAllow()
@@ -527,6 +571,9 @@ class SDKSession:
         session_name = get_session_name(self.chat_id, self.source)
         self._log.info(f"PRECOMPACT | triggered | session={session_name} turns={self.turn_count}")
         log.info(f"[{self.contact_name}] PreCompact hook fired (turns={self.turn_count})")
+        produce_event(self._producer, "system", "compaction.triggered",
+            compaction_triggered_payload(session_name, self.chat_id, self.contact_name, self.turn_count),
+            source="compaction")
 
         # Log to compactions.log for visibility
         compaction_log = Path.home() / "dispatch/logs/compactions.log"
@@ -534,14 +581,42 @@ class SDKSession:
         with open(compaction_log, "a") as f:
             f.write(f"{timestamp} | HOOK | PreCompact fired for {session_name}\n")
 
+        # Send compaction notice to the chat (fire-and-forget but reap the process)
+        try:
+            from assistant import config
+            from assistant.backends import get_backend
+            assistant_name = config.get("assistant.name", "Assistant")
+            backend = get_backend(self.source)
+            if self.session_type == "group":
+                send_tpl = backend.send_group_cmd
+            else:
+                send_tpl = backend.send_cmd
+            # Template is like '~/.claude/skills/.../send-sms "{chat_id}"'
+            # Extract the script path (before the first space) and expand ~
+            script_path = str(Path(send_tpl.split()[0]).expanduser())
+            bare_chat_id = self.chat_id.lstrip("+")
+            proc = subprocess.Popen(
+                [script_path, bare_chat_id, f"[{assistant_name.upper()}] Compacting conversation\u2026"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Reap in a background thread to prevent zombie processes
+            import threading
+            threading.Thread(target=proc.wait, daemon=True, name="reap-compact-sms").start()
+        except Exception as e:
+            self._log.error(f"PRECOMPACT | send notice failed: {e}")
+
         # Fire restart asynchronously - don't block the hook response
         restart_script = Path.home() / "dispatch" / "bin" / "summarize-and-restart"
         try:
-            subprocess.Popen(
+            proc2 = subprocess.Popen(
                 [str(restart_script), session_name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            # Reap in a background thread to prevent zombie processes
+            import threading
+            threading.Thread(target=proc2.wait, daemon=True, name="reap-compact-restart").start()
         except Exception as e:
             self._log.error(f"PRECOMPACT | restart failed: {e}")
 
@@ -628,6 +703,16 @@ class SDKSession:
                 f"duration={message.duration_ms}ms | error={message.is_error} | "
                 f"sid={message.session_id}"
             )
+            produce_event(self._producer, "system", "sdk.turn_complete", {
+                "session_name": f"{self.source}/{self.chat_id}",
+                "chat_id": self.chat_id,
+                "contact_name": self.contact_name,
+                "tier": self.tier,
+                "duration_ms": message.duration_ms,
+                "num_turns": message.num_turns,
+                "is_error": message.is_error,
+                "total_turns": self.turn_count,
+            }, key=f"{self.source}/{self.chat_id}", source="sdk")
 
         elif isinstance(message, SystemMessage):
             # Capture session_id from init message

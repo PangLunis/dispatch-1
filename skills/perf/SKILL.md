@@ -57,6 +57,18 @@ Analyze performance metrics from the dispatch daemon and SDK sessions.
 ### sven-api Component
 - `request_ms` - HTTP request latency (by endpoint)
 
+## Related: Bus Event Analytics
+
+The event bus (`~/dispatch/bus/`) tracks structured events (session lifecycle, message routing, SDK tool calls) in `~/dispatch/state/bus.db`. For bus-specific analytics:
+
+```bash
+cd ~/dispatch
+uv run python -m bus.cli stats        # Event counts and throughput
+uv run python -m bus.cli tail         # Live tail of events
+```
+
+The `sdk_events` table in bus.db tracks per-tool-call data (tool_name, duration_ms, is_error) with 3-day retention — complementary to the perf JSONL metrics below.
+
 ## Log Location
 
 Metrics are stored as JSONL in:
@@ -90,7 +102,7 @@ For `tool_execution` events, the schema includes smart-parsed fields per tool ty
   "metric": "tool_execution",
   "value": 72.5,
   "event": "tool_execution",
-  "session": "imessage/+15555550001",
+  "session": "imessage/+10005551234",
   "tool": "Bash",
   "is_error": false,
   "input": {

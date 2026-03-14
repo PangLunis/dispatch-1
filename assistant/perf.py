@@ -46,21 +46,79 @@ MAX_FILE_SIZE_MB = 100
 # Sampling state for high-frequency metrics
 _sample_counters: dict[str, int] = {}
 
+# Buffered writer: accumulate metrics in memory and flush periodically
+# to avoid opening a file for every single metric.
+import threading
+
+_buffer: list[str] = []
+_buffer_lock = threading.Lock()
+_flush_timer: threading.Timer | None = None
+_FLUSH_INTERVAL = 2.0  # seconds
+_current_fh: Any = None
+_current_date: str = ""
+_size_exceeded: bool = False
+
+
+def _get_file_handle():
+    """Get or create the file handle for today's perf log."""
+    global _current_fh, _current_date, _size_exceeded
+    today = f"{datetime.now():%Y-%m-%d}"
+    if _current_date != today:
+        # Day rolled over, close old handle
+        if _current_fh is not None:
+            try:
+                _current_fh.close()
+            except Exception:
+                pass
+        _current_fh = None
+        _current_date = today
+        _size_exceeded = False
+
+    if _size_exceeded:
+        return None
+
+    if _current_fh is None:
+        PERF_DIR.mkdir(parents=True, exist_ok=True)
+        path = PERF_DIR / f"perf-{today}.jsonl"
+        if path.exists() and path.stat().st_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+            _size_exceeded = True
+            print(f"[perf] WARNING: {path} exceeds {MAX_FILE_SIZE_MB}MB, skipping", file=sys.stderr)
+            return None
+        _current_fh = open(path, "a")
+
+    return _current_fh
+
+
+def _flush_buffer():
+    """Flush buffered metrics to disk.
+
+    Both buffer drain and file handle access are protected by _buffer_lock
+    to prevent race conditions on day rollover (Timer thread vs main thread).
+    """
+    global _flush_timer
+    with _buffer_lock:
+        if not _buffer:
+            _flush_timer = None
+            return
+        lines = _buffer[:]
+        _buffer.clear()
+        _flush_timer = None
+
+        # File handle access inside the lock to prevent concurrent
+        # day-rollover from Timer thread and flush_metrics() caller
+        try:
+            fh = _get_file_handle()
+            if fh:
+                fh.write("".join(lines))
+                fh.flush()
+        except Exception as e:
+            print(f"[perf] WARNING: failed to flush metrics: {e}", file=sys.stderr)
+
 
 def _log_metric(metric: str, value: float, **labels: Any) -> None:
-    """Append metric to daily JSONL file. Never raises."""
+    """Buffer metric for periodic flush. Never raises."""
+    global _flush_timer
     try:
-        PERF_DIR.mkdir(parents=True, exist_ok=True)
-        path = PERF_DIR / f"perf-{datetime.now():%Y-%m-%d}.jsonl"
-
-        # Check file size limit
-        if path.exists() and path.stat().st_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-            print(
-                f"[perf] WARNING: {path} exceeds {MAX_FILE_SIZE_MB}MB, skipping",
-                file=sys.stderr,
-            )
-            return
-
         entry = {
             "v": SCHEMA_VERSION,
             "ts": datetime.now().isoformat(),
@@ -68,10 +126,46 @@ def _log_metric(metric: str, value: float, **labels: Any) -> None:
             "value": value,
             **labels,
         }
-        with open(path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+        line = json.dumps(entry) + "\n"
+        with _buffer_lock:
+            _buffer.append(line)
+            # Schedule a flush if none pending
+            if _flush_timer is None:
+                _flush_timer = threading.Timer(_FLUSH_INTERVAL, _flush_buffer)
+                _flush_timer.daemon = True
+                _flush_timer.start()
     except Exception as e:
         print(f"[perf] WARNING: failed to log metric: {e}", file=sys.stderr)
+
+
+def flush_metrics():
+    """Force-flush all buffered metrics to disk immediately.
+
+    Call this before reading perf logs in tests, or during shutdown.
+    """
+    global _flush_timer
+    with _buffer_lock:
+        if _flush_timer is not None:
+            _flush_timer.cancel()
+            _flush_timer = None
+    _flush_buffer()
+
+
+def reset_state():
+    """Reset all internal state. For testing only."""
+    global _current_fh, _current_date, _size_exceeded, _flush_timer
+    flush_metrics()
+    with _buffer_lock:
+        _buffer.clear()
+    if _current_fh is not None:
+        try:
+            _current_fh.close()
+        except Exception:
+            pass
+        _current_fh = None
+    _current_date = ""
+    _size_exceeded = False
+    _sample_counters.clear()
 
 
 def timing(metric: str, ms: float, *, sample_rate: int = 1, **labels: Any) -> None:

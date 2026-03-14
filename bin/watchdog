@@ -33,6 +33,31 @@ if claude-assistant status >/dev/null 2>&1; then
   exit 0
 fi
 
+# Check for graceful restart marker (written by `claude-assistant restart`)
+GRACEFUL_MARKER="/tmp/dispatch-graceful-restart"
+if [ -f "$GRACEFUL_MARKER" ]; then
+  # Marker is now JSON: {"timestamp": ..., "initiator_chat_id": ...}
+  # Extract timestamp (backward-compatible with plain integer format)
+  marker_content=$(cat "$GRACEFUL_MARKER")
+  marker_ts=$(echo "$marker_content" | python3 -c "
+import sys, json
+data = sys.stdin.read().strip()
+try:
+    print(json.loads(data)['timestamp'])
+except (json.JSONDecodeError, KeyError):
+    print(data)  # fallback: plain integer
+" 2>/dev/null || echo "$marker_content")
+  marker_age=$(( $(date +%s) - $marker_ts ))
+  if [ $marker_age -lt 120 ]; then
+    # Graceful restart within last 2 min — not a crash, let launchctl handle it
+    log "Graceful restart detected (${marker_age}s ago), skipping recovery"
+    rm -f "$GRACEFUL_MARKER"
+    exit 0
+  fi
+  # Marker is stale, remove it
+  rm -f "$GRACEFUL_MARKER"
+fi
+
 # Daemon is down!
 log "Daemon down detected"
 

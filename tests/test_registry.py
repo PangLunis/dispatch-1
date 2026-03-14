@@ -90,6 +90,7 @@ class TestRegistryPersistence:
         r = SessionRegistry(registry_file)
         for i in range(10):
             r.register(chat_id=f"test:+1555555{i:04d}", session_name=f"user-{i}")
+        r.flush()  # register() uses debounced saves — flush to persist all
 
         # File should be valid JSON
         content = json.loads(registry_file.read_text())
@@ -127,6 +128,41 @@ class TestRegistrySessionTracking:
 
     def test_update_last_message_time_nonexistent(self, registry):
         registry.update_last_message_time("nonexistent")  # Should not raise
+
+
+class TestRegistryWasActive:
+    """Test was_active flag for session recreation on startup."""
+
+    def test_mark_was_active(self, registry):
+        registry.register(chat_id="test:+15555550006", session_name="u1")
+        registry.mark_was_active("test:+15555550006")
+        data = registry.get("test:+15555550006")
+        assert data["was_active"] is True
+
+    def test_mark_was_active_nonexistent(self, registry):
+        """Should be a no-op for nonexistent chat_id."""
+        registry.mark_was_active("nonexistent")  # Should not raise
+
+    def test_clear_was_active(self, registry):
+        registry.register(chat_id="test:+15555550006", session_name="u1")
+        registry.mark_was_active("test:+15555550006")
+        assert registry.get("test:+15555550006")["was_active"] is True
+        registry.clear_was_active("test:+15555550006")
+        data = registry.get("test:+15555550006")
+        assert "was_active" not in data
+
+    def test_clear_was_active_nonexistent(self, registry):
+        """Should be a no-op for nonexistent chat_id."""
+        registry.clear_was_active("nonexistent")  # Should not raise
+
+    def test_mark_persists_to_disk(self, registry_file):
+        r1 = SessionRegistry(registry_file)
+        r1.register(chat_id="test:+15555550006", session_name="u1")
+        r1.mark_was_active("test:+15555550006")
+
+        r2 = SessionRegistry(registry_file)
+        data = r2.get("test:+15555550006")
+        assert data["was_active"] is True
 
 
 class TestRegistryConcurrency:

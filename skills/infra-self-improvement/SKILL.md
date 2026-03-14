@@ -39,6 +39,11 @@ uv run --group dev pytest tests/ -v --ignore=tests/unit/test_tts_chunk.py
 | `sdk_backend.py` | `test_session_lifecycle.py` + `test_health_checks.py` + `test_performance.py` |
 | `manager.py` | `test_message_routing.py` |
 | `cli.py` | `test_registry.py` |
+| `bus_helpers.py` | `test_bus_helpers.py` |
+| `bus/bus.py` | `test_bus.py` |
+| `bus/consumers.py` | `test_consumers.py` |
+| `health.py` | `test_health_checks.py` |
+| `reminders.py` | `unit/test_poll_due.py` + `unit/test_add_reminder.py` |
 
 ### Tier 2: Smoke Tests - No API (run before daemon restart)
 
@@ -131,7 +136,15 @@ These areas are most likely to cause production issues:
 - **Auto-restart**: Sessions with 3+ errors get restarted
 - **Test**: `test_health_checks.py`
 
-### 6. Message Polling (manager.py)
+### 6. Bus Write Queue (`bus/bus.py`)
+- **What**: In-memory queue drained by background writer thread. `produce_event()` enqueues (~microseconds).
+- **Danger**: Queue can grow unbounded if writer thread dies silently. Queue depth >1000 logged as warning.
+- **Danger**: SQLite WAL contention between producer writes and consumer reads (mitigated by WAL mode)
+- **Danger**: `sdk_events` table growth — 3-day retention with auto-prune, but bulk SDK activity could grow faster
+- **Danger**: Bus init failure on startup (corrupted bus.db, disk full) — should be fatal, let watchdog recover
+- **Test**: `test_bus.py`
+
+### 7. Message Polling (manager.py)
 - **iMessage**: 100ms poll interval via SQLite on chat.db
 - **Signal**: JSON-RPC socket with push notifications
 - **Test messages**: TestMessageWatcher polls `~/.claude/test-messages/` every 100ms

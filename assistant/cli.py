@@ -180,6 +180,33 @@ def cmd_restart(args):
     and the -k flag does nothing.
     """
     import os
+    from pathlib import Path
+
+    # Write graceful restart marker so watchdog doesn't treat this as a crash
+    # Include initiator_chat_id so sessions know who triggered the restart
+    import json
+    graceful_marker = Path("/tmp/dispatch-graceful-restart")
+    marker_data: dict[str, int | str] = {"timestamp": int(time.time())}
+
+    # Determine initiator: explicit --from flag, or auto-detect from cwd
+    initiator = getattr(args, "initiator", None)
+    if not initiator:
+        # Auto-detect from cwd if running from a transcript directory
+        # e.g. /Users/sven/transcripts/imessage/_16175969496 → +16175969496
+        cwd = Path.cwd()
+        transcripts_dir = Path.home() / "transcripts"
+        try:
+            rel = cwd.relative_to(transcripts_dir)
+            parts = rel.parts  # e.g. ("imessage", "_16175969496")
+            if len(parts) >= 2:
+                sanitized_id = parts[1]  # e.g. "_16175969496"
+                initiator = sanitized_id.replace("_", "+", 1)  # → "+16175969496"
+        except ValueError:
+            pass  # Not in transcripts dir
+
+    if initiator:
+        marker_data["initiator_chat_id"] = initiator
+    graceful_marker.write_text(json.dumps(marker_data))
 
     # First, stop any existing daemon (launchctl -k can't kill what it didn't start)
     if is_running():
@@ -977,7 +1004,8 @@ def main():
     subparsers.add_parser("stop", help="Stop the daemon")
 
     # restart
-    subparsers.add_parser("restart", help="Restart the daemon")
+    restart_parser = subparsers.add_parser("restart", help="Restart the daemon")
+    restart_parser.add_argument("--from", dest="initiator", help="Chat ID of the session that initiated the restart")
 
     # status
     subparsers.add_parser("status", help="Show daemon status")

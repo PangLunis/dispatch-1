@@ -145,13 +145,28 @@ class FakeHookMatcher:
             setattr(self, k, v)
 
 
+class FakeUserMessage:
+    def __init__(self, content=None):
+        self.type = "human"
+        self.content = content or []
+
+
+class FakeToolResultBlock:
+    def __init__(self, tool_use_id: str = "", content: str = "", is_error: bool = False):
+        self.type = "tool_result"
+        self.tool_use_id = tool_use_id
+        self.content = content
+        self.is_error = is_error
+
+
 class FakePermissionResultAllow:
     pass
 
 
 class FakePermissionResultDeny:
-    def __init__(self, reason: str = "denied"):
-        self.reason = reason
+    def __init__(self, reason: str = "denied", message: str = "denied"):
+        self.reason = reason or message
+        self.message = message or reason
 
 
 # Wire up the mock module
@@ -163,6 +178,8 @@ mock_sdk_module.ResultMessage = FakeResultMessage
 mock_sdk_module.SystemMessage = FakeSystemMessage
 mock_sdk_module.TextBlock = FakeTextBlock
 mock_sdk_module.ToolUseBlock = FakeToolUseBlock
+mock_sdk_module.UserMessage = FakeUserMessage
+mock_sdk_module.ToolResultBlock = FakeToolResultBlock
 mock_sdk_module.PermissionResultAllow = FakePermissionResultAllow
 mock_sdk_module.PermissionResultDeny = FakePermissionResultDeny
 mock_sdk_module.HookMatcher = FakeHookMatcher

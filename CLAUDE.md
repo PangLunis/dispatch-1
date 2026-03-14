@@ -57,17 +57,68 @@ The system uses the **Claude Agent SDK** (`claude_agent_sdk`) to manage sessions
 │   ├── sdk_session.py   # SDKSession: wraps ClaudeSDKClient per contact
 │   ├── backends.py      # BackendConfig: messaging backend definitions (imessage/signal/test)
 │   ├── cli.py           # CLI entrypoint (claude-assistant command)
-│   └── common.py        # Shared constants and helpers
+│   ├── common.py        # Shared constants and helpers
+│   ├── bus_helpers.py   # Bus event production helpers (produce_event, event taxonomy v6)
+│   ├── resources.py     # ResourceRegistry, ManagedSQLiteReader/Writer (centralized FD/connection lifecycle)
+│   ├── health.py        # Health check logic (fast regex + deep LLM)
+│   ├── reminders.py     # Reminder system
+│   ├── readers.py       # Message readers (iMessage, Signal)
+│   ├── perf.py          # Performance metric recording
+│   └── config.py        # Configuration loader
+├── bus/                  # Kafka-on-SQLite message bus
+│   ├── bus.py           # Core bus: Producer (write queue + background thread), Consumer groups
+│   ├── cli.py           # Bus CLI (create-topic, consume, stats, tail, export)
+│   └── consumers.py     # Consumer framework with declarative configs
 ├── state/               # Persistent state
 │   ├── last_rowid.txt   # Last processed iMessage ROWID
-│   └── sessions.json  # Maps chat_id → session metadata
+│   ├── sessions.json    # Maps chat_id → session metadata
+│   └── bus.db           # SQLite bus database (records + sdk_events tables)
 ├── logs/
 │   ├── manager.log      # Main daemon log
 │   ├── session_lifecycle.log  # Session create/kill/restart events
+│   ├── perf-YYYY-MM-DD.jsonl  # Performance metrics (daily rotation)
 │   └── sessions/        # Per-session logs (john-smith.log, etc.)
+├── plans/               # Architecture plans and design docs
 ├── .venv/               # Python virtual environment
 └── CLAUDE.md            # This file
 ```
+
+### Message Bus (Kafka-on-SQLite)
+
+The system includes an event bus built on SQLite for audit trails, analytics, and future multi-consumer fanout.
+
+**Architecture:**
+- **Write queue**: `produce_event()` enqueues to an in-memory queue (~microseconds, fire-and-forget)
+- **Background writer thread**: Drains queue, batches up to 100 records per transaction
+- **WAL mode**: Concurrent reads during writes, no blocking
+- **Two storage tiers**:
+  - `records` table: Business events (messages, sessions, system) with 7-day retention
+  - `sdk_events` table: Tool call traces with structured columns, 3-day retention
+
+**Event taxonomy (v6) — 3 topics:**
+- `messages`: message.received/sent/failed/ignored, reaction.received/ignored
+- `sessions`: session.created/restarted/killed/crashed/injected/idle_killed/prewarmed/tier_mismatch, permission.denied, command.restart
+- `system`: daemon.started/stopped, health.check_completed/failed, consumer.crashed, sdk.turn_complete, signal.connection_state, and more
+
+**Integration status:** Fully integrated. `produce_event()` is called throughout manager.py and sdk_backend.py — all message routing, session lifecycle, health checks, and system events are recorded. The `Producer` is initialized in Manager and registered with the ResourceRegistry for clean shutdown.
+
+**Bus CLI:**
+```bash
+cd ~/dispatch
+uv run python -m bus.cli stats        # Event counts and throughput
+uv run python -m bus.cli tail         # Live tail of events
+uv run python -m bus.cli export       # Export events as JSONL
+```
+
+### Resource Lifecycle (ResourceRegistry)
+
+All persistent resources (file handles, SQLite connections, subprocesses) are managed through a centralized `ResourceRegistry` in `assistant/resources.py`:
+
+- **`ResourceRegistry`**: Wraps `AsyncExitStack` with named resource tracking, FD leak detection, and safe cleanup (handles non-idempotent `close()` like SQLite). Manager's `run()` method uses `async with ResourceRegistry()` so all resources are cleaned up on shutdown via LIFO ordering.
+- **`ManagedSQLiteReader`**: Single read-only connection on a dedicated `ThreadPoolExecutor(1)` thread. Used for `chat.db` reads — eliminates connection contention.
+- **`ManagedSQLiteWriter`**: Single write connection on a dedicated thread. Used for bus.db writes.
+- **FD leak detection**: Calibrates `/dev/fd/` baseline at startup, checks delta every 5 minutes during health checks.
+- **Safe cleanup**: All cleanup callbacks wrapped in `_safe_cleanup()` to handle double-close errors (sqlite3.ProgrammingError), subprocess ProcessLookupError, etc.
 
 ### Key design: no auto-send
 
@@ -77,10 +128,11 @@ SDK sessions do NOT auto-send text output as SMS. Claude calls `send-sms` explic
 
 1. Message arrives in chat.db → daemon polls it
 2. Contact lookup → tier determination
-3. `SDKBackend.inject_message()` → creates session on-demand if needed
-4. Message wrapped in SMS tags → queued into `SDKSession._message_queue`
-5. `SDKSession._run_loop()` pulls from queue → `client.query()` → processes response
-6. Claude calls `send-sms` via Bash when it wants to reply
+3. `produce_event()` records `message.received` to bus (audit trail)
+4. `SDKBackend.inject_message()` → creates session on-demand if needed
+5. Message wrapped in SMS tags → queued into `SDKSession._message_queue`
+6. `SDKSession._run_loop()` pulls from queue → `client.query()` → processes response
+7. Claude calls `send-sms` via Bash when it wants to reply
 
 ### Image handling (Gemini Vision)
 
@@ -232,6 +284,12 @@ uv run --group dev pytest tests/unit/ -v
 | `sdk_backend.py` | `test_session_lifecycle.py` + `test_health_checks.py` + `test_performance.py` |
 | `manager.py` | `test_message_routing.py` (TestMessageWatcher normalization) |
 | `cli.py` | `test_registry.py` (registry operations used by CLI) |
+| `bus_helpers.py` | `test_bus_helpers.py` (event production, sanitize/reconstruct) |
+| `bus/bus.py` | `test_bus.py` (producer, consumer, write queue, retention) |
+| `bus/consumers.py` | `test_consumers.py` (consumer groups, offsets, commit) |
+| `resources.py` | `test_resources.py` (registry lifecycle, managed sqlite, FD leak detection) |
+| `health.py` | `test_health_checks.py` |
+| `reminders.py` | `unit/test_poll_due.py` + `unit/test_add_reminder.py` |
 
 ### Test Structure
 
@@ -244,6 +302,11 @@ tests/
 ├── test_health_checks.py        # Health checks, idle reaping, exemptions (9 tests)
 ├── test_message_routing.py      # TestMessageWatcher normalization, file handling (16 tests)
 ├── test_performance.py          # Concurrency, throughput, leaks, lock fairness (19 tests)
+├── test_bus.py                  # Bus core: producer, consumer, write queue, retention, sdk_events
+├── test_bus_helpers.py          # Event production, sanitize/reconstruct, taxonomy
+├── test_consumers.py            # Consumer groups, offsets, commit, fanout
+├── test_resources.py            # ResourceRegistry, ManagedSQLite, FD leak detection (34 tests)
+├── test_restart_notify.py       # Restart notification behavior (initiator vs passive)
 ├── unit/                        # Pure function tests (no I/O)
 │   ├── test_poll_due.py         # Reminder tag parsing, timestamps
 │   ├── test_add_reminder.py     # Time parsing

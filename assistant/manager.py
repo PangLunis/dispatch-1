@@ -60,20 +60,32 @@ from assistant.common import (
 )
 from assistant.sdk_backend import SDKBackend, SessionRegistry
 from assistant import perf
+from assistant.resources import ResourceRegistry, ManagedSQLiteReader
+from assistant.bus_helpers import (
+    produce_event, produce_session_event,
+    sanitize_msg_for_bus, sanitize_reaction_for_bus,
+    health_check_payload, service_restarted_payload, service_spawned_payload,
+    consolidation_payload, reminder_payload, healme_payload,
+    compaction_triggered_payload, message_sent_payload, session_injected_payload,
+)
 
 # Import SignalDB for message persistence (lazy import to avoid startup errors)
 _signal_db = None
+_signal_db_lock = threading.Lock()
 def get_signal_db():
     """Lazy-load SignalDB to avoid import errors if signal skill not set up."""
     global _signal_db
-    if _signal_db is None:
-        try:
-            sys.path.insert(0, str(Path.home() / ".claude/skills/signal/scripts"))
-            from signal_db import SignalDB  # type: ignore[import-not-found]
-            _signal_db = SignalDB()
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Failed to load SignalDB: {e}")
-            return None
+    if _signal_db is not None:
+        return _signal_db
+    with _signal_db_lock:
+        if _signal_db is None:
+            try:
+                sys.path.insert(0, str(Path.home() / ".claude/skills/signal/scripts"))
+                from signal_db import SignalDB  # type: ignore[import-not-found]
+                _signal_db = SignalDB()
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Failed to load SignalDB: {e}")
+                return None
     return _signal_db
 
 # Paths
@@ -170,25 +182,97 @@ class ContactsManager:
 class MessagesReader:
     """Reads messages from macOS Messages.app chat.db."""
 
+    # WAL checkpoint interval — avoid checkpointing every 100ms poll
+    WAL_CHECKPOINT_INTERVAL = 5.0  # seconds
+
     def __init__(self, contacts_manager=None):
         self.db_path = MESSAGES_DB
         self._contacts = contacts_manager
+        self._conn = None  # Persistent read connection (lazy init)
+        self._managed_conn = False  # True if connection is managed by ResourceRegistry
+        self._last_checkpoint = 0.0  # Track last WAL checkpoint time
 
-    def get_new_messages(self, since_rowid: int) -> list:
-        """Get messages newer than the given ROWID."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    def set_managed_connection(self, conn: sqlite3.Connection):
+        """Inject a connection managed by ResourceRegistry.
 
-        # Try PASSIVE checkpoint to improve WAL visibility (won't fail if locked)
-        # Returns (status, pages_log, pages_checkpointed) - status 0=ok, 1=busy
-        checkpoint_result = None
+        When set, _get_conn() returns this connection instead of creating its own.
+        The connection lifecycle is handled by the registry — close() becomes a no-op.
+        """
+        # Close any existing unmanaged connection first
+        if self._conn is not None and not self._managed_conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+        self._conn = conn
+        self._managed_conn = True
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get or create a persistent read connection with optimal settings.
+
+        If a managed connection was injected via set_managed_connection(),
+        returns that instead of creating a new one.
+        """
+        if self._conn is not None:
+            if getattr(self, '_managed_conn', False):
+                return self._conn
+            try:
+                # Verify connection is still valid
+                self._conn.execute("SELECT 1")
+                return self._conn
+            except Exception:
+                # Connection broken, recreate
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+        conn = sqlite3.connect(self.db_path, timeout=5, check_same_thread=False)
+        # WAL mode allows concurrent reads while Messages.app writes
+        conn.execute("PRAGMA journal_mode=WAL")
+        # Read uncommitted allows reading without shared locks — avoids
+        # blocking on Messages.app WAL writes
+        conn.execute("PRAGMA read_uncommitted=1")
+        # Don't hold transactions open
+        conn.isolation_level = None
+        self._conn = conn
+        return conn
+
+    def _maybe_checkpoint(self, cursor):
+        """Run WAL checkpoint at most every WAL_CHECKPOINT_INTERVAL seconds."""
+        now = time.time()
+        if now - self._last_checkpoint < self.WAL_CHECKPOINT_INTERVAL:
+            return
         try:
             checkpoint_result = cursor.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             perf.gauge("wal_checkpoint_status", checkpoint_result[0] if checkpoint_result else -1,
                        component="daemon", source="imessage")
-        except Exception as e:
+        except Exception:
             perf.gauge("wal_checkpoint_status", -2, component="daemon", source="imessage")
-            # Checkpoint failed, continue anyway - non-critical
+        self._last_checkpoint = now
+
+    def close(self):
+        """Close the persistent connection.
+
+        No-op if connection is managed by ResourceRegistry (lifecycle handled there).
+        """
+        if getattr(self, '_managed_conn', False):
+            return  # Registry handles cleanup
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def get_new_messages(self, since_rowid: int) -> list:
+        """Get messages newer than the given ROWID."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # Checkpoint WAL periodically (not every poll) for visibility
+        self._maybe_checkpoint(cursor)
 
         cursor.execute("""
             SELECT
@@ -296,7 +380,6 @@ class MessagesReader:
                 "thread_originator_guid": thread_originator_guid
             })
 
-        conn.close()
         return messages
 
     def get_new_reactions(self, since_rowid: int) -> list:
@@ -307,14 +390,10 @@ class MessagesReader:
         iOS 17+ uses 2006+ for custom emoji reactions (emoji stored in associated_message_emoji).
         Removals mirror: 3000=remove ❤️, etc.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
 
-        # Try PASSIVE checkpoint to improve WAL visibility (won't fail if locked)
-        try:
-            cursor.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        except Exception:
-            pass  # Checkpoint failed, continue anyway - non-critical
+        # Checkpoint handled by _maybe_checkpoint in get_new_messages (same connection)
 
         # Query reactions and join to get the target message text
         cursor.execute("""
@@ -383,7 +462,6 @@ class MessagesReader:
                 "type": "reaction",  # Mark as reaction for process_message routing
             })
 
-        conn.close()
         return reactions
 
     def _generate_group_name(self, cursor, chat_identifier: str, contacts_manager=None) -> str | None:
@@ -431,7 +509,10 @@ class MessagesReader:
             chat_identifier: The unique identifier for the group chat
             contacts_manager: A ContactsManager instance for looking up contacts
         """
-        conn = sqlite3.connect(str(MESSAGES_DB))
+        # Reuse the persistent connection to avoid FD churn.
+        # This is called via run_in_executor so thread safety matters —
+        # but _get_conn() returns a connection with check_same_thread=False.
+        conn = self._get_conn()
         cursor = conn.cursor()
 
         try:
@@ -453,8 +534,12 @@ class MessagesReader:
                     return True
 
             return False
-        finally:
-            conn.close()
+        except Exception as e:
+            # Log the error but don't reset self._conn — that races with
+            # other executor threads using the same connection. Let _get_conn()
+            # handle reconnection on the next call via its SELECT 1 health check.
+            log.warning(f"_group_has_blessed_participant error: {e}")
+            raise
 
     def _get_attachments(self, cursor, message_rowid: int) -> list:
         """Get attachments for a message."""
@@ -485,17 +570,21 @@ class MessagesReader:
 
     def get_latest_rowid(self) -> int:
         """Get the most recent message ROWID."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        # Try PASSIVE checkpoint to improve WAL visibility (won't fail if locked)
+        conn = self._get_conn()
         try:
-            cursor.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            cursor = conn.cursor()
+            # Try PASSIVE checkpoint to improve WAL visibility (won't fail if locked)
+            try:
+                cursor.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass  # Checkpoint failed, continue anyway - non-critical
+            cursor.execute("SELECT MAX(ROWID) FROM message")
+            result = cursor.fetchone()[0]
+            return result or 0
         except Exception:
-            pass  # Checkpoint failed, continue anyway - non-critical
-        cursor.execute("SELECT MAX(ROWID) FROM message")
-        result = cursor.fetchone()[0]
-        conn.close()
-        return result or 0
+            if not getattr(self, '_managed_conn', False):
+                self._conn = None
+            raise
 
     def _parse_attributed_body(self, data: bytes) -> Optional[str]:
         """Extract text from NSAttributedString binary data."""
@@ -591,43 +680,54 @@ class SignalListener(threading.Thread):
 
         log.info(f"SignalListener connecting to {self.socket_path}")
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(self.socket_path)
-        log.info("SignalListener connected")
+        try:
+            self.sock.connect(self.socket_path)
+            # Set timeout so recv() doesn't block forever if signal-cli hangs
+            # without closing the socket. Allows periodic health checks.
+            self.sock.settimeout(60)
+            log.info("SignalListener connected")
 
-        # Subscribe to receive messages
-        subscribe_req = json.dumps({
-            "jsonrpc": "2.0",
-            "method": "subscribeReceive",
-            "id": 1,
-            "params": {}
-        }) + "\n"
-        self.sock.sendall(subscribe_req.encode())
+            # Subscribe to receive messages
+            subscribe_req = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "subscribeReceive",
+                "id": 1,
+                "params": {}
+            }) + "\n"
+            self.sock.sendall(subscribe_req.encode())
 
-        buffer = b""
-        while self.running:
-            try:
-                chunk = self.sock.recv(4096)
-                if not chunk:
-                    log.warning("SignalListener: socket closed")
-                    break
-                buffer += chunk
+            buffer = b""
+            MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10MB — corrupted stream protection
+            while self.running:
+                try:
+                    chunk = self.sock.recv(4096)
+                    if not chunk:
+                        log.warning("SignalListener: socket closed")
+                        break
+                    buffer += chunk
 
-                # Process complete JSON lines
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    if not line.strip():
+                    # Guard against corrupted JSON stream without newlines
+                    if len(buffer) > MAX_BUFFER_SIZE:
+                        log.error(f"SignalListener: buffer exceeded {MAX_BUFFER_SIZE} bytes, resetting")
+                        buffer = b""
                         continue
-                    self._process_message(line.decode())
 
-            except socket.timeout:
-                continue
-            except Exception as e:
-                log.error(f"SignalListener recv error: {e}")
-                break
+                    # Process complete JSON lines
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        self._process_message(line.decode())
 
-        if self.sock:
-            self.sock.close()
-            self.sock = None
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    log.error(f"SignalListener recv error: {e}")
+                    break
+        finally:
+            if self.sock:
+                self.sock.close()
+                self.sock = None
 
     def _process_message(self, line: str):
         """Parse a JSON-RPC message and queue it if it's an incoming message."""
@@ -659,10 +759,12 @@ class SignalListener(threading.Thread):
             if timestamp in self._seen_timestamps:
                 return
             self._seen_timestamps.add(timestamp)
-            # Prune old timestamps to prevent unbounded growth
+            # Prune timestamps older than 5 minutes to prevent unbounded growth
+            # Time-based expiry is safer than size-based: avoids duplicate
+            # processing after long idle periods followed by a burst
             if len(self._seen_timestamps) > self._seen_timestamps_max:
-                sorted_ts = sorted(self._seen_timestamps)
-                self._seen_timestamps = set(sorted_ts[len(sorted_ts) // 2:])
+                cutoff_ms = int(time.time() * 1000) - (5 * 60 * 1000)  # 5 minutes ago
+                self._seen_timestamps = {ts for ts in self._seen_timestamps if ts > cutoff_ms}
 
             # Check for group message
             group_info = data_msg.get("groupInfo", {})
@@ -848,13 +950,44 @@ class ReminderPoller:
         self.config = {}
         self._caught_up = False
 
+    def _produce_event(self, topic: str, event_type: str, payload: dict,
+                       key: str | None = None, source: str = "reminder"):
+        """Delegate event production to bus via backend's producer."""
+        producer = getattr(self.backend, '_producer', None)
+        produce_event(producer, topic, event_type, payload, key=key, source=source)
+
+    def _produce_session_injected(self, session_id: str, contact: str,
+                                   tier: str, r: dict):
+        """Produce session.injected event for reminder injection."""
+        from assistant.bus_helpers import produce_session_event, session_injected_payload
+        producer = getattr(self.backend, '_producer', None)
+        produce_session_event(producer, session_id, "session.injected",
+            session_injected_payload(session_id, "reminder", contact, tier,
+                                     reminder_id=r.get("id"), target=r.get("target", "fg")),
+            source="reminder")
+
     def _load_reminders(self):
         """Load reminders from JSON file."""
-        from assistant.reminders import reminders_lock, load_reminders
+        from assistant.reminders import reminders_lock, load_reminders, REMINDERS_FILE
         with reminders_lock():
             data = load_reminders()
             self.reminders = data.get("reminders", [])
             self.config = data.get("config", {})
+        # Track file mtime for change detection
+        try:
+            self._reminders_mtime = REMINDERS_FILE.stat().st_mtime
+        except (OSError, AttributeError):
+            self._reminders_mtime = 0
+
+    def _load_reminders_if_changed(self):
+        """Reload reminders only if the file was modified externally (e.g., by CLI)."""
+        from assistant.reminders import REMINDERS_FILE
+        try:
+            current_mtime = REMINDERS_FILE.stat().st_mtime
+        except OSError:
+            return  # File doesn't exist, nothing to reload
+        if current_mtime != getattr(self, '_reminders_mtime', 0):
+            self._load_reminders()
 
     def _save_reminders(self):
         """Save reminders to JSON file."""
@@ -947,17 +1080,20 @@ class ReminderPoller:
         """Check for due reminders and fire them. Called every poll cycle."""
         from datetime import timezone
 
-        # Always reload to pick up CLI changes
-        self._load_reminders()
+        # Only reload if file changed on disk (avoids unnecessary I/O)
+        self._load_reminders_if_changed()
 
         now_utc = datetime.now(timezone.utc)
+        modified = False
 
         for r in list(self.reminders):
             if self._should_fire(r, now_utc):
                 await self._fire_reminder(r)
+                modified = True
 
-        # Save after processing (batch save)
-        self._save_reminders()
+        # Only save if reminders were actually modified
+        if modified:
+            self._save_reminders()
 
     async def _fire_reminder(self, r: dict, late: bool = False):
         """Fire a reminder by injecting into session."""
@@ -985,6 +1121,10 @@ class ReminderPoller:
                 log.info(f"REMINDER_SCHEDULED | id={r['id']} | next={r['next_fire']}")
 
             log.info(f"REMINDER_FIRED | id={r['id']} | late={late}")
+            self._produce_event("system", "reminder.fired",
+                reminder_payload(r["id"], r.get("contact", ""), r.get("chat_id", ""),
+                                 r.get("title", ""), r.get("schedule", {}).get("type", "once")),
+                key=r.get("id", ""), source="reminder")
 
         except Exception as e:
             r["retry_count"] = r.get("retry_count", 0) + 1
@@ -1054,6 +1194,7 @@ class ReminderPoller:
             if session:
                 await session.inject(msg)
                 log.info(f"REMINDER_SPAWN | id={r['id']} | session={spawn_id}")
+                self._produce_session_injected(spawn_id, contact, tier, r)
             else:
                 raise RuntimeError(f"Failed to spawn session for {contact}")
         elif target == "bg":
@@ -1062,12 +1203,14 @@ class ReminderPoller:
             session = self.backend.sessions.get(bg_id)
             if session and session.is_alive():
                 await session.inject(msg)
+                self._produce_session_injected(bg_id, contact, tier, r)
             else:
                 # Create BG session and inject
                 await self.backend.create_background_session(contact, chat_id, tier)
                 session = self.backend.sessions.get(bg_id)
                 if session:
                     await session.inject(msg)
+                    self._produce_session_injected(bg_id, contact, tier, r)
                 else:
                     raise RuntimeError(f"Failed to create BG session for {contact}")
         else:
@@ -1075,12 +1218,14 @@ class ReminderPoller:
             session = self.backend.sessions.get(normalized)
             if session and session.is_alive():
                 await session.inject(msg)
+                self._produce_session_injected(normalized, contact, tier, r)
             else:
                 # Create session and inject
                 await self.backend.create_session(contact, normalized, tier)
                 session = self.backend.sessions.get(normalized)
                 if session:
                     await session.inject(msg)
+                    self._produce_session_injected(normalized, contact, tier, r)
                 else:
                     raise RuntimeError(f"Failed to create session for {contact}")
 
@@ -1279,9 +1424,20 @@ class Manager:
         self.contacts = ContactsManager()
         self.messages = MessagesReader(contacts_manager=self.contacts)
         self.registry = SessionRegistry(SESSION_REGISTRY_FILE)
+        self._resource_registry = None  # Set in run() via async with
+
+        # Initialize event bus
+        from bus.bus import Bus
+        self._bus = Bus(db_path=str(STATE_DIR / "bus.db"))
+        self._bus.create_topic("messages", retention_ms=168 * 3600 * 1000)  # 7 days
+        self._bus.create_topic("sessions", retention_ms=168 * 3600 * 1000)
+        self._bus.create_topic("system", retention_ms=168 * 3600 * 1000)
+        self._producer = self._bus.producer()
+
         self.sessions = SDKBackend(
             registry=self.registry,
             contacts_manager=self.contacts,
+            producer=self._producer,
         )
         self.reminders = ReminderPoller(self.sessions, self.contacts)
         self.ipc = IPCServer(self.sessions, self.registry, self.contacts)
@@ -1310,9 +1466,81 @@ class Manager:
 
         # Shutdown flag
         self._shutdown_flag = False
+        self._start_time = time.time()
 
         # Health check background task flag (prevents overlapping runs)
         self._health_check_running = False
+
+        # Initialize bus consumers
+        self._consumer_runner = self._init_consumers()
+
+    def _init_consumers(self):
+        """Initialize ConsumerRunner with audit consumers for all 3 topics.
+
+        These consumers log events for observability and validate the bus
+        is working end-to-end. Future consumers will add real processing
+        (e.g., vision indexing, reminder audit trails, consolidation coordination).
+        """
+        from bus.consumers import ConsumerRunner, ConsumerConfig, actions
+
+        configs = [
+            # Audit consumer for messages topic — tracks all message flow
+            ConsumerConfig(
+                topic="messages",
+                group="audit-messages",
+                action=actions.call_function(
+                    lambda records: log.info(
+                        f"BUS_CONSUMER | messages | {len(records)} record(s): "
+                        + ", ".join(f"{r.type}[{r.key}]" for r in records[:5])
+                        + ("..." if len(records) > 5 else "")
+                    )
+                ),
+            ),
+            # Audit consumer for sessions topic — tracks session lifecycle
+            ConsumerConfig(
+                topic="sessions",
+                group="audit-sessions",
+                action=actions.call_function(
+                    lambda records: log.info(
+                        f"BUS_CONSUMER | sessions | {len(records)} record(s): "
+                        + ", ".join(f"{r.type}[{r.key}]" for r in records[:5])
+                        + ("..." if len(records) > 5 else "")
+                    )
+                ),
+            ),
+            # Audit consumer for system topic — tracks health, consolidation, vision, etc.
+            ConsumerConfig(
+                topic="system",
+                group="audit-system",
+                action=actions.call_function(
+                    lambda records: log.info(
+                        f"BUS_CONSUMER | system | {len(records)} record(s): "
+                        + ", ".join(f"{r.type}[{r.source}]" for r in records[:5])
+                        + ("..." if len(records) > 5 else "")
+                    )
+                ),
+            ),
+        ]
+        return ConsumerRunner(self._bus, configs)
+
+    def _start_consumer_thread(self):
+        """Start ConsumerRunner in a background thread."""
+        def _run():
+            try:
+                log.info("ConsumerRunner started (background thread)")
+                self._consumer_runner.run_forever(poll_interval_ms=500)
+            except Exception as e:
+                log.error(f"ConsumerRunner crashed: {e}")
+                produce_event(self._producer, "system", "consumer.crashed",
+                    {"error": str(e)}, source="consumer")
+
+        thread = threading.Thread(
+            target=_run,
+            name="bus-consumer-runner",
+            daemon=True,
+        )
+        thread.start()
+        return thread
 
     def _load_state(self) -> int:
         """Load the last processed message ROWID."""
@@ -1323,9 +1551,25 @@ class Manager:
         return self.messages.get_latest_rowid()
 
     def _save_state(self, rowid: int):
-        """Save the last processed message ROWID."""
-        STATE_FILE.write_text(str(rowid))
+        """Update in-memory rowid. File is persisted by _flush_state()."""
         self.last_rowid = rowid
+        self._state_dirty = True
+
+    def _flush_state(self):
+        """Persist last_rowid to disk if changed. Called once per poll cycle."""
+        if getattr(self, '_state_dirty', False):
+            STATE_FILE.write_text(str(self.last_rowid))
+            self._state_dirty = False
+
+    def _close_log_fh(self, attr_name: str):
+        """Safely close a log file handle stored as an instance attribute."""
+        fh = getattr(self, attr_name, None)
+        if fh:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            setattr(self, attr_name, None)
 
     def _spawn_search_daemon(self) -> Optional[subprocess.Popen]:
         """Spawn the search daemon as a child process.
@@ -1337,6 +1581,7 @@ class Manager:
             return None
 
         search_log_path = LOGS_DIR / "search-daemon.log"
+        self._close_log_fh('_search_log_fh')
         self._search_log_fh = open(search_log_path, "a")
 
         try:
@@ -1346,8 +1591,16 @@ class Manager:
                 stderr=self._search_log_fh,
                 cwd=str(SEARCH_DAEMON_DIR),
             )
+        except Exception:
+            # Clean up the file handle if Popen failed
+            self._close_log_fh('_search_log_fh')
+            raise
+
+        try:
             log.info(f"Spawned search daemon (PID: {proc.pid})")
             lifecycle_log.info(f"SEARCH_DAEMON | SPAWNED | pid={proc.pid}")
+            produce_event(getattr(self, '_producer', None), "system", "health.service_spawned",
+                service_spawned_payload("search_daemon", proc.pid), source="daemon")
             return proc
         except Exception as e:
             log.error(f"Failed to spawn search daemon: {e}")
@@ -1373,6 +1626,7 @@ class Manager:
             return None
 
         sven_api_log_path = LOGS_DIR / "sven-api.log"
+        self._close_log_fh('_sven_api_log_fh')
         self._sven_api_log_fh = open(sven_api_log_path, "a")
 
         try:
@@ -1382,8 +1636,15 @@ class Manager:
                 stderr=self._sven_api_log_fh,
                 cwd=str(SVEN_API_DIR),
             )
+        except Exception:
+            self._close_log_fh('_sven_api_log_fh')
+            raise
+
+        try:
             log.info(f"Spawned Sven API daemon (PID: {proc.pid})")
             lifecycle_log.info(f"SVEN_API | SPAWNED | pid={proc.pid}")
+            produce_event(getattr(self, '_producer', None), "system", "health.service_spawned",
+                service_spawned_payload("sven_api", proc.pid), source="daemon")
             return proc
         except Exception as e:
             log.error(f"Failed to spawn Sven API daemon: {e}")
@@ -1425,12 +1686,7 @@ class Manager:
             SIGNAL_SOCKET.unlink()
 
         signal_log_path = LOGS_DIR / "signal-daemon.log"
-        # Close previous file handle if respawning
-        if hasattr(self, '_signal_log_fh') and self._signal_log_fh:
-            try:
-                self._signal_log_fh.close()
-            except Exception:
-                pass
+        self._close_log_fh('_signal_log_fh')
         self._signal_log_fh = open(signal_log_path, "a")
 
         try:
@@ -1439,8 +1695,15 @@ class Manager:
                 stdout=self._signal_log_fh,
                 stderr=self._signal_log_fh,
             )
+        except Exception:
+            self._close_log_fh('_signal_log_fh')
+            raise
+
+        try:
             log.info(f"Spawned signal-cli daemon (PID: {proc.pid})")
             lifecycle_log.info(f"SIGNAL_DAEMON | SPAWNED | pid={proc.pid}")
+            produce_event(getattr(self, '_producer', None), "system", "health.service_spawned",
+                service_spawned_payload("signal_daemon", proc.pid), source="daemon")
 
             # Wait for socket to be ready (up to 30s - Java is slow to start)
             for _ in range(300):
@@ -1481,6 +1744,8 @@ class Manager:
             self.signal_daemon = None
             log.info("Stopped signal daemon")
 
+        self._close_log_fh('_signal_log_fh')
+
         if SIGNAL_SOCKET.exists():
             SIGNAL_SOCKET.unlink()
 
@@ -1494,6 +1759,8 @@ class Manager:
                 self.sven_api_daemon.kill()
             self.sven_api_daemon = None
             log.info("Stopped Sven API daemon")
+
+        self._close_log_fh('_sven_api_log_fh')
 
     async def _run_health_checks(self):
         """Run all health checks in background (non-blocking).
@@ -1524,10 +1791,14 @@ class Manager:
                 if self.search_daemon.poll() is not None:
                     log.warning("Search daemon died, restarting...")
                     lifecycle_log.info(f"SEARCH_DAEMON | DIED | restarting")
+                    produce_event(self._producer, "system", "health.service_restarted",
+                        service_restarted_payload("search_daemon", "died"), source="health")
                     self.search_daemon = self._spawn_search_daemon()
                 elif not self._check_search_daemon_health():
                     log.warning("Search daemon not responding, restarting...")
                     lifecycle_log.info(f"SEARCH_DAEMON | UNRESPONSIVE | restarting")
+                    produce_event(self._producer, "system", "health.service_restarted",
+                        service_restarted_payload("search_daemon", "unresponsive"), source="health")
                     self.search_daemon.kill()
                     self.search_daemon = self._spawn_search_daemon()
 
@@ -1536,12 +1807,16 @@ class Manager:
                 if self.signal_daemon.poll() is not None:
                     log.warning("Signal daemon died, restarting...")
                     lifecycle_log.info(f"SIGNAL_DAEMON | DIED | restarting")
+                    produce_event(self._producer, "system", "health.service_restarted",
+                        service_restarted_payload("signal_daemon", "died"), source="health")
                     self.signal_daemon = self._spawn_signal_daemon()
                     if self.signal_daemon:
                         self._start_signal_listener()
                 elif not SIGNAL_SOCKET.exists():
                     log.warning("Signal socket missing, restarting daemon...")
                     lifecycle_log.info(f"SIGNAL_DAEMON | SOCKET_MISSING | restarting")
+                    produce_event(self._producer, "system", "health.service_restarted",
+                        service_restarted_payload("signal_daemon", "socket_missing"), source="health")
                     self.signal_daemon.terminate()
                     try:
                         self.signal_daemon.wait(timeout=5)
@@ -1556,12 +1831,45 @@ class Manager:
                 if self.sven_api_daemon.poll() is not None:
                     log.warning("Sven API died, restarting...")
                     lifecycle_log.info(f"SVEN_API | DIED | restarting")
+                    produce_event(self._producer, "system", "health.service_restarted",
+                        service_restarted_payload("sven_api", "died"), source="health")
                     self.sven_api_daemon = self._spawn_sven_api_daemon()
                 elif not self._check_sven_api_health():
                     log.warning("Sven API not responding, restarting...")
                     lifecycle_log.info(f"SVEN_API | UNRESPONSIVE | restarting")
+                    produce_event(self._producer, "system", "health.service_restarted",
+                        service_restarted_payload("sven_api", "unresponsive"), source="health")
                     self.sven_api_daemon.kill()
                     self.sven_api_daemon = self._spawn_sven_api_daemon()
+
+            # Proactive FD monitoring via ResourceRegistry — calibrated leak detection
+            try:
+                if self._resource_registry:
+                    status = self._resource_registry.get_status()
+                    perf.gauge("open_fds", status['fd_actual'], component="daemon")
+                    perf.gauge("tracked_resources", status['total'], component="daemon")
+                    perf.gauge("fd_delta",
+                               status['fd_actual'] - status['fd_baseline'] - status['fd_tracked'],
+                               component="daemon")
+
+                    # Check for untracked FD leaks
+                    warnings = self._resource_registry.check_fd_leaks(threshold=20)
+                    for w in warnings:
+                        log.warning(f"FD_LEAK | {w}")
+
+                    # Also warn on absolute count
+                    if status['fd_actual'] > 200:
+                        log.warning(f"FD_WARNING | open_fds={status['fd_actual']} | "
+                                    f"tracked={status['total']} | "
+                                    f"baseline={status['fd_baseline']}")
+                else:
+                    # Fallback if registry not yet initialized
+                    fd_count = len(os.listdir('/dev/fd'))
+                    perf.gauge("open_fds", fd_count, component="daemon")
+                    if fd_count > 200:
+                        log.warning(f"FD_WARNING | open_fds={fd_count} | approaching system limit")
+            except Exception:
+                pass
 
             log.info("Health check completed (background)")
 
@@ -1574,6 +1882,7 @@ class Manager:
         """Send an SMS message via the send-sms CLI.
 
         Returns True on success, False on failure.
+        Used for daemon-level control responses (RESTART, HEALING failures).
         """
         try:
             result = subprocess.run(
@@ -1582,12 +1891,20 @@ class Manager:
                 text=True,
                 timeout=30
             )
-            if result.returncode != 0:
+            success = result.returncode == 0
+            if not success:
                 log.error(f"Failed to send SMS to {phone}: {result.stderr}")
-                return False
-            return True
+            produce_event(self._producer, "messages", "message.sent" if success else "message.failed",
+                message_sent_payload(phone, message, is_group=False, success=success,
+                                     source="daemon-control"),
+                key=phone, source="daemon")
+            return success
         except Exception as e:
             log.error(f"Error sending SMS to {phone}: {e}")
+            produce_event(self._producer, "messages", "message.failed",
+                message_sent_payload(phone, message, is_group=False, success=False,
+                                     error=str(e), source="daemon-control"),
+                key=phone, source="daemon")
             return False
 
     def _send_sms_image(self, phone: str, image_path: str, caption: str | None = None) -> bool:
@@ -1749,17 +2066,23 @@ You have 15 minutes. Work efficiently.
             lifecycle_log.info(f"HEALME | SPAWNED | pid={proc.pid}")
 
             # Track the healing process so it gets awaited (prevents zombies)
-            async def _await_healing(p):
+            async def _await_healing(p, producer):
                 try:
                     await p.wait()
                     lifecycle_log.info(f"HEALME | COMPLETED | pid={p.pid} returncode={p.returncode}")
+                    produce_event(producer, "system", "healme.completed",
+                        healme_payload(admin_phone, admin_name, "completed"),
+                        source="healme")
                 except Exception as e:
                     log.error(f"Healing session error: {e}")
-            asyncio.create_task(_await_healing(proc))
+            asyncio.create_task(_await_healing(proc, self._producer))
         except Exception as e:
             log.error(f"Failed to spawn healing session: {e}")
             # Try to notify admin
             self._send_sms(admin_phone, "[HEALING] FAILED to start healing session - manual intervention needed")
+            produce_event(self._producer, "system", "healme.completed",
+                healme_payload(admin_phone, admin_name, "failed", error=str(e)),
+                source="healme")
 
     async def process_message(self, msg: dict):
         """Process a single incoming message."""
@@ -1780,6 +2103,10 @@ You have 15 minutes. Work efficiently.
         attachment_info = f" + {len(attachments)} attachment(s)" if attachments else ""
         group_info = f" [GROUP: {group_name or chat_identifier}]" if is_group else ""
         log.info(f"Processing message {rowid} from {phone}{group_info}: {text_preview}{attachment_info}")
+
+        produce_event(self._producer, "messages", "message.received",
+            sanitize_msg_for_bus(msg), key=msg.get("chat_identifier") or msg.get("phone"),
+            source=msg.get("source", "imessage"))
 
         # Lookup contact (sender) - supports both phone and email identifiers
         contact = self.contacts.lookup_identifier(phone)
@@ -1804,6 +2131,9 @@ You have 15 minutes. Work efficiently.
             custom_prompt = text.strip()[6:].strip() or None
             log.info(f"HEALME triggered by {admin_name} ({phone}) with custom prompt: {custom_prompt}")
             lifecycle_log.info(f"HEALME | TRIGGERED | by={admin_name} custom={custom_prompt is not None}")
+            produce_event(self._producer, "system", "healme.triggered",
+                healme_payload(phone, admin_name, "triggered", custom_prompt),
+                source="daemon")
             await self._spawn_healing_session(admin_name, phone, custom_prompt)
             return
 
@@ -1813,6 +2143,9 @@ You have 15 minutes. Work efficiently.
             if master_prompt:
                 log.info(f"MASTER command from {phone}: {master_prompt[:50]}...")
                 lifecycle_log.info(f"MASTER | TRIGGERED | prompt_len={len(master_prompt)}")
+                produce_event(self._producer, "system", "master.triggered", {
+                    "admin_phone": phone, "prompt_length": len(master_prompt),
+                }, source="daemon")
                 await self.sessions.inject_master_prompt(phone, master_prompt)
             else:
                 log.warning(f"MASTER command with empty prompt, ignoring")
@@ -1833,6 +2166,10 @@ You have 15 minutes. Work efficiently.
                 if session_name:
                     log.info(f"RESTART command for session: {session_name} (chat_id: {target_chat_id})")
                     lifecycle_log.info(f"RESTART | TRIGGERED | session={session_name} chat_id={target_chat_id}")
+                    produce_event(self._producer, "sessions", "command.restart", {
+                        "chat_id": target_chat_id, "session_name": session_name,
+                        "source": "sms",
+                    }, key=target_chat_id, source="daemon")
 
                     result_session = await self.sessions.restart_session(target_chat_id)
 
@@ -1915,6 +2252,10 @@ You have 15 minutes. Work efficiently.
         elif not contact:
             # Unknown sender for individual (non-group) message - ignore
             log.info(f"Unknown sender {phone}, ignoring (not in any Claude tier group)")
+            produce_event(self._producer, "messages", "message.ignored", {
+                "phone": phone, "reason": "unknown_sender",
+                "is_group": is_group, "chat_identifier": chat_identifier,
+            }, key=phone, source=msg.get("source", "imessage"))
         elif sender_tier in ("admin", "partner", "family", "favorite"):
             # Blessed individual: route to their SDK session
             # For individuals, phone IS the chat_id
@@ -1947,20 +2288,34 @@ You have 15 minutes. Work efficiently.
         chat_identifier = reaction.get("chat_identifier")
         source = reaction.get("source", "imessage")
 
+        produce_event(self._producer, "messages", "reaction.received",
+            sanitize_reaction_for_bus(reaction),
+            key=reaction.get("chat_identifier") or reaction.get("phone"),
+            source=reaction.get("source", "imessage"))
+
         # Skip reaction removals - they don't need to be surfaced
         if is_removal:
             log.debug(f"Ignoring reaction removal {rowid} from {phone}: {emoji}")
+            produce_event(self._producer, "messages", "reaction.ignored", {
+                "phone": phone, "emoji": emoji, "reason": "removal",
+            }, key=phone, source=reaction.get("source", "imessage"))
             return
 
         # Only care about reactions to OUR messages (is_from_me on target)
         if not target_is_from_me:
             log.debug(f"Ignoring reaction {rowid} to someone else's message from {phone}")
+            produce_event(self._producer, "messages", "reaction.ignored", {
+                "phone": phone, "emoji": emoji, "reason": "not_from_me",
+            }, key=phone, source=reaction.get("source", "imessage"))
             return
 
         # Lookup contact
         contact = self.contacts.lookup_identifier(phone)
         if not contact:
             log.debug(f"Ignoring reaction {rowid} from unknown contact {phone}")
+            produce_event(self._producer, "messages", "reaction.ignored", {
+                "phone": phone, "emoji": emoji, "reason": "unknown_sender",
+            }, key=phone, source=reaction.get("source", "imessage"))
             return
 
         sender_name = contact["name"]
@@ -1969,6 +2324,9 @@ You have 15 minutes. Work efficiently.
         # Only process reactions from blessed tiers
         if sender_tier not in ("admin", "partner", "family", "favorite"):
             log.debug(f"Ignoring reaction {rowid} from {sender_name} (tier: {sender_tier})")
+            produce_event(self._producer, "messages", "reaction.ignored", {
+                "phone": phone, "emoji": emoji, "reason": "non_blessed_tier",
+            }, key=phone, source=reaction.get("source", "imessage"))
             return
 
         # Determine chat_id (group vs individual)
@@ -1997,7 +2355,13 @@ You have 15 minutes. Work efficiently.
         )
 
     async def _shutdown(self):
-        """Graceful shutdown."""
+        """Graceful shutdown.
+
+        Handles application-level teardown (sessions, IPC, signal listener).
+        Infrastructure resources (bus, producer, connections, file handles,
+        subprocesses) are cleaned up by ResourceRegistry's AsyncExitStack
+        in LIFO order when _run_with_registry() exits.
+        """
         # Guard against concurrent shutdown calls (e.g., SIGTERM + SIGINT race)
         if self._shutdown_flag:
             log.info("DAEMON | SHUTDOWN | Already in progress, skipping")
@@ -2005,6 +2369,8 @@ You have 15 minutes. Work efficiently.
         self._shutdown_flag = True
         log.info("DAEMON | SHUTDOWN | START")
         lifecycle_log.info("DAEMON | SHUTDOWN | START")
+
+        # Application-level teardown (not resource cleanup)
         try:
             await self.ipc.stop()
         except (Exception, asyncio.CancelledError) as e:
@@ -2019,9 +2385,57 @@ You have 15 minutes. Work efficiently.
             if task is not None:
                 while task.cancelling() > 0:
                     task.uncancel()
-        self._stop_signal()
-        self._stop_sven_api()
-        log.info("DAEMON | SHUTDOWN | COMPLETE")
+
+        # Stop signal listener (not a registry resource — it's a thread with complex shutdown)
+        if self.signal_listener:
+            self.signal_listener.stop()
+            self.signal_listener = None
+
+        # Wait for search daemon to terminate cleanly (registry will call terminate(),
+        # but we want to wait for it to actually exit)
+        if self.search_daemon:
+            try:
+                self.search_daemon.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.search_daemon.kill()
+            log.info("Stopped search daemon")
+
+        # Wait for sven api daemon
+        if self.sven_api_daemon:
+            try:
+                self.sven_api_daemon.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.sven_api_daemon.kill()
+            log.info("Stopped Sven API daemon")
+
+        # Wait for signal daemon
+        if self.signal_daemon:
+            try:
+                self.signal_daemon.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.signal_daemon.kill()
+            log.info("Stopped signal daemon")
+
+        # Emit stopped event before producer is closed by registry
+        produce_event(self._producer, "system", "daemon.stopped", {
+            "session_count": len(self.sessions.sessions),
+            "uptime_seconds": round(time.time() - self._start_time, 1),
+        }, source="daemon")
+
+        # Flush producer before registry closes it
+        if hasattr(self, '_producer'):
+            try:
+                self._producer.flush(timeout=3.0)
+                log.info("Producer flushed")
+            except Exception as e:
+                log.error(f"Error flushing producer: {e}")
+
+        # Log resource status before registry cleanup
+        if self._resource_registry:
+            status = self._resource_registry.get_status()
+            log.info(f"DAEMON | SHUTDOWN | {status['total']} resources will be cleaned up by registry")
+
+        log.info("DAEMON | SHUTDOWN | COMPLETE (registry cleanup follows)")
         lifecycle_log.info("DAEMON | SHUTDOWN | COMPLETE")
 
     async def _run_nightly_consolidation(self):
@@ -2110,8 +2524,14 @@ You have 15 minutes. Work efficiently.
             )
             log.info("Injected skillify prompt into admin session")
             lifecycle_log.info("CONSOLIDATION | SKILLIFY_INJECTED | admin")
+            produce_event(self._producer, "system", "skillify.started",
+                consolidation_payload("skillify", success=True),
+                source="consolidation")
         except Exception as e:
             log.error(f"Failed to inject skillify prompt: {e}")
+            produce_event(self._producer, "system", "skillify.started",
+                consolidation_payload("skillify", success=False, error=str(e)),
+                source="consolidation")
 
     async def _inject_consolidation_summary(
         self,
@@ -2164,8 +2584,14 @@ Keep the text concise - this is a nightly check-in, not a full report.
             )
             log.info(f"Injected consolidation summary into admin session")
             lifecycle_log.info("CONSOLIDATION | SUMMARY_INJECTED | admin")
+            produce_event(self._producer, "system", "consolidation.completed",
+                consolidation_payload("summary_injected", success=True),
+                source="consolidation")
         except Exception as e:
             log.error(f"Failed to inject consolidation summary: {e}")
+            produce_event(self._producer, "system", "consolidation.failed",
+                consolidation_payload("summary_injection", success=False, error=str(e)),
+                source="consolidation")
 
     async def run(self):
         """Main async loop."""
@@ -2175,6 +2601,47 @@ Keep the text concise - this is a nightly check-in, not a full report.
         log.info(f"Starting from ROWID: {self.last_rowid}")
         log.info("=" * 60)
         lifecycle_log.info(f"DAEMON | START | rowid={self.last_rowid}")
+        produce_event(self._producer, "system", "daemon.started", {
+            "rowid": self.last_rowid,
+            "session_count": len(self.sessions.sessions),
+        }, source="daemon")
+
+        async with ResourceRegistry() as resource_registry:
+            self._resource_registry = resource_registry
+            await self._run_with_registry(resource_registry)
+
+    async def _run_with_registry(self, resource_registry: ResourceRegistry):
+        """Main loop body wrapped in ResourceRegistry for lifecycle management."""
+        # ── Register resources created in __init__ ──
+        # Bus and producer have their own connections — register for tracking + clean shutdown
+        resource_registry.register('bus', self._bus, self._bus.close)
+        resource_registry.register('producer', self._producer, self._producer.close)
+        resource_registry.register('consumer_runner', self._consumer_runner, self._consumer_runner.stop)
+
+        # Register log file handles from subprocess spawns (created in __init__)
+        for attr_name, resource_name in [
+            ('_search_log_fh', 'search_log_fh'),
+            ('_sven_api_log_fh', 'sven_api_log_fh'),
+        ]:
+            fh = getattr(self, attr_name, None)
+            if fh is not None:
+                resource_registry.register(resource_name, fh, fh.close)
+
+        # Register subprocesses
+        if self.search_daemon:
+            resource_registry.register('search_daemon', self.search_daemon, self.search_daemon.terminate)
+        if self.sven_api_daemon:
+            resource_registry.register('sven_api_daemon', self.sven_api_daemon, self.sven_api_daemon.terminate)
+
+        # ── Create ManagedSQLiteReader for chat.db (single reader, dedicated thread) ──
+        self._chat_reader = ManagedSQLiteReader(
+            'chat.db', str(MESSAGES_DB), resource_registry,
+            pragmas={'read_uncommitted': '1'},
+        )
+        # Inject managed connection into MessagesReader — replaces its internal connection
+        self.messages.set_managed_connection(self._chat_reader.connection)
+        log.info(f"RESOURCES | chat.db reader on dedicated thread | "
+                 f"{resource_registry.get_open_count()} resources tracked")
 
         # Ensure global settings.json symlink is correct
         global_settings_target = HOME / "dispatch" / "config" / "global-settings.json"
@@ -2198,6 +2665,9 @@ Keep the text concise - this is a nightly check-in, not a full report.
         loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(self._shutdown()))
         loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self._shutdown()))
 
+        # Start bus consumers (background thread)
+        self._consumer_thread = self._start_consumer_thread()
+
         # Start IPC server
         await self.ipc.start()
 
@@ -2216,6 +2686,14 @@ Keep the text concise - this is a nightly check-in, not a full report.
             self.signal_daemon = self._spawn_signal_daemon()
             if self.signal_daemon:
                 self._start_signal_listener()
+                # Register signal resources
+                if self.signal_daemon:
+                    resource_registry.register(
+                        'signal_daemon', self.signal_daemon, self.signal_daemon.terminate,
+                    )
+                fh = getattr(self, '_signal_log_fh', None)
+                if fh is not None:
+                    resource_registry.register('signal_log_fh', fh, fh.close)
         else:
             log.info("Signal integration disabled via DISABLE_SIGNAL env var")
 
@@ -2291,6 +2769,9 @@ Keep the text concise - this is a nightly check-in, not a full report.
                             log.error(f"iMessage chat.db unavailable (FDA required): {db_err}")
                             imessage_error_logged = True
                         messages = []
+                        # Backoff to avoid hammering unavailable database every 100ms
+                        await asyncio.sleep(5)
+                        continue
                     else:
                         raise
 
@@ -2358,6 +2839,9 @@ Keep the text concise - this is a nightly check-in, not a full report.
                     except queue.Empty:
                         break
 
+                # Flush rowid state to disk once per poll cycle (batched)
+                self._flush_state()
+
                 # Check for due reminders
                 if time.time() - last_reminder_check > REMINDER_CHECK_INTERVAL:
                     await self.reminders.process_due_reminders()
@@ -2407,6 +2891,8 @@ Keep the text concise - this is a nightly check-in, not a full report.
                 if now.hour == CONSOLIDATION_HOUR and last_consolidation_date != today:
                     log.info("Starting nightly memory consolidation...")
                     lifecycle_log.info(f"CONSOLIDATION | START | date={today}")
+                    produce_event(self._producer, "system", "consolidation.started",
+                        consolidation_payload("nightly"), source="consolidation")
                     await self._run_nightly_consolidation()
                     last_consolidation_date = today
                     # Persist to file so daemon restarts don't cause double-runs
