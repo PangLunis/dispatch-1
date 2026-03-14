@@ -132,11 +132,15 @@ claude-assistant remind next "0 9 * * *" --tz "Asia/Tokyo"
 
 1. Reminders stored in `~/dispatch/state/reminders.json`
 2. Daemon polls every 5 seconds for due reminders
-3. When due: injects task into contact's session
+3. When due: produces `reminder.due` event to bus ("reminders" topic, keyed by chat_id) AND injects directly into session (dual path during transition)
 4. Session executes task and reports results
 5. On success: `once` reminders deleted, `cron` reminders advance to next fire time
 6. On failure: retries 3 times with exponential backoff (1min, 2min, 4min)
 7. After 3 failures: marked dead, admin alerted
+
+### Bus Integration
+
+Reminders produce `reminder.due` events to the "reminders" bus topic. Each event contains the full payload needed for a consumer to inject into a session (reminder_id, title, chat_id, tier, target, schedule info, timing). Currently the direct inject is the primary delivery path; the bus events enable future consumer-driven injection and analytics. See `plans/reminder-bus-producer.md` for the full design.
 
 ## Reliability Features
 

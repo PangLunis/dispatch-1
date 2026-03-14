@@ -250,24 +250,61 @@ def format_for_display(utc_str: str, tz_name: str) -> str:
     return local_dt.strftime("%Y-%m-%d %I:%M %p %Z")
 
 
+def validate_event_template(event: Dict[str, Any]) -> None:
+    """Validate a bus event template at creation time.
+
+    Raises ValueError on invalid config. This prevents misconfigured
+    reminders from failing silently weeks later at fire time.
+    """
+    if not isinstance(event, dict):
+        raise ValueError("event template must be a dict")
+    if "topic" not in event:
+        raise ValueError("event template must have 'topic'")
+    if "type" not in event:
+        raise ValueError("event template must have 'type'")
+    # Validate task.requested payloads more strictly
+    if event["type"] == "task.requested":
+        payload = event.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("task.requested payload must be a dict")
+        execution = payload.get("execution", {})
+        if not isinstance(execution, dict):
+            raise ValueError("task.requested must have execution dict")
+        mode = execution.get("mode")
+        if mode not in ("agent", "script"):
+            raise ValueError(
+                f"task.requested execution.mode must be 'agent' or 'script', got: {mode!r}"
+            )
+        if mode == "script" and "command" not in execution:
+            raise ValueError("script tasks must have execution.command")
+        if mode == "agent" and "prompt" not in execution:
+            raise ValueError("agent tasks must have execution.prompt")
+
+
 def create_reminder(
     title: str,
-    contact: str,
-    schedule_type: str,
-    schedule_value: str,
+    contact: Optional[str] = None,
+    schedule_type: str = "once",
+    schedule_value: str = "",
     tz_name: Optional[str] = None,
-    target: str = "fg"
+    target: str = "fg",
+    event: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new reminder dict.
 
+    Two modes:
+    1. Legacy (contact + target): inject into a chat session on fire
+    2. Generalized (event template): produce any bus event on fire
+
     Args:
         title: Reminder title/description
-        contact: Contact name, phone, or chat_id
+        contact: Contact name, phone, or chat_id (legacy mode)
         schedule_type: 'once' or 'cron'
         schedule_value: ISO datetime for 'once', cron pattern for 'cron'
         tz_name: Timezone override (uses default if None)
-        target: Target session - 'fg' (foreground), 'bg' (background), or 'spawn' (new agent)
+        target: Target session - 'fg', 'bg', or 'spawn' (legacy mode)
+        event: Bus event template to produce on fire (generalized mode)
 
     Returns:
         New reminder dict ready to append to reminders list
@@ -275,15 +312,9 @@ def create_reminder(
     reminder_id = str(uuid.uuid4())[:8]
     now_utc = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
-    # Validate target
-    if target not in ("fg", "bg", "spawn"):
-        raise ValueError(f"Invalid target: {target}. Must be 'fg', 'bg', or 'spawn'")
-
     reminder = {
         "id": reminder_id,
         "title": title,
-        "contact": contact,
-        "target": target,
         "schedule": {
             "type": schedule_type,
             "value": schedule_value,
@@ -295,6 +326,19 @@ def create_reminder(
         "retry_count": 0,
         "last_error": None
     }
+
+    if event:
+        # Generalized mode: validate and store event template
+        validate_event_template(event)
+        reminder["event"] = event
+    else:
+        # Legacy mode: validate target and store contact
+        if target not in ("fg", "bg", "spawn"):
+            raise ValueError(f"Invalid target: {target}. Must be 'fg', 'bg', or 'spawn'")
+        if not contact:
+            raise ValueError("Legacy reminders must have a contact")
+        reminder["contact"] = contact
+        reminder["target"] = target
 
     if tz_name:
         reminder["schedule"]["timezone"] = tz_name
@@ -315,16 +359,24 @@ def get_reminder_timezone(reminder: Dict[str, Any], config: Dict[str, Any]) -> s
 
 # CLI helper functions
 
-def add_reminder_cli(title: str, contact: str, in_duration: Optional[str] = None,
+def add_reminder_cli(title: str, contact: Optional[str] = None,
+                     in_duration: Optional[str] = None,
                      at_time: Optional[str] = None, cron_pattern: Optional[str] = None,
-                     tz_override: Optional[str] = None, target: str = "fg") -> Dict[str, Any]:
+                     tz_override: Optional[str] = None, target: str = "fg",
+                     event_json: Optional[str] = None) -> Dict[str, Any]:
     """
     Add a reminder via CLI.
 
     One of in_duration, at_time, or cron_pattern must be provided.
-    Target can be 'fg' (foreground session), 'bg' (background session), or 'spawn' (new agent).
+
+    Two modes:
+    - Legacy: contact + target (inject into chat session)
+    - Generalized: event_json (produce any bus event)
+
     Returns the created reminder.
     """
+    import json as _json
+
     with reminders_lock():
         data = load_reminders()
         config = data["config"]
@@ -347,18 +399,27 @@ def add_reminder_cli(title: str, contact: str, in_duration: Optional[str] = None
         else:
             raise ValueError("Must specify --in, --at, or --cron")
 
+        # Parse event JSON if provided
+        event = None
+        if event_json:
+            try:
+                event = _json.loads(event_json)
+            except _json.JSONDecodeError as e:
+                raise ValueError(f"Invalid event JSON: {e}")
+
         reminder = create_reminder(
             title=title,
             contact=contact,
             schedule_type=schedule_type,
             schedule_value=schedule_value,
             tz_name=tz_override,  # Only store if explicitly overridden
-            target=target
+            target=target,
+            event=event,
         )
 
         # For cron, compute next_fire with timezone
         if schedule_type == "cron" and cron_pattern:
-            assert tz_name is not None  # guaranteed by line 323
+            assert tz_name is not None  # guaranteed above
             reminder["next_fire"] = next_cron_fire(cron_pattern, tz_name)
 
         data["reminders"].append(reminder)

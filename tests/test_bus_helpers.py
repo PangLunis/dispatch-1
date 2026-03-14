@@ -80,6 +80,7 @@ class TestProduceEvent:
             key="+1",
             type="message.received",
             source="imessage",
+            headers=None,
         )
 
     def test_noop_when_producer_is_none(self):
@@ -111,6 +112,7 @@ class TestProduceSessionEvent:
             key="+123",
             type="session.created",
             source="daemon",
+            headers=None,
         )
 
     def test_default_source_is_daemon(self):

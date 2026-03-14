@@ -1012,6 +1012,119 @@ Gemini analyzed the attached image:
         return True
 
     # ──────────────────────────────────────────────────────────────
+    # Ephemeral sessions (for tasks)
+    # ──────────────────────────────────────────────────────────────
+
+    async def create_ephemeral_session(
+        self,
+        task_id: str,
+        title: str,
+        instructions: str,
+        requested_by: str,
+        timeout_minutes: int = 30,
+        notify: bool = True,
+    ) -> SDKSession:
+        """Create an ephemeral SDK session for a one-off task.
+
+        Ephemeral sessions are short-lived agents that execute a task and
+        auto-terminate. They reuse the same SDK infrastructure as normal
+        chat sessions but have their own cwd and no transcript persistence.
+
+        Args:
+            task_id: Unique task identifier (used as session key)
+            title: Human-readable task title
+            instructions: Full prompt/instructions for the agent
+            requested_by: chat_id of requester (for result routing)
+            timeout_minutes: Auto-kill after this many minutes
+            notify: Whether to text requester on start/finish
+
+        Returns:
+            The created SDKSession
+        """
+        session_key = f"ephemeral-{task_id}"
+
+        async with self._lock:
+            if session_key in self.sessions and self.sessions[session_key].is_alive():
+                return self.sessions[session_key]
+
+            # Kill zombie
+            if session_key in self.sessions:
+                old_session = self.sessions.pop(session_key)
+                lifecycle_log.info(
+                    f"ZOMBIE_CLEANUP | {session_key} | Killing orphan subprocess before recreate"
+                )
+                await old_session._kill_subprocess()
+
+            # Create ephemeral cwd with .claude symlink for skill access
+            ephemeral_dir = HOME / "dispatch" / "state" / "ephemeral" / task_id
+            ephemeral_dir.mkdir(parents=True, exist_ok=True)
+            claude_symlink = ephemeral_dir / ".claude"
+            if not claude_symlink.exists():
+                claude_symlink.symlink_to(HOME / ".claude")
+
+            session = SDKSession(
+                chat_id=session_key,
+                contact_name=f"Task: {title}",
+                tier="admin",
+                cwd=str(ephemeral_dir),
+                session_type="ephemeral",
+                producer=self._producer,
+            )
+            await session.start()
+            self.sessions[session_key] = session
+
+            lifecycle_log.info(
+                f"CREATE | {session_key} | SUCCESS | ephemeral task={title} "
+                f"requested_by={requested_by} timeout={timeout_minutes}m"
+            )
+            produce_session_event(self._producer, session_key, "session.created", {
+                "contact_name": f"Task: {title}",
+                "tier": "admin",
+                "session_type": "ephemeral",
+                "task_id": task_id,
+                "requested_by": requested_by,
+            }, source="task-runner")
+
+        # Inject task instructions outside lock
+        task_prompt = f"""EPHEMERAL TASK SESSION — {title}
+
+You are an autonomous agent executing a specific task. When done, state your
+results clearly. You have access to all skills and tools.
+
+Task ID: {task_id}
+Requested by: {requested_by}
+
+--- INSTRUCTIONS ---
+{instructions}
+--- END INSTRUCTIONS ---
+
+Execute the task now. Be thorough but efficient."""
+        await session.inject(task_prompt)
+        return session
+
+    async def kill_ephemeral_session(self, task_id: str) -> bool:
+        """Kill an ephemeral session and clean up its cwd."""
+        session_key = f"ephemeral-{task_id}"
+
+        async with self._lock:
+            session = self.sessions.pop(session_key, None)
+
+        if session:
+            await session.stop()
+            lifecycle_log.info(f"KILL | {session_key} | ephemeral task killed")
+
+        # Clean up ephemeral cwd
+        import shutil
+        ephemeral_dir = HOME / "dispatch" / "state" / "ephemeral" / task_id
+        if ephemeral_dir.exists():
+            try:
+                shutil.rmtree(ephemeral_dir)
+            except Exception as e:
+                log.warning(f"Failed to clean up ephemeral dir {ephemeral_dir}: {e}")
+
+        return session is not None
+
+    # ──────────────────────────────────────────────────────────────
     # Background sessions (for nightly consolidation)
     # ──────────────────────────────────────────────────────────────
 

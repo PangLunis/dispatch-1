@@ -952,10 +952,12 @@ class ReminderPoller:
         self._caught_up = False
 
     def _produce_event(self, topic: str, event_type: str, payload: dict,
-                       key: str | None = None, source: str = "reminder"):
+                       key: str | None = None, source: str = "reminder",
+                       headers: dict[str, str] | None = None):
         """Delegate event production to bus via backend's producer."""
         producer = getattr(self.backend, '_producer', None)
-        produce_event(producer, topic, event_type, payload, key=key, source=source)
+        produce_event(producer, topic, event_type, payload, key=key, source=source,
+                      headers=headers)
 
     def _produce_session_injected(self, session_id: str, contact: str,
                                    tier: str, r: dict):
@@ -966,6 +968,26 @@ class ReminderPoller:
             session_injected_payload(session_id, "reminder", contact, tier,
                                      reminder_id=r.get("id"), target=r.get("target", "fg")),
             source="reminder")
+
+    def _resolve_reminder_contact(self, r: dict) -> tuple[str, str]:
+        """Resolve reminder contact to (chat_id, tier).
+
+        Returns (chat_id, tier) or raises ValueError if contact not found.
+        """
+        contact = r.get("contact")
+        if not contact:
+            raise ValueError(f"Reminder has no contact: {r.get('id')}")
+
+        if re.match(r'^[0-9a-f]{32}$', contact) or contact.startswith('+'):
+            return contact, "admin"
+
+        contact_info = self.contacts.lookup_phone_by_name(contact)
+        if not contact_info:
+            raise ValueError(f"Contact not found: {contact}")
+        chat_id = contact_info.get("phone")
+        if not chat_id:
+            raise ValueError(f"No phone for contact: {contact}")
+        return chat_id, contact_info.get("tier", "admin")
 
     def _load_reminders(self):
         """Load reminders from JSON file."""
@@ -1097,35 +1119,95 @@ class ReminderPoller:
             self._save_reminders()
 
     async def _fire_reminder(self, r: dict, late: bool = False):
-        """Fire a reminder by injecting into session."""
+        """Fire a reminder: produce to bus + inject directly (dual path).
+
+        Two paths based on reminder type:
+        1. Generalized (has 'event' field): produce the stored event template to bus.
+           No direct inject — the bus consumer handles routing/execution.
+        2. Legacy (no 'event' field): produce reminder.due + direct inject (dual path).
+
+        TODO: Remove direct _inject_to_session() once reminder consumer is live.
+        See plans/reminder-bus-producer.md "Definition of Done for Dual Path Removal".
+        """
         from datetime import timezone
-        from assistant.reminders import next_cron_fire, format_for_display
+        from assistant.reminders import next_cron_fire
+        import uuid
 
         try:
-            await self._inject_to_session(r, late)
-
-            # Success
             now_utc = datetime.now(timezone.utc)
+            tz = self._get_reminder_timezone(r)
+
+            if "event" in r and r["event"]:
+                # ── Generalized path: produce the stored event template ──
+                evt = r["event"]
+                trace_id = f"trace-{str(uuid.uuid4())[:8]}"
+                self._produce_event(
+                    topic=evt["topic"],
+                    event_type=evt["type"],
+                    payload=evt["payload"],  # user payload passed through unchanged
+                    key=evt.get("key"),
+                    source="reminder-scheduler",
+                    headers={
+                        "trace_id": trace_id,
+                        "reminder_id": r["id"],
+                        "reminder_title": r.get("title", ""),
+                        "fired_at": now_utc.isoformat().replace('+00:00', 'Z'),
+                        "schedule_type": r["schedule"]["type"],
+                        "fired_count": str(r.get("fired_count", 0) + 1),
+                    },
+                )
+                log.info(f"REMINDER_FIRED | id={r['id']} | trace={trace_id} | "
+                         f"event={evt['topic']}/{evt['type']} | mode=generalized")
+            else:
+                # ── Legacy path: produce reminder.due + direct inject ──
+                chat_id, tier = self._resolve_reminder_contact(r)
+
+                scheduled_time = r.get("next_fire", now_utc.isoformat())
+                minutes_late = 0
+                if late:
+                    fire_time = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
+                    minutes_late = (now_utc - fire_time).total_seconds() / 60
+
+                # 1. Produce to bus (fire-and-forget)
+                self._produce_event(
+                    "reminders", "reminder.due",
+                    {
+                        "reminder_id": r["id"],
+                        "title": r.get("title", ""),
+                        "contact": r.get("contact", ""),
+                        "chat_id": chat_id,
+                        "tier": tier,
+                        "target": r.get("target", "fg"),
+                        "schedule_type": r["schedule"]["type"],
+                        "schedule_value": r["schedule"]["value"],
+                        "timezone": tz,
+                        "scheduled_fire_time": scheduled_time,
+                        "actual_fire_time": now_utc.isoformat().replace('+00:00', 'Z'),
+                        "is_late": late,
+                        "minutes_late": round(minutes_late, 1),
+                        "fired_count": r.get("fired_count", 0) + 1,
+                    },
+                    key=chat_id,
+                    source="reminder-poller"
+                )
+
+                # 2. Direct inject — PRIMARY delivery path
+                await self._inject_to_session(r, late, resolved_chat_id=chat_id, resolved_tier=tier)
+                log.info(f"REMINDER_FIRED | id={r['id']} | late={late} | "
+                         f"target={r.get('target', 'fg')} | mode=legacy")
+
+            # Success — update reminder state
             r["last_fired"] = now_utc.isoformat().replace('+00:00', 'Z')
             r["fired_count"] = r.get("fired_count", 0) + 1
             r["last_error"] = None
             r["retry_count"] = 0
 
             if r["schedule"]["type"] == "once":
-                # Delete once reminders on success
                 self.reminders.remove(r)
                 log.info(f"REMINDER_DELETED | id={r['id']} | reason=completed")
             else:
-                # Advance cron to next fire time
-                tz = self._get_reminder_timezone(r)
                 r["next_fire"] = next_cron_fire(r["schedule"]["value"], tz)
                 log.info(f"REMINDER_SCHEDULED | id={r['id']} | next={r['next_fire']}")
-
-            log.info(f"REMINDER_FIRED | id={r['id']} | late={late}")
-            self._produce_event("system", "reminder.fired",
-                reminder_payload(r["id"], r.get("contact", ""), r.get("chat_id", ""),
-                                 r.get("title", ""), r.get("schedule", {}).get("type", "once")),
-                key=r.get("id", ""), source="reminder")
 
         except Exception as e:
             r["retry_count"] = r.get("retry_count", 0) + 1
@@ -1138,27 +1220,38 @@ class ReminderPoller:
                 log.error(f"REMINDER_DEAD | id={r['id']}")
                 await self._alert_admin(r)
 
-    async def _inject_to_session(self, r: dict, late: bool = False):
-        """Inject reminder into contact's session."""
+    async def _inject_to_session(self, r: dict, late: bool = False,
+                                 resolved_chat_id: str | None = None,
+                                 resolved_tier: str | None = None):
+        """Inject reminder into contact's session.
+
+        Args:
+            resolved_chat_id: Pre-resolved chat_id (skips contact resolution).
+            resolved_tier: Pre-resolved tier (skips contact resolution).
+        """
         from datetime import timezone
         from assistant.reminders import format_for_display
 
-        contact = r.get("contact")
-        if not contact:
-            raise ValueError(f"Reminder has no contact: {r.get('id')}")
-
-        # Resolve contact to chat_id
-        if re.match(r'^[0-9a-f]{32}$', contact) or contact.startswith('+'):
-            chat_id = contact
-            tier = "admin"
+        contact: str = r.get("contact") or ""
+        if resolved_chat_id and resolved_tier:
+            chat_id = resolved_chat_id
+            tier = resolved_tier
         else:
-            contact_info = self.contacts.lookup_phone_by_name(contact)
-            if not contact_info:
-                raise ValueError(f"Contact not found: {contact}")
-            chat_id = contact_info.get("phone")
-            if not chat_id:
-                raise ValueError(f"No phone for contact: {contact}")
-            tier = contact_info.get("tier", "admin")
+            if not contact:
+                raise ValueError(f"Reminder has no contact: {r.get('id')}")
+
+            # Resolve contact to chat_id
+            if re.match(r'^[0-9a-f]{32}$', contact) or contact.startswith('+'):
+                chat_id = contact
+                tier = "admin"
+            else:
+                contact_info = self.contacts.lookup_phone_by_name(contact)
+                if not contact_info:
+                    raise ValueError(f"Contact not found: {contact}")
+                chat_id = contact_info.get("phone")
+                if not chat_id:
+                    raise ValueError(f"No phone for contact: {contact}")
+                tier = contact_info.get("tier", "admin")
 
         # Build injection message
         tz = self._get_reminder_timezone(r)
@@ -1231,7 +1324,11 @@ class ReminderPoller:
                     raise RuntimeError(f"Failed to create session for {contact}")
 
     async def _alert_admin(self, r: dict):
-        """Notify admin of dead reminder."""
+        """Notify admin of dead reminder.
+
+        NOTE: This injects directly into the admin session, NOT through the bus.
+        This is intentional — system alerts must not depend on a consumer being alive.
+        """
         from assistant import config
         admin_phone = config.get("owner.phone")
         if not admin_phone:
@@ -1433,6 +1530,8 @@ class Manager:
         self._bus.create_topic("messages", retention_ms=168 * 3600 * 1000)  # 7 days
         self._bus.create_topic("sessions", retention_ms=168 * 3600 * 1000)
         self._bus.create_topic("system", retention_ms=168 * 3600 * 1000)
+        self._bus.create_topic("reminders", retention_ms=168 * 3600 * 1000)
+        self._bus.create_topic("tasks", retention_ms=168 * 3600 * 1000)  # 7 days
         self._producer = self._bus.producer()
 
         self.sessions = SDKBackend(
@@ -1476,6 +1575,12 @@ class Manager:
         self._consumer_notify = asyncio.Event()
         self._consumer_executor = ThreadPoolExecutor(1, thread_name_prefix="bus-consumer")
         self._consumer_task: asyncio.Task | None = None
+
+        # Task consumer: handles task.requested events from bus
+        self._task_consumer_notify = asyncio.Event()
+        self._task_consumer_executor = ThreadPoolExecutor(1, thread_name_prefix="task-consumer")
+        self._task_consumer_task: asyncio.Task | None = None
+        self._ephemeral_tasks: Dict[str, dict] = {}  # task_id -> tracking info
 
         # Initialize bus consumers
         self._consumer_runner = self._init_consumers()
@@ -1667,6 +1772,485 @@ class Manager:
                 log.info("Message consumer task restarted")
 
         _fire_and_forget(_restart(), name="consumer-restart")
+
+    # ──────────────────────────────────────────────────────────────
+    # Task consumer + ephemeral task infrastructure
+    # ──────────────────────────────────────────────────────────────
+
+    async def _run_task_consumer(self):
+        """Consume task.requested events from bus and spin up ephemeral agents.
+
+        Similar architecture to _run_message_consumer but for the "tasks" topic.
+        Handles task lifecycle: creation, timeout supervision, completion routing.
+
+        TODO: Extract shared async consumer base with _run_message_consumer to
+        eliminate ~40 lines of duplicated poll loop + backoff + shutdown boilerplate.
+        """
+        from assistant.bus_helpers import (
+            task_started_payload, task_completed_payload,
+            task_failed_payload, task_timeout_payload,
+        )
+
+        consumer = self._bus.consumer(
+            group_id="task-runner",
+            topics=["tasks"],
+            auto_commit=False,
+            auto_offset_reset="latest",
+        )
+
+        # Register for clean shutdown
+        if self._resource_registry:
+            self._resource_registry.close_and_remove("task-runner-consumer")
+            self._resource_registry.register(
+                "task-runner-consumer", consumer, consumer.close)
+
+        loop = asyncio.get_event_loop()
+        consecutive_errors = 0
+
+        log.info("Task consumer started (group=task-runner)")
+
+        while not self._shutdown_flag:
+            try:
+                # Wait for notification or periodic fallback
+                try:
+                    await asyncio.wait_for(self._task_consumer_notify.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
+
+                records = await loop.run_in_executor(
+                    self._task_consumer_executor, consumer.poll, 50
+                )
+
+                if not records:
+                    continue
+
+                self._task_consumer_notify.clear()
+
+                for record in records:
+                    if record.type != "task.requested":
+                        log.debug(f"Task consumer: skipping {record.type} at offset {record.offset}")
+                        continue
+
+                    try:
+                        await self._handle_task_requested(record.payload, record.headers or {})
+                    except asyncio.CancelledError:
+                        consumer.commit()
+                        raise
+                    except Exception as e:
+                        log.error(f"Task consumer: failed to handle task.requested "
+                                  f"(offset={record.offset}): {e}")
+                        produce_event(self._producer, "tasks", "task.failed", {
+                            "task_id": record.payload.get("task_id", "unknown"),
+                            "error": str(e),
+                            "original_offset": record.offset,
+                        }, key=record.key, source="task-runner")
+
+                consumer.commit()
+                consecutive_errors = 0
+
+            except asyncio.CancelledError:
+                log.info("Task consumer shutting down")
+                break
+            except Exception as e:
+                consecutive_errors += 1
+                log.error(f"Task consumer error ({consecutive_errors}): {e}")
+                backoff = min(30, 2 ** consecutive_errors)
+                await asyncio.sleep(backoff)
+
+        log.info("Task consumer stopped")
+
+    async def _handle_task_requested(self, payload: dict, headers: dict):
+        """Handle a task.requested event: spin up an ephemeral agent session.
+
+        Validates the payload, creates the session, starts timeout supervision,
+        and optionally notifies the requester.
+        """
+        from assistant.bus_helpers import (
+            task_started_payload, task_failed_payload, task_skipped_payload,
+        )
+
+        task_id = payload.get("task_id")
+        title = payload.get("title", "Untitled task")
+        requested_by = payload.get("requested_by")
+        instructions = payload.get("instructions", "")
+        notify = payload.get("notify", True)
+        timeout_minutes = payload.get("timeout_minutes", 30)
+
+        # Support nested execution.prompt format
+        execution = payload.get("execution", {})
+        mode = execution.get("mode", "agent")
+        if not instructions and execution.get("prompt"):
+            instructions = execution["prompt"]
+
+        if not task_id:
+            log.error("task.requested missing task_id, skipping")
+            return
+
+        if not requested_by:
+            log.error(f"task.requested {task_id} missing requested_by, skipping")
+            return
+
+        if not instructions:
+            log.error(f"task.requested {task_id} missing instructions, skipping")
+            return
+
+        # Dedup: skip if already running
+        session_key = f"ephemeral-{task_id}"
+        if session_key in self.sessions.sessions and self.sessions.sessions[session_key].is_alive():
+            log.warning(f"Task {task_id} already running, skipping duplicate")
+            produce_event(self._producer, "tasks", "task.skipped",
+                task_skipped_payload(task_id, "already_running"),
+                key=requested_by, source="task-runner")
+            return
+
+        log.info(f"TASK_START | task_id={task_id} | title={title} | "
+                 f"requested_by={requested_by} | mode={mode} | timeout={timeout_minutes}m")
+
+        if mode == "script":
+            # Script tasks: run as subprocess, no Claude session needed
+            await self._run_script_task(payload, headers)
+            return
+
+        # Agent tasks: create ephemeral Claude session
+        try:
+            session = await self.sessions.create_ephemeral_session(
+                task_id=task_id,
+                title=title,
+                instructions=instructions,
+                requested_by=requested_by,
+                timeout_minutes=timeout_minutes,
+                notify=notify,
+            )
+        except Exception as e:
+            log.error(f"Failed to create ephemeral session for task {task_id}: {e}")
+            produce_event(self._producer, "tasks", "task.failed",
+                task_failed_payload(task_id, title, requested_by, str(e)),
+                key=requested_by, source="task-runner")
+            return
+
+        # Track for timeout supervision
+        self._ephemeral_tasks[task_id] = {
+            "session_key": session_key,
+            "started_at": time.time(),
+            "timeout_minutes": timeout_minutes,
+            "requested_by": requested_by,
+            "title": title,
+            "notify": notify,
+        }
+
+        # Produce task.started event
+        produce_event(self._producer, "tasks", "task.started",
+            task_started_payload(
+                task_id=task_id, title=title, requested_by=requested_by,
+                session_name=session_key, timeout_minutes=timeout_minutes,
+                execution_mode=mode,
+            ),
+            key=requested_by, source="task-runner",
+            headers=headers,
+        )
+
+        # Notify requester if requested
+        if notify:
+            _fire_and_forget(
+                self._notify_task_event(requested_by, f"⚙️ Task started: {title}"),
+                name=f"task-notify-start-{task_id}",
+            )
+
+    async def _run_script_task(self, payload: dict, headers: dict):
+        """Run a script task as a subprocess (no Claude session).
+
+        For simple, well-defined tasks that don't need LLM reasoning.
+        """
+        from assistant.bus_helpers import task_completed_payload, task_failed_payload
+
+        task_id = payload["task_id"]
+        title = payload.get("title", "Untitled script task")
+        requested_by = payload["requested_by"]
+        notify = payload.get("notify", True)
+        execution = payload.get("execution", {})
+        command = execution.get("command", [])
+
+        if not command:
+            log.error(f"Script task {task_id} missing execution.command")
+            produce_event(self._producer, "tasks", "task.failed",
+                task_failed_payload(task_id, title, requested_by, "missing execution.command"),
+                key=requested_by, source="task-runner")
+            return
+
+        start_time = time.time()
+        log.info(f"SCRIPT_TASK_START | task_id={task_id} | command={command}")
+
+        try:
+            import os as _os
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # New process group for clean kill
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=payload.get("timeout_minutes", 30) * 60,
+            )
+
+            duration = time.time() - start_time
+
+            if proc.returncode == 0:
+                produce_event(self._producer, "tasks", "task.completed",
+                    task_completed_payload(task_id, title, requested_by, duration,
+                        stdout=stdout.decode()[-2000:] if stdout else "",
+                    ),
+                    key=requested_by, source="task-runner", headers=headers)
+                log.info(f"SCRIPT_TASK_DONE | task_id={task_id} | duration={duration:.1f}s")
+
+                if notify:
+                    _fire_and_forget(
+                        self._notify_task_event(requested_by, f"✅ Script task done: {title}"),
+                        name=f"task-notify-done-{task_id}",
+                    )
+            else:
+                error_msg = (stderr.decode()[-500:] if stderr else f"exit code {proc.returncode}")
+                produce_event(self._producer, "tasks", "task.failed",
+                    task_failed_payload(task_id, title, requested_by, error_msg),
+                    key=requested_by, source="task-runner", headers=headers)
+                log.error(f"SCRIPT_TASK_FAILED | task_id={task_id} | error={error_msg}")
+
+                if notify:
+                    _fire_and_forget(
+                        self._notify_task_event(requested_by, f"❌ Script task failed: {title}"),
+                        name=f"task-notify-fail-{task_id}",
+                    )
+
+        except asyncio.TimeoutError:
+            from assistant.bus_helpers import task_timeout_payload
+            duration = time.time() - start_time
+            produce_event(self._producer, "tasks", "task.timeout",
+                task_timeout_payload(task_id, title, requested_by,
+                    payload.get("timeout_minutes", 30)),
+                key=requested_by, source="task-runner", headers=headers)
+            log.error(f"SCRIPT_TASK_TIMEOUT | task_id={task_id} | duration={duration:.1f}s")
+            # Kill entire process group (catches child processes too)
+            try:
+                _os.killpg(_os.getpgid(proc.pid), 9)  # SIGKILL the group
+            except (ProcessLookupError, OSError):
+                proc.kill()  # Fallback to killing just the process
+            # Reap zombie process (with timeout to avoid hanging on D-state)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                log.warning(f"SCRIPT_TASK_REAP_TIMEOUT | task_id={task_id} | "
+                            "process did not exit after SIGKILL + 10s")
+
+            if notify:
+                _fire_and_forget(
+                    self._notify_task_event(
+                        requested_by,
+                        f"⏰ Script task timed out: {title}"
+                    ),
+                    name=f"task-notify-timeout-{task_id}",
+                )
+
+        except Exception as e:
+            produce_event(self._producer, "tasks", "task.failed",
+                task_failed_payload(task_id, title, requested_by, str(e)),
+                key=requested_by, source="task-runner", headers=headers)
+            log.error(f"SCRIPT_TASK_ERROR | task_id={task_id} | error={e}")
+            # Clean up the process if it's still running
+            try:
+                if proc.returncode is None:
+                    try:
+                        _os.killpg(_os.getpgid(proc.pid), 9)
+                    except (ProcessLookupError, OSError):
+                        proc.kill()
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+            except Exception:
+                pass  # Best-effort cleanup
+
+    async def _supervise_ephemeral_tasks(self):
+        """Periodic supervision of ephemeral tasks: check for timeouts and completion.
+
+        Runs every 30 seconds. Checks:
+        1. Timed-out tasks → force-kill and produce task.timeout
+        2. Completed tasks (session died) → produce task.completed and clean up
+        """
+        from assistant.bus_helpers import task_completed_payload, task_timeout_payload
+
+        HARD_MAX_LIFETIME = 7200  # 2 hours absolute max
+
+        while not self._shutdown_flag:
+            try:
+                await asyncio.sleep(30)
+
+                if not self._ephemeral_tasks:
+                    continue
+
+                # Snapshot to avoid mutation during iteration
+                tasks_snapshot = dict(self._ephemeral_tasks)
+
+                for task_id, info in tasks_snapshot.items():
+                    elapsed = time.time() - info["started_at"]
+                    timeout_secs = info["timeout_minutes"] * 60
+                    session_key = info["session_key"]
+                    session = self.sessions.sessions.get(session_key)
+
+                    # Check timeout (configured or hard max)
+                    if elapsed > timeout_secs or elapsed > HARD_MAX_LIFETIME:
+                        log.warning(f"TASK_TIMEOUT | task_id={task_id} | "
+                                    f"elapsed={elapsed:.0f}s | timeout={timeout_secs}s")
+
+                        produce_event(self._producer, "tasks", "task.timeout",
+                            task_timeout_payload(task_id, info["title"],
+                                info["requested_by"], info["timeout_minutes"]),
+                            key=info["requested_by"], source="task-runner")
+
+                        # Kill session and clean up
+                        await self.sessions.kill_ephemeral_session(task_id)
+                        self._ephemeral_tasks.pop(task_id, None)
+
+                        if info["notify"]:
+                            _fire_and_forget(
+                                self._notify_task_event(
+                                    info["requested_by"],
+                                    f"⏰ Task timed out after {info['timeout_minutes']}min: {info['title']}"
+                                ),
+                                name=f"task-notify-timeout-{task_id}",
+                            )
+                        continue
+
+                    # Check if session died (completed or crashed)
+                    if session is None or not session.is_alive():
+                        log.info(f"TASK_COMPLETED | task_id={task_id} | "
+                                 f"elapsed={elapsed:.0f}s | session_gone")
+
+                        produce_event(self._producer, "tasks", "task.completed",
+                            task_completed_payload(task_id, info["title"],
+                                info["requested_by"], elapsed),
+                            key=info["requested_by"], source="task-runner")
+
+                        # Clean up
+                        await self.sessions.kill_ephemeral_session(task_id)
+                        self._ephemeral_tasks.pop(task_id, None)
+
+                        if info["notify"]:
+                            _fire_and_forget(
+                                self._notify_task_event(
+                                    info["requested_by"],
+                                    f"✅ Task completed: {info['title']}"
+                                ),
+                                name=f"task-notify-done-{task_id}",
+                            )
+
+            except asyncio.CancelledError:
+                log.info("Task supervisor shutting down")
+                break
+            except Exception as e:
+                log.error(f"Task supervisor error: {e}")
+                await asyncio.sleep(5)
+
+        log.info("Task supervisor stopped")
+
+    async def _notify_task_event(self, chat_id: str, message: str):
+        """Send a task notification to the requester's session.
+
+        Injects the message into the requester's existing chat session
+        so they have full history context. Falls back to direct message
+        via the correct backend (iMessage or Signal).
+        """
+        session = self.sessions.sessions.get(chat_id)
+        if session and session.is_alive():
+            try:
+                await session.inject(f"[TASK NOTIFICATION] {message}")
+            except Exception as e:
+                log.warning(f"Failed to inject task notification to {chat_id}: {e}")
+        else:
+            # Fallback: send via the correct backend
+            try:
+                # Look up backend from registry
+                reg = self.sessions.registry.get(chat_id)
+                source = reg.get("source", "imessage") if reg else "imessage"
+
+                if source == "signal":
+                    send_cmd = str(SKILLS_DIR / "signal" / "scripts" / "send-signal")
+                else:
+                    send_cmd = str(SKILLS_DIR / "sms-assistant" / "scripts" / "send-sms")
+
+                proc = await asyncio.create_subprocess_exec(
+                    send_cmd, chat_id, message,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+            except Exception as e:
+                log.warning(f"Failed to send task notification to {chat_id}: {e}")
+
+    def _on_task_consumer_done(self, task: asyncio.Task):
+        """Detect task consumer death and auto-restart (max 5 restarts)."""
+        if self._shutdown_flag:
+            return
+        try:
+            exc = task.exception()
+            log.error(f"Task consumer task died: {exc}. Restarting in 5s...")
+        except asyncio.CancelledError:
+            return
+
+        self._task_consumer_restarts = getattr(self, '_task_consumer_restarts', 0) + 1
+        MAX_RESTARTS = 5
+        if self._task_consumer_restarts > MAX_RESTARTS:
+            log.error(f"Task consumer exceeded {MAX_RESTARTS} restarts, giving up. "
+                      "Manual daemon restart required.")
+            return
+
+        async def _restart():
+            await asyncio.sleep(5)
+            if not self._shutdown_flag:
+                self._task_consumer_task = asyncio.create_task(
+                    self._run_task_consumer(), name="task-consumer"
+                )
+                self._task_consumer_task.add_done_callback(self._on_task_consumer_done)
+                log.info(f"Task consumer task restarted "
+                         f"({self._task_consumer_restarts}/{MAX_RESTARTS})")
+
+        _fire_and_forget(_restart(), name="task-consumer-restart")
+
+    async def _cleanup_orphaned_ephemeral_sessions(self):
+        """Clean up ephemeral sessions and cwds left from a previous daemon run.
+
+        Called on startup to prevent resource leaks.
+        """
+        import shutil
+
+        ephemeral_base = HOME / "dispatch" / "state" / "ephemeral"
+        if not ephemeral_base.exists():
+            return
+
+        # Clean up leftover ephemeral cwds
+        cleaned = 0
+        for task_dir in ephemeral_base.iterdir():
+            if task_dir.is_dir():
+                try:
+                    shutil.rmtree(task_dir)
+                    cleaned += 1
+                except Exception as e:
+                    log.warning(f"Failed to clean orphaned ephemeral dir {task_dir}: {e}")
+
+        if cleaned:
+            log.info(f"Cleaned up {cleaned} orphaned ephemeral task directories")
+
+        # Kill any orphaned ephemeral sessions
+        orphaned = [
+            key for key in self.sessions.sessions
+            if key.startswith("ephemeral-")
+        ]
+        for key in orphaned:
+            session = self.sessions.sessions.pop(key, None)
+            if session:
+                try:
+                    await session.stop()
+                except Exception as e:
+                    log.warning(f"Failed to stop orphaned ephemeral session {key}: {e}")
+
+        if orphaned:
+            log.info(f"Cleaned up {len(orphaned)} orphaned ephemeral sessions")
 
     def _load_state(self) -> int:
         """Load the last processed message ROWID."""
@@ -2509,6 +3093,33 @@ You have 15 minutes. Work efficiently.
                 await asyncio.gather(self._consumer_task, return_exceptions=True)
             log.info("Message consumer drained and stopped")
 
+        # Drain task consumer
+        if self._task_consumer_task and not self._task_consumer_task.done():
+            self._task_consumer_notify.set()
+            try:
+                await asyncio.wait_for(self._task_consumer_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                self._task_consumer_task.cancel()
+                await asyncio.gather(self._task_consumer_task, return_exceptions=True)
+            except Exception:
+                self._task_consumer_task.cancel()
+                await asyncio.gather(self._task_consumer_task, return_exceptions=True)
+            log.info("Task consumer drained and stopped")
+
+        # Cancel task supervisor
+        if hasattr(self, '_task_supervisor_task') and self._task_supervisor_task and not self._task_supervisor_task.done():
+            self._task_supervisor_task.cancel()
+            await asyncio.gather(self._task_supervisor_task, return_exceptions=True)
+            log.info("Task supervisor stopped")
+
+        # Kill remaining ephemeral sessions
+        for task_id in list(self._ephemeral_tasks.keys()):
+            try:
+                await self.sessions.kill_ephemeral_session(task_id)
+            except Exception as e:
+                log.warning(f"Failed to kill ephemeral task {task_id} on shutdown: {e}")
+        self._ephemeral_tasks.clear()
+
         # Application-level teardown (not resource cleanup)
         try:
             await self.ipc.stop()
@@ -2816,6 +3427,25 @@ Keep the text concise - this is a nightly check-in, not a full report.
             self._run_message_consumer(), name="message-consumer"
         )
         self._consumer_task.add_done_callback(self._on_consumer_done)
+
+        # Clean up orphaned ephemeral sessions BEFORE starting task consumer
+        # to prevent race where new tasks get cleaned up as orphans
+        await self._cleanup_orphaned_ephemeral_sessions()
+
+        # Start task consumer (async task — processes task.requested from bus)
+        self._task_consumer_task = asyncio.create_task(
+            self._run_task_consumer(), name="task-consumer"
+        )
+        self._task_consumer_task.add_done_callback(self._on_task_consumer_done)
+
+        # Register task consumer executor for clean shutdown
+        resource_registry.register('task_consumer_executor', self._task_consumer_executor,
+            lambda: self._task_consumer_executor.shutdown(wait=False))
+
+        # Start ephemeral task supervisor (async task — checks for timeouts)
+        self._task_supervisor_task = asyncio.create_task(
+            self._supervise_ephemeral_tasks(), name="task-supervisor"
+        )
 
         # Start IPC server
         await self.ipc.start()

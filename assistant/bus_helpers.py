@@ -29,12 +29,17 @@ Topic/type taxonomy (v6):
                 master.triggered,
                 signal.connection_state,
                 sdk.turn_complete (keyed by component/session_name)
+    reminders — reminder.due (keyed by chat_id)
+    tasks     — task.requested, task.started, task.completed, task.failed,
+                task.timeout, task.skipped (keyed by requested_by chat_id)
 
 Source column semantics per topic:
-    messages: transport layer — "imessage", "signal", "test"
-    sessions: origin context — "daemon", "health", "ipc", "inject", "sdk"
-    system:   component name — "daemon", "watchdog", "health", "consolidation",
-              "consumer", "reminder", "healme", "vision", "compaction", "sdk", "signal"
+    messages:   transport layer — "imessage", "signal", "test"
+    sessions:   origin context — "daemon", "health", "ipc", "inject", "sdk"
+    system:     component name — "daemon", "watchdog", "health", "consolidation",
+                "consumer", "reminder", "healme", "vision", "compaction", "sdk", "signal"
+    reminders:  "reminder-poller"
+    tasks:      "task-runner", "reminder-scheduler"
 """
 import json
 import logging
@@ -56,16 +61,19 @@ def _ensure_json_safe(payload: dict) -> dict:
 
 
 def produce_event(producer, topic: str, event_type: str, payload: dict,
-                  key: str | None = None, source: str = "daemon"):
+                  key: str | None = None, source: str = "daemon",
+                  headers: dict[str, str] | None = None):
     """Non-blocking event production (fire-and-forget).
 
     Args:
         producer: Bus Producer instance (or None — silently no-ops).
-        topic: Target topic ("messages", "sessions", "system").
+        topic: Target topic ("messages", "sessions", "system", "tasks").
         event_type: Event type (e.g. "message.received", "session.created").
         payload: JSON-serializable dict.
         key: Partition key (usually chat_id).
         source: Origin context (semantics vary by topic — see module docstring).
+        headers: Optional metadata dict (trace_id, reminder_id, etc.).
+                 Follows Kafka convention: headers for routing/tracing, payload for business data.
     """
     if not producer:
         return
@@ -77,6 +85,7 @@ def produce_event(producer, topic: str, event_type: str, payload: dict,
             key=key,
             type=event_type,
             source=source,
+            headers=headers,
         )
     except Exception as e:
         log.warning(f"Bus produce [{topic}/{event_type}] failed (non-fatal): {e}")
@@ -381,3 +390,70 @@ def reconstruct_msg_from_bus(payload: dict) -> dict:
     msg.pop("chat_id", None)  # process_message derives this from phone/chat_identifier
 
     return msg
+
+
+# ─── Task event payload builders ────────────────────────────────
+
+def task_started_payload(task_id: str, title: str, requested_by: str,
+                         session_name: str, timeout_minutes: int,
+                         execution_mode: str = "agent", **extra) -> dict:
+    """Build a task.started payload."""
+    payload = {
+        "task_id": task_id,
+        "title": title,
+        "requested_by": requested_by,
+        "session_name": session_name,
+        "timeout_minutes": timeout_minutes,
+        "execution_mode": execution_mode,
+    }
+    payload.update(extra)
+    return payload
+
+
+def task_completed_payload(task_id: str, title: str, requested_by: str,
+                           duration_seconds: float, **extra) -> dict:
+    """Build a task.completed payload."""
+    payload = {
+        "task_id": task_id,
+        "title": title,
+        "requested_by": requested_by,
+        "duration_seconds": round(duration_seconds, 1),
+    }
+    payload.update(extra)
+    return payload
+
+
+def task_failed_payload(task_id: str, title: str, requested_by: str,
+                        error: str, **extra) -> dict:
+    """Build a task.failed payload."""
+    payload = {
+        "task_id": task_id,
+        "title": title,
+        "requested_by": requested_by,
+        "error": error,
+    }
+    payload.update(extra)
+    return payload
+
+
+def task_timeout_payload(task_id: str, title: str, requested_by: str,
+                         timeout_minutes: int, **extra) -> dict:
+    """Build a task.timeout payload."""
+    payload = {
+        "task_id": task_id,
+        "title": title,
+        "requested_by": requested_by,
+        "timeout_minutes": timeout_minutes,
+    }
+    payload.update(extra)
+    return payload
+
+
+def task_skipped_payload(task_id: str, reason: str, **extra) -> dict:
+    """Build a task.skipped payload."""
+    payload = {
+        "task_id": task_id,
+        "reason": reason,
+    }
+    payload.update(extra)
+    return payload

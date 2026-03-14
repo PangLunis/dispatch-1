@@ -34,4 +34,17 @@ fi
 log "HOOK | Restarting $SESSION_NAME"
 "$SCRIPT_DIR/claude-assistant" restart-session --no-compact "$SESSION_NAME"
 
+# Step 3: Send "back online" message after compaction completes
+# Extract chat_id from session_name (e.g., "imessage/_16175969496" → "+16175969496")
+CHAT_ID=$(echo "$SESSION_NAME" | sed 's|.*/||' | sed 's/^_/+/')
+SEND_SMS="$HOME/.claude/skills/sms-assistant/scripts/send-sms"
+SEND_SIGNAL="$HOME/.claude/skills/signal/scripts/send-signal"
+if [[ "$SESSION_NAME" == imessage/* ]] && [ -f "$SEND_SMS" ]; then
+    "$SEND_SMS" "$CHAT_ID" "[SVEN] Back online 👍" 2>/dev/null || true
+    log "HOOK | Sent back-online notice for $SESSION_NAME (imessage)"
+elif [[ "$SESSION_NAME" == signal/* ]] && [ -f "$SEND_SIGNAL" ]; then
+    "$SEND_SIGNAL" "$CHAT_ID" "[SVEN] Back online 👍" 2>/dev/null || true
+    log "HOOK | Sent back-online notice for $SESSION_NAME (signal)"
+fi
+
 log "HOOK | Complete for $SESSION_NAME"
