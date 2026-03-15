@@ -301,39 +301,6 @@
 </article>
 
 <style>
-  .toc {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
-    padding: var(--space-4);
-    margin-bottom: var(--space-8);
-  }
-
-  .toc-title {
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-    margin-bottom: var(--space-3);
-  }
-
-  .toc ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-6);
-  }
-
-  .toc li {
-    margin: 0;
-  }
-
-  .toc button {
-    font-size: 12px;
-  }
-
   .cmd-block {
     margin: var(--space-6) 0;
   }
@@ -396,5 +363,4 @@
     color: var(--text-secondary);
     margin: var(--space-1) 0 0 0;
   }
-
 </style>

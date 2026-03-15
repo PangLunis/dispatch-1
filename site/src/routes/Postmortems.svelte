@@ -61,12 +61,12 @@
 
   <section>
     <h2>Example Incident</h2>
-    <div class="callout">
-      <div class="callout-header">
+    <div class="callout-incident">
+      <div class="callout-incident-header">
         <span class="callout-title">Disk Full (99.7%) from Zombie Processes</span>
         <span class="callout-severity critical">Critical</span>
       </div>
-      <div class="callout-body">
+      <div class="callout-incident-body">
         <p>
           System became unresponsive, requiring HEALME intervention.
           <strong>30 zombie llama-cli processes</strong> were holding 500GB of deleted files
@@ -192,7 +192,7 @@
   }
 
   /* Callout card for example incident */
-  .callout {
+  .callout-incident {
     border: 1px solid var(--border-default);
     border-radius: 8px;
     overflow: hidden;
@@ -200,7 +200,7 @@
     background: var(--bg-elevated);
   }
 
-  .callout-header {
+  .callout-incident-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -230,11 +230,11 @@
     color: #e15759;
   }
 
-  .callout-body {
+  .callout-incident-body {
     padding: var(--space-4);
   }
 
-  .callout-body > p:first-child {
+  .callout-incident-body > p:first-child {
     margin-top: 0;
   }
 

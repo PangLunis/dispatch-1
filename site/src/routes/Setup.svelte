@@ -16,7 +16,7 @@
     </ul>
   </nav>
 
-  <div class="callout">
+  <div class="callout-note">
     <strong>Dedicated Mac recommended.</strong> Dispatch runs 24/7 and needs persistent access to Messages.app.
     A Mac Mini is ideal.
   </div>
@@ -132,36 +132,7 @@ claude</code></pre>
 </article>
 
 <style>
-  .toc {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-default);
-    padding: var(--space-4);
-    margin-bottom: var(--space-6);
-  }
-
-  .toc-title {
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-    margin-bottom: var(--space-3);
-  }
-
-  .toc ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-6);
-  }
-
-  .toc li {
-    margin: 0;
-  }
-
-  .callout {
+  .callout-note {
     background: var(--bg-elevated);
     border-left: 3px solid var(--accent);
     padding: var(--space-4);
@@ -192,6 +163,4 @@ claude</code></pre>
     color: var(--text-tertiary);
     margin-top: var(--space-2);
   }
-
-
 </style>

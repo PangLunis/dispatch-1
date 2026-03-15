@@ -221,5 +221,4 @@ i'm **Jarvis** — your household assistant
     color: var(--text-tertiary);
     font-style: italic;
   }
-
 </style>

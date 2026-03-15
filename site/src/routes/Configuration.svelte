@@ -192,5 +192,4 @@ chrome:
     color: var(--text-tertiary);
     margin: var(--space-2) 0 0;
   }
-
 </style>

@@ -184,5 +184,4 @@
     font-size: 12px;
     color: var(--text-secondary);
   }
-
 </style>

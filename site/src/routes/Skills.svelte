@@ -318,5 +318,4 @@ if __name__ == "__main__":
       text-align: left;
     }
   }
-
 </style>
