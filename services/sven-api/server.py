@@ -677,6 +677,7 @@ if __name__ == "__main__":
 
     # Configure uvicorn with socket reuse to prevent "address already in use" crashes
     # when the daemon restarts and the old process hasn't fully released the port.
+    # Note: Uses uvicorn internal (config.loaded) — tested with uvicorn 0.32+.
     config = uvicorn.Config(app, host="0.0.0.0", port=9091, log_level="warning")
     server = uvicorn.Server(config)
 

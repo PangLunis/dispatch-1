@@ -405,51 +405,7 @@ class SDKBackend:
                 self.registry.clear_was_active(chat_id)
 
                 # Replay undelivered messages from bus WAL
-                try:
-                    from .bus_helpers import query_undelivered_messages
-                    bus_db_path = str(Path.home() / "dispatch" / "state" / "bus.db")
-                    undelivered = query_undelivered_messages(bus_db_path, chat_id)
-                except Exception as e:
-                    log.error(f"REPLAY_QUERY_FAILED | {chat_id} | {e}")
-                    undelivered = []
-
-                if undelivered:
-                    session = self.sessions.get(chat_id)
-                    if session:
-                        log.info(f"REPLAY | {chat_id} | {len(undelivered)} undelivered messages")
-                        if not stored_session_id:
-                            await self._inject_system_prompt_if_needed(session)
-
-                        seen_texts = set()
-                        for umsg in undelivered:
-                            if umsg["text"] in seen_texts:
-                                log.warning(f"REPLAY_DEDUP | {chat_id} | msg_id={umsg['message_id'][:8]} | skipped duplicate")
-                                if self._producer:
-                                    produce_event(self._producer, "messages", "message.delivered", {
-                                        "message_id": umsg["message_id"],
-                                        "replayed": True,
-                                        "deduped": True,
-                                    }, key=chat_id, source="sdk_backend.replay")
-                                continue
-
-                            try:
-                                if self._producer:
-                                    produce_event(self._producer, "messages", "message.delivered", {
-                                        "message_id": umsg["message_id"],
-                                        "replayed": True,
-                                    }, key=chat_id, source="sdk_backend.replay")
-                                await session.inject(umsg["text"])
-                                seen_texts.add(umsg["text"])
-                            except Exception as e:
-                                log.error(f"REPLAY_INJECT_FAILED | {chat_id} | msg_id={umsg['message_id'][:8]} | {e}")
-                                if self._producer:
-                                    try:
-                                        produce_event(self._producer, "messages", "message.replay_failed", {
-                                            "message_id": umsg["message_id"],
-                                            "error": str(e),
-                                        }, key=chat_id, source="sdk_backend.replay")
-                                    except Exception:
-                                        pass
+                await self._replay_undelivered(chat_id, stored_session_id)
 
             except Exception as e:
                 log.error(f"STARTUP | Failed to recreate {session_name}: {e}")
@@ -462,6 +418,77 @@ class SDKBackend:
 
         return recreated
 
+
+    async def _replay_undelivered(self, chat_id: str, stored_session_id: str | None) -> int:
+        """Replay undelivered messages from bus WAL for a session.
+
+        Queries bus for message.queued events without matching message.delivered,
+        deduplicates by text within the batch, and re-injects into the session.
+
+        Uses at-most-once semantics: marks original as delivered BEFORE re-inject
+        so a crash during replay doesn't cause infinite replay loops. The re-inject
+        creates a NEW message.queued event with its own delivery tracking.
+
+        Returns count of messages replayed.
+        """
+        try:
+            from .bus_helpers import query_undelivered_messages
+            bus_db_path = str(Path.home() / "dispatch" / "state" / "bus.db")
+            undelivered = query_undelivered_messages(bus_db_path, chat_id)
+        except Exception as e:
+            log.error(f"REPLAY_QUERY_FAILED | {chat_id} | {e}")
+            return 0
+
+        if not undelivered:
+            return 0
+
+        session = self.sessions.get(chat_id)
+        if not session:
+            return 0
+
+        log.info(f"REPLAY | {chat_id} | {len(undelivered)} undelivered messages")
+
+        # Inject system prompt for fresh sessions (not resumed from checkpoint)
+        if not stored_session_id:
+            await self._inject_system_prompt_if_needed(session)
+
+        replayed = 0
+        seen_texts: set[str] = set()
+        for umsg in undelivered:
+            if umsg["text"] in seen_texts:
+                log.warning(f"REPLAY_DEDUP | {chat_id} | msg_id={umsg['message_id'][:8]} | skipped duplicate")
+                if self._producer:
+                    produce_event(self._producer, "messages", "message.delivered", {
+                        "message_id": umsg["message_id"],
+                        "replayed": True,
+                        "deduped": True,
+                    }, key=chat_id, source="sdk_backend.replay")
+                continue
+
+            try:
+                # At-most-once: mark delivered BEFORE inject to prevent
+                # infinite replay if daemon crashes during inject.
+                # The inject() call creates a NEW message.queued with a new ID.
+                if self._producer:
+                    produce_event(self._producer, "messages", "message.delivered", {
+                        "message_id": umsg["message_id"],
+                        "replayed": True,
+                    }, key=chat_id, source="sdk_backend.replay")
+                await session.inject(umsg["text"])
+                seen_texts.add(umsg["text"])
+                replayed += 1
+            except Exception as e:
+                log.error(f"REPLAY_INJECT_FAILED | {chat_id} | msg_id={umsg['message_id'][:8]} | {e}")
+                if self._producer:
+                    try:
+                        produce_event(self._producer, "messages", "message.replay_failed", {
+                            "message_id": umsg["message_id"],
+                            "error": str(e),
+                        }, key=chat_id, source="sdk_backend.replay")
+                    except Exception:
+                        pass
+
+        return replayed
 
     # ──────────────────────────────────────────────────────────────
     # Individual sessions

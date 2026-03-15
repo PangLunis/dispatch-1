@@ -2375,7 +2375,9 @@ class Manager:
                         pass
         except Exception:
             pass  # Best-effort cleanup
-        # Give the OS time to release the port after killing orphans
+        # Give the OS time to release the port after killing orphans.
+        # Note: This is a sync sleep. Called from async _run_health_checks every 5min,
+        # so 1s event loop block is acceptable. Also called from sync __init__.
         if killed_any:
             import time as _time
             _time.sleep(1)
