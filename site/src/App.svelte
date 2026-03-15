@@ -16,6 +16,7 @@
   import HealthHealing from './routes/HealthHealing.svelte'
   import Analytics from './routes/Analytics.svelte'
   import Postmortems from './routes/Postmortems.svelte'
+  import Scheduling from './routes/Scheduling.svelte'
 
   const pages = {
     'home': Home,
@@ -32,6 +33,7 @@
     'health': HealthHealing,
     'analytics': Analytics,
     'postmortems': Postmortems,
+    'scheduling': Scheduling,
   }
 
   // Redirects for old routes

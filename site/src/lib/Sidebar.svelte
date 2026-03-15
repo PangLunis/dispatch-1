@@ -7,8 +7,9 @@
       title: 'Getting Started',
       items: [
         { id: 'home', label: 'Overview' },
-        { id: 'philosophy', label: 'Philosophy' },
         { id: 'setup', label: 'Setup Guide' },
+        { id: 'configuration', label: 'Configuration' },
+        { id: 'philosophy', label: 'Philosophy' },
       ],
     },
     {
@@ -18,18 +19,18 @@
         { id: 'messaging', label: 'Messaging' },
         { id: 'tiers', label: 'Tiers & Permissions' },
         { id: 'skills', label: 'Skills' },
+        { id: 'memory', label: 'Memory' },
         { id: 'cli', label: 'CLI Reference' },
       ],
     },
     {
       title: 'Operations',
       items: [
+        { id: 'scheduling', label: 'Scheduling & Tasks' },
         { id: 'message-bus', label: 'Message Bus' },
-        { id: 'memory', label: 'Memory' },
         { id: 'health', label: 'Health & Healing' },
         { id: 'analytics', label: 'Analytics' },
         { id: 'postmortems', label: 'Postmortems' },
-        { id: 'configuration', label: 'Configuration' },
       ],
     },
   ];

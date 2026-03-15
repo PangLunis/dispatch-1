@@ -1,3 +1,7 @@
+<script>
+  export let navigateTo;
+</script>
+
 <article class="page">
   <header class="page-header">
     <h1>Configuration</h1>
@@ -94,7 +98,7 @@ lutron:
       <tbody>
         <tr>
           <td><code>DISPATCH_CONFIG</code></td>
-          <td>Config file path</td>
+          <td>Config file path (default: config.local.yaml)</td>
         </tr>
         <tr>
           <td><code>DISPATCH_LOG_LEVEL</code></td>
@@ -102,7 +106,19 @@ lutron:
         </tr>
         <tr>
           <td><code>ANTHROPIC_API_KEY</code></td>
-          <td>Claude API key</td>
+          <td>Claude API key (required)</td>
+        </tr>
+        <tr>
+          <td><code>GEMINI_API_KEY</code></td>
+          <td>Google AI key for image analysis/vision (optional)</td>
+        </tr>
+        <tr>
+          <td><code>DISABLE_SIGNAL</code></td>
+          <td>Set to disable Signal integration</td>
+        </tr>
+        <tr>
+          <td><code>DISABLE_SEARCH_DAEMON</code></td>
+          <td>Set to disable memory search service</td>
         </tr>
       </tbody>
     </table>
@@ -139,6 +155,23 @@ chrome:
     0:
       name: "sven"
       email: "assistant@example.com"</code></pre>
+  </section>
+  <section class="related">
+    <h2>Related</h2>
+    <div class="related-links">
+      <button class="related-link" on:click={() => navigateTo('setup')}>
+        <span class="related-label">Setup Guide</span>
+        <span class="related-desc">Initial setup</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('cli')}>
+        <span class="related-label">CLI Reference</span>
+        <span class="related-desc">All commands</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('skills')}>
+        <span class="related-label">Skills</span>
+        <span class="related-desc">Skill configuration</span>
+      </button>
+    </div>
   </section>
 </article>
 

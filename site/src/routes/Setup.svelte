@@ -107,7 +107,7 @@ claude</code></pre>
       <li><strong>Signal</strong> - Second messaging channel via signal-cli</li>
       <li><strong>Chrome extension</strong> - Browser automation</li>
       <li><strong>Smart home</strong> - Hue, Lutron, Sonos control</li>
-      <li><strong>Gemini</strong> - Image generation (add GEMINI_API_KEY to ~/.claude/secrets.env)</li>
+      <li><strong>Gemini</strong> - Image analysis and vision (add GEMINI_API_KEY to ~/.claude/secrets.env)</li>
     </ul>
     <p>Claude can help set these up when you're ready.</p>
   </section>

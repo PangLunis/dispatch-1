@@ -11,9 +11,12 @@
   <section>
     <h2>Overview</h2>
     <p>
-      All system events flow through a SQLite-backed message bus. Fire-and-forget
-      writes with an in-memory queue ensure the event loop is never blocked.
-      Multiple consumer groups can process events independently with committed offsets.
+      All system events flow through a SQLite-backed message bus organized into
+      <strong>5 topics</strong>: <code>messages</code>, <code>sessions</code>,
+      <code>system</code>, <code>reminders</code>, and <code>tasks</code>.
+      Fire-and-forget writes with an in-memory queue ensure the event loop is
+      never blocked. Multiple consumer groups can process events independently
+      with committed offsets.
     </p>
   </section>
 
@@ -32,30 +35,30 @@
     <table>
       <thead>
         <tr>
-          <th>Category</th>
+          <th>Topic</th>
           <th>Events</th>
         </tr>
       </thead>
       <tbody>
         <tr>
-          <td>Message</td>
-          <td><code>msg.received</code>, <code>msg.sent</code>, <code>msg.image</code></td>
+          <td><code>messages</code></td>
+          <td><code>message.received</code>, <code>message.sent</code>, <code>message.failed</code>, <code>message.queued</code>, <code>message.delivered</code>, <code>reaction.received</code></td>
         </tr>
         <tr>
-          <td>Session</td>
-          <td><code>session.created</code>, <code>session.stopped</code>, <code>session.restarted</code>, <code>session.compacted</code></td>
+          <td><code>sessions</code></td>
+          <td><code>session.created</code>, <code>session.restarted</code>, <code>session.killed</code>, <code>session.compacted</code>, <code>session.crashed</code>, <code>session.injected</code>, <code>session.idle_killed</code>, <code>permission.denied</code></td>
         </tr>
         <tr>
-          <td>Health</td>
-          <td><code>health.check</code>, <code>health.fatal</code>, <code>health.restart</code></td>
+          <td><code>system</code></td>
+          <td><code>daemon.started</code>, <code>daemon.stopped</code>, <code>daemon.crashed</code>, <code>daemon.recovered</code>, <code>health.check_completed</code>, <code>consolidation.started</code>, <code>consolidation.completed</code>, <code>reminder.fired</code>, <code>vision.analyzed</code>, <code>sdk.turn_complete</code>, <code>session.heartbeat</code></td>
         </tr>
         <tr>
-          <td>System</td>
-          <td><code>system.startup</code>, <code>system.shutdown</code>, <code>system.error</code></td>
+          <td><code>reminders</code></td>
+          <td><code>reminder.due</code></td>
         </tr>
         <tr>
-          <td>SDK</td>
-          <td><code>sdk.tool_call</code>, <code>sdk.turn_complete</code>, <code>sdk.error</code></td>
+          <td><code>tasks</code></td>
+          <td><code>task.requested</code>, <code>task.started</code>, <code>task.completed</code>, <code>task.failed</code>, <code>task.timeout</code>, <code>task.skipped</code></td>
         </tr>
       </tbody>
     </table>
@@ -63,12 +66,19 @@
 
   <section>
     <h2>Bus CLI</h2>
-    <pre><code># Show event statistics
+    <pre><code># List all topics
+./bin/bus topics
+
+# Show event statistics
 ./bin/bus stats
+./bin/bus stats --topic messages
 
 # Tail recent events (like kafka-console-consumer)
 ./bin/bus tail
-./bin/bus tail --type msg.received
+./bin/bus tail --type message.received
+
+# Query records with filters
+./bin/bus query --topic sessions --since 1h
 
 # Export events to JSON
 ./bin/bus export --since 24h > events.json</code></pre>
@@ -94,14 +104,32 @@
 
   <section>
     <h2>Code Integration</h2>
-    <pre><code>from dispatch.bus import produce_event
+    <pre><code>from assistant.bus_helpers import produce_event
 
 # Fire-and-forget — returns immediately
-produce_event("msg.received", {'{'}"chat_id": "+16175551234",
+produce_event(producer, "messages", "message.received", {'{'}"chat_id": "+16175551234",
     "contact": "Alice",
     "tier": "admin",
     "text": "what's the weather?",
 {'}'})</code></pre>
+  </section>
+
+  <section>
+    <h2>Related</h2>
+    <ul>
+      <li>
+        <button class="text-link" on:click={() => navigateTo('analytics')}>Analytics</button>
+        <span class="link-desc">- Dashboards and metrics powered by bus events</span>
+      </li>
+      <li>
+        <button class="text-link" on:click={() => navigateTo('cli')}>CLI Reference</button>
+        <span class="link-desc">- All commands including bus CLI</span>
+      </li>
+      <li>
+        <button class="text-link" on:click={() => navigateTo('scheduling')}>Scheduling</button>
+        <span class="link-desc">- Reminders and tasks that produce bus events</span>
+      </li>
+    </ul>
   </section>
 </article>
 

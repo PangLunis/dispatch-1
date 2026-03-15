@@ -123,17 +123,9 @@
     <h2>Bus Event Analytics</h2>
     <p>
       All business events live in the <code>records</code> table with 7-day retention.
-      Query them with the Bus CLI:
+      See <button class="text-link" on:click={() => navigateTo('message-bus')}>Message Bus</button> for
+      the full event taxonomy and CLI reference.
     </p>
-
-    <pre><code># Event counts by type
-./bin/bus stats
-
-# Recent events
-./bin/bus tail --type msg.received
-
-# Export for analysis
-./bin/bus export --since 24h > events.json</code></pre>
   </section>
 
   <section>
@@ -174,6 +166,24 @@
       <li><strong>Anomaly detection</strong> — statistical analysis of metric trends</li>
     </ul>
   </section>
+
+  <section class="related">
+    <h2>Related</h2>
+    <div class="related-links">
+      <button class="related-link" on:click={() => navigateTo('message-bus')}>
+        <span class="related-label">Message Bus</span>
+        <span class="related-desc">Event source</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('health')}>
+        <span class="related-label">Health & Healing</span>
+        <span class="related-desc">Health metrics</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('cli')}>
+        <span class="related-label">CLI Reference</span>
+        <span class="related-desc">Monitoring commands</span>
+      </button>
+    </div>
+  </section>
 </article>
 
 <style>
@@ -193,5 +203,20 @@
 
   section {
     margin-bottom: var(--space-8);
+  }
+
+  .text-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font-size: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color var(--transition-fast);
+  }
+
+  .text-link:hover {
+    color: var(--accent-hover);
   }
 </style>

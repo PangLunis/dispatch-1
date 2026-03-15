@@ -139,6 +139,24 @@ What I know about them:
       <li>Synced to session context on every restart</li>
     </ul>
   </section>
+
+  <section class="related">
+    <h2>Related</h2>
+    <div class="related-links">
+      <button class="related-link" on:click={() => navigateTo('skills')}>
+        <span class="related-label">Skills</span>
+        <span class="related-desc">Memory skill</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('messaging')}>
+        <span class="related-label">Messaging</span>
+        <span class="related-desc">Conversation storage</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('configuration')}>
+        <span class="related-label">Configuration</span>
+        <span class="related-desc">Search daemon settings</span>
+      </button>
+    </div>
+  </section>
 </article>
 
 <style>
@@ -158,5 +176,50 @@ What I know about them:
 
   section {
     margin-bottom: var(--space-8);
+  }
+
+  .related {
+    margin-top: var(--space-12);
+    padding-top: var(--space-8);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .related h2 {
+    font-size: 14px;
+    margin-bottom: var(--space-4);
+  }
+
+  .related-links {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .related-link {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-4);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    transition: border-color var(--transition-fast);
+  }
+
+  .related-link:hover {
+    border-color: var(--border-strong);
+  }
+
+  .related-label {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .related-desc {
+    font-size: 12px;
+    color: var(--text-tertiary);
   }
 </style>

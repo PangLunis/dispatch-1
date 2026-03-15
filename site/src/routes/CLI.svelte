@@ -1,3 +1,7 @@
+<script>
+  export let navigateTo;
+</script>
+
 <article class="page">
   <header class="page-header">
     <h1>CLI Reference</h1>
@@ -255,36 +259,7 @@
 
   <section id="env">
     <h2>Environment Variables</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Variable</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>DISPATCH_CONFIG</code></td>
-          <td>Config file path (default: config.local.yaml)</td>
-        </tr>
-        <tr>
-          <td><code>DISPATCH_LOG_LEVEL</code></td>
-          <td>DEBUG, INFO, WARNING, ERROR</td>
-        </tr>
-        <tr>
-          <td><code>GEMINI_API_KEY</code></td>
-          <td>Google AI key for image generation (optional)</td>
-        </tr>
-        <tr>
-          <td><code>DISABLE_SIGNAL</code></td>
-          <td>Set to disable Signal integration</td>
-        </tr>
-        <tr>
-          <td><code>DISABLE_SEARCH_DAEMON</code></td>
-          <td>Set to disable memory search service</td>
-        </tr>
-      </tbody>
-    </table>
+    <p>See <button class="text-link" on:click={() => navigateTo('configuration')}>Configuration</button> for the full environment variables reference.</p>
   </section>
 </article>
 
@@ -401,5 +376,20 @@
     font-size: 12px;
     color: var(--text-secondary);
     margin: var(--space-1) 0 0 0;
+  }
+
+  .text-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font-size: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color var(--transition-fast);
+  }
+
+  .text-link:hover {
+    color: var(--accent-hover);
   }
 </style>
