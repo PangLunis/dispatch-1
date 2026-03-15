@@ -26,23 +26,17 @@ The system has 4 key data sources for latency analysis:
 
 4. **System resources** — Process memory/CPU, open FDs, WAL file sizes, daemon health logs.
 
-### Healthy Baselines (from perf skill)
+### Dynamic Baselines
 
-| Metric | Good (p95) | Warning | Critical |
-|--------|-----------|---------|----------|
-| poll_cycle_ms | < 100ms | 100-500ms | > 500ms |
-| poll_gap_ms | < 500ms | 500ms-2s | > 2s |
-| inject_ms | < 500ms | 500ms-2s | > 2s |
-| contact_lookup_ms | < 10ms | 10-50ms | > 50ms |
-| message_staleness_ms | < 5s | 5-15s | > 15s |
-| send_sms_ms | < 5s | 5-10s | > 10s |
-| session_spawn_ms | < 5s | 5-10s | > 10s |
-| session_wake_latency_ms | < 2s | 2-5s | > 5s |
-| sdk_queue_depth | max < 5 | 5-10 | > 10 |
-| messages_batch_size | < 3 | 3-5 | > 5 |
-| wal_checkpoint_status | 0 (ok) | — | != 0 |
-| tool_execution (Bash) | < 10s | 10-30s | > 30s |
-| gemini_vision_ms | varies | — | > 30s |
+**NEVER hardcode baseline thresholds.** Baselines are computed dynamically by reading historical perf data. The approach:
+
+1. **Yesterday's p95 is today's baseline.** Compare today's metrics against yesterday's (or last N days' average) to detect regressions.
+2. **Use `perf-analyze --days 2`** to get both today and yesterday side-by-side.
+3. **Regression = 2x+ increase** in p95 from yesterday. A 3x+ increase is critical.
+4. **Absolute thresholds only for binary metrics** like `wal_checkpoint_status` (0 = ok, != 0 = bad).
+5. **If no historical data exists**, note it as "no baseline available" rather than guessing.
+
+Explorers MUST compute their own baselines by querying historical data — never reference hardcoded threshold values.
 
 ## How It Works
 
@@ -136,17 +130,12 @@ You are a performance analysis agent. Analyze perf metrics for the Dispatch pers
      " 2>/dev/null
    fi
 
-6. Check for baselines violations:
-   - poll_cycle_ms p95 > 100ms
-   - poll_gap_ms p95 > 500ms
-   - inject_ms p95 > 500ms
-   - contact_lookup_ms p95 > 10ms
-   - message_staleness_ms p95 > 5000ms
-   - send_sms_ms p95 > 5000ms
-   - session_spawn_ms > 10000ms
-   - sdk_queue_depth max > 5
-   - messages_batch_size > 5 consistently
-   - wal_checkpoint_status != 0
+6. Check for baseline violations by comparing today vs yesterday:
+   - Use the regression detection query (step 5) results as the baseline
+   - Flag any metric where today's p95 is 2x+ yesterday's p95 as a regression
+   - Flag any metric where today's p95 is 3x+ yesterday's p95 as critical regression
+   - For wal_checkpoint_status, any non-zero value is a violation (this is binary, not percentile-based)
+   - If yesterday's data is unavailable, note "no baseline" rather than using hardcoded thresholds
 
 7. Return a JSON array of latency candidates:
    [
@@ -233,7 +222,8 @@ You are a tool execution performance analyst. Analyze the sdk_events table in bu
      ORDER BY avg_ms DESC
    "
 
-6. Find sequential tool calls with long gaps (Claude thinking time or queue delays):
+6. Find sequential tool calls with long gaps (Claude thinking time or queue delays).
+   Note: If duration_ms is NULL for all records, use timestamp differences only (gap = t2 - t1):
    sqlite3 ~/dispatch/state/bus.db "
      SELECT s1.session_name,
             datetime(s1.timestamp/1000,'unixepoch','localtime') as t1,
@@ -247,10 +237,11 @@ You are a tool execution performance analyst. Analyze the sdk_events table in bu
        AND s2.id = (SELECT MIN(id) FROM sdk_events WHERE session_name = s1.session_name AND id > s1.id AND event_type = 'tool_use')
      WHERE s1.event_type = 'tool_use'
        AND s1.timestamp > (strftime('%s','now','-24 hours') * 1000)
-       AND gap_ms > 10000
+       AND (s2.timestamp - s1.timestamp) > 10000
      ORDER BY gap_ms DESC
      LIMIT 20
    "
+   IMPORTANT: Even if duration_ms is NULL, this query still works because it falls back to raw timestamp gaps. Always run this query — do NOT skip it just because duration_ms is NULL.
 
 7. Return a JSON array of latency candidates:
    [
@@ -399,14 +390,14 @@ You are a system resource analyst. Check for resource-related performance issues
 2. Check for WAL checkpoint issues (WAL buildup causes slow reads):
    ls -la ~/dispatch/state/bus.db-wal 2>/dev/null
    ls -la ~/Library/Messages/chat.db-wal 2>/dev/null
-   # WAL files > 10MB indicate checkpoint delays
+   # Compare WAL file sizes to previous days to detect growth trends
    # Also check wal_checkpoint_status metric from perf logs:
    cat ~/dispatch/logs/perf-$(date +%Y-%m-%d).jsonl 2>/dev/null | grep '"metric":"wal_checkpoint_status"' | jq -r 'select(.value != 0)' | head -10
 
 3. Check recent poll cycle health:
    cat ~/dispatch/logs/perf-$(date +%Y-%m-%d).jsonl 2>/dev/null | grep '"metric":"poll_cycle_ms"' | tail -100 | jq -r '.value' | awk '{sum+=$1; n++; if($1>max)max=$1} END{print "last_100_polls: avg="sum/n, "max="max, "count="n}'
 
-4. Check for CPU-intensive periods (poll_gap_ms > 1000ms = daemon stall):
+4. Check for CPU-intensive periods (poll_gap_ms spikes relative to yesterday's pattern):
    cat ~/dispatch/logs/perf-$(date +%Y-%m-%d).jsonl 2>/dev/null | grep '"metric":"poll_gap_ms"' | jq -r '[.ts, .value] | @tsv' | awk -F'\t' '$2 > 1000 {print $1, $2"ms"}' | tail -20
 
 5. Check active session count over time:
@@ -426,8 +417,8 @@ You are a system resource analyst. Check for resource-related performance issues
 7. Check sven-api health (bind failures indicate restart loop):
    tail -50 ~/dispatch/logs/sven-api.log 2>/dev/null | grep -i "error\|bind\|failed\|address already in use"
 
-8. Check queue depth trends (sdk_queue_depth > 5 = session falling behind):
-   cat ~/dispatch/logs/perf-$(date +%Y-%m-%d).jsonl 2>/dev/null | grep '"metric":"sdk_queue_depth"' | jq -r 'select(.value > 3) | [.ts, .value, .session] | @tsv' | tail -20
+8. Check queue depth trends (compare against yesterday's pattern):
+   cat ~/dispatch/logs/perf-$(date +%Y-%m-%d).jsonl 2>/dev/null | grep '"metric":"sdk_queue_depth"' | jq -r '[.ts, .value, .session] | @tsv' | sort -t$'\t' -k2 -rn | head -20
 
 9. Return a JSON array of latency candidates:
    [
@@ -536,9 +527,9 @@ Collect all refinement results:
 
 2. **Explorer attribution**: Preserve the explorer source ID prefix (PERF1, SDK1, MSG1, SYS1) on each finding so readers know which data source produced it.
 
-3. **Complete system summary**: The summary table MUST include ALL metrics from the baselines table above. If a metric has no data, show "N/A" in its row. Never omit a metric.
+3. **Complete system summary**: The summary table MUST include ALL metrics found in today's perf data, plus yesterday's p95 as the baseline column. If a metric has no data, show "N/A" in its row. Never omit a metric.
 
-4. **Consistent metric names**: Always use the exact metric names from the baselines table (e.g., `session_wake_latency_ms` not `session_wake_ms`). No abbreviations or variations.
+4. **Consistent metric names**: Always use the exact metric names as they appear in the perf JSONL (e.g., `session_wake_latency_ms` not `session_wake_ms`). No abbreviations or variations.
 
 5. **Specific file paths**: Every ACCEPT verdict MUST include at least one concrete file path (not "Tool configuration" or "session prompt"). If the refinement agent couldn't identify a specific file, it should be REFINE not ACCEPT.
 
@@ -583,21 +574,13 @@ Explorers: 4 | Candidates: {N} | Accepted: {A} | Refuted: {R} | Needs Investigat
 - [{source_id}] {title} — {reason}
 
 --- SYSTEM SUMMARY ---
-| Metric | p50 | p95 | p99 | Max | Count | Status |
-|--------|-----|-----|-----|-----|-------|--------|
-| poll_cycle_ms | ... | ... | ... | ... | ... | OK/WARN/CRIT |
-| poll_gap_ms | ... | ... | ... | ... | ... | ... |
-| inject_ms | ... | ... | ... | ... | ... | ... |
-| contact_lookup_ms | ... | ... | ... | ... | ... | ... |
-| message_staleness_ms | ... | ... | ... | ... | ... | ... |
-| send_sms_ms | ... | ... | ... | ... | ... | ... |
-| session_spawn_ms | ... | ... | ... | ... | ... | ... |
-| session_wake_latency_ms | ... | ... | ... | ... | ... | ... |
-| sdk_queue_depth | ... | ... | ... | ... | ... | ... |
-| messages_batch_size | ... | ... | ... | ... | ... | ... |
-| wal_checkpoint_status | ... | ... | ... | ... | ... | ... |
-| gemini_vision_ms | ... | ... | ... | ... | ... | ... |
+| Metric | p50 | p95 | p99 | Max | Count | Yesterday p95 | Status |
+|--------|-----|-----|-----|-----|-------|---------------|--------|
+| (all metrics found in today's perf data, one row each) |
+| (include tool_execution as an aggregate row) |
 ```
+
+**Note:** The system summary MUST include ALL metrics found in today's perf data PLUS `tool_execution` as an aggregate row. The "Yesterday p95" column serves as the dynamic baseline. If yesterday's data is unavailable, show "N/A". Status is determined by comparing today's p95 to yesterday's p95: OK (< 2x), WARN (2-3x), CRIT (> 3x). For `wal_checkpoint_status`, any non-zero value is CRIT.
 
 #### Output Modes
 
@@ -617,33 +600,29 @@ Only send if there are ACCEPT or REFINE verdicts. If everything was refuted or w
 - **bus.db locked/missing** — Skip bus-dependent explorers, continue with perf JSONL analysis.
 - **Explorer subagent fails** — Continue with results from other explorers. Note the failure.
 - **Refinement subagent fails** — Note the failure, don't count as accepted or refuted.
-- **Zero candidates** — Report "clean scan, all metrics within healthy baselines" (good outcome).
+- **Zero candidates** — Report "clean scan, no regressions detected vs yesterday" (good outcome).
 - **Too many candidates (>15)** — Refine top 15 by severity+confidence, list the rest as "unreviewed."
 
 ## Calibration
 
 ### GOOD latency candidates (report these):
-- poll_cycle_ms p95 spiked from 50ms to 300ms after a code change — regression
-- poll_gap_ms p95 at 800ms consistently — daemon under CPU pressure
-- Bash tool executions averaging 15s for a specific skill — inefficient command
-- contact_lookup_ms p95 at 50ms (baseline is 10ms) — cache miss or regression
-- Message staleness consistently > 10s — daemon processing delay
-- Session cold start takes 30s — slow resume/creation (session_spawn_ms)
-- send_sms_ms p95 jumped to 8s — iMessage bottleneck
-- sdk_queue_depth consistently > 5 — session falling behind
-- messages_batch_size > 5 for sustained periods — message backlog
+- Any metric with p95 2x+ higher than yesterday's p95 — regression
+- Any metric with p95 3x+ higher than yesterday's p95 — critical regression
+- Bash tool executions significantly slower than historical average for that skill
 - Specific session consuming 80% of total tool execution time — resource hog
-- Inter-tool gaps > 30s — Claude thinking time or queue starvation
+- Inter-tool gaps significantly longer than the session's historical pattern
 - wal_checkpoint_status != 0 repeatedly — SQLite WAL issues causing slow reads
-- Signal messages responding 3x slower than iMessage — backend-specific bottleneck
+- One backend (Signal vs iMessage) responding 3x slower than the other — backend-specific bottleneck
+- Service restart loops (health check showing repeated restarts)
+- sdk_queue_depth trending upward over time (compare hour-by-hour)
 
 ### BAD candidates (do NOT report):
-- Single poll_cycle spike to 200ms during daemon startup — transient
-- tool_execution > 30s for a one-time large file download — expected
-- Session creation time of 5s on first message — normal cold start
-- p50 values slightly above baseline but p95 is fine — not impactful
+- Single transient spike during daemon startup — expected
+- One-off slow tool execution for a clearly large operation — expected
+- p50 values slightly above yesterday but p95 is stable — not impactful
 - Long gap between messages during quiet hours (2am-8am) — idle period, not latency
-- One-off gemini_vision_ms spike — Gemini API latency varies
+- One-off API latency spike (Gemini, etc.) — external service variance
+- Metrics that are stable day-over-day even if they seem "high" in absolute terms — that's the system's normal
 
 ## Examples
 
