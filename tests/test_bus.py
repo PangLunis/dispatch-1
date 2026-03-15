@@ -1908,3 +1908,28 @@ class TestWriteQueue:
         events = bus.query_sdk_events(session_name="test/session")
         assert len(events) == 1
         producer.close()
+
+
+class TestTimestampNormalization:
+    """Test CLI timestamp auto-detection (seconds vs ms)."""
+
+    def test_seconds_converted_to_ms(self):
+        from bus.cli import _normalize_timestamp_ms
+        # Unix seconds (e.g. 2026-03-15 00:00:00 UTC)
+        ts_seconds = 1773763200
+        result = _normalize_timestamp_ms(ts_seconds)
+        assert result == ts_seconds * 1000
+
+    def test_ms_stays_as_ms(self):
+        from bus.cli import _normalize_timestamp_ms
+        # Already in ms (above 2e12 threshold)
+        ts_ms = 2_100_000_000_000
+        result = _normalize_timestamp_ms(ts_ms)
+        assert result == ts_ms
+
+    def test_boundary_value(self):
+        from bus.cli import _normalize_timestamp_ms
+        # Just under the boundary (2e12) - treated as seconds
+        assert _normalize_timestamp_ms(1_999_999_999_999) == 1_999_999_999_999 * 1000
+        # At and above the boundary - treated as ms
+        assert _normalize_timestamp_ms(2_000_000_000_000) == 2_000_000_000_000

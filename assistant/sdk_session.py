@@ -152,8 +152,13 @@ class SDKSession:
         self.turn_count = 0
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
+        self.last_inject_at: Optional[datetime] = None  # When last message was injected
+        self.last_response_at: datetime = datetime.now()  # When last ResultMessage received
         self._error_count = 0
         self._consecutive_error_turns = 0
+
+        # Heartbeat tracking
+        self._last_heartbeat_at: float = time.time()
 
         # Deferred system prompt injection (set by sdk_backend, consumed by _inject_system_prompt_if_needed)
         self._needs_system_prompt: bool = False
@@ -238,6 +243,7 @@ class SDKSession:
         """Queue a message for delivery to the Claude session."""
         queue_depth = self._message_queue.qsize()
         await self._message_queue.put(text)
+        self.last_inject_at = datetime.now()
         # Log queue depth - if consistently >0, messages are backing up
         perf.gauge("sdk_queue_depth", queue_depth + 1, component="session", contact=self.contact_name)
         self._log.info(f"QUEUED | len={len(text)} | queue_depth={queue_depth + 1}")
@@ -261,6 +267,12 @@ class SDKSession:
         if self._message_queue.qsize() > 0:
             idle = (datetime.now() - self.last_activity).total_seconds()
             if idle > 600:
+                return False
+        # Stuck: message was injected but no ResultMessage received for 10+ min.
+        # Catches silent SDK connection hangs where process is alive but not responding.
+        if self.last_inject_at and self.last_inject_at > self.last_response_at:
+            stuck_seconds = (datetime.now() - self.last_inject_at).total_seconds()
+            if stuck_seconds > 600:
                 return False
         return True
 
@@ -292,6 +304,20 @@ class SDKSession:
                         self._message_queue.get(), timeout=30
                     )
                 except asyncio.TimeoutError:
+                    # Emit heartbeat every 2 min to prove session loop is responsive
+                    now = time.time()
+                    if now - self._last_heartbeat_at >= 120:
+                        produce_event(self._producer, "system", "session.heartbeat", {
+                            "session_name": f"{self.source}/{self.chat_id}",
+                            "chat_id": self.chat_id,
+                            "contact_name": self.contact_name,
+                            "queue_depth": self._message_queue.qsize(),
+                            "pending_queries": self._pending_queries,
+                            "turn_count": self.turn_count,
+                            "is_busy": self.is_busy,
+                            "idle_seconds": round((datetime.now() - self.last_activity).total_seconds()),
+                        }, key=f"{self.source}/{self.chat_id}", source="sdk")
+                        self._last_heartbeat_at = now
                     continue  # Check receiver health every 30s
 
                 # Sentinel from _receive_loop signals shutdown
@@ -358,6 +384,15 @@ class SDKSession:
             self._error_count += 1
             self._log.error(f"RECEIVER_ERROR #{self._error_count} | {e}")
             log.error(f"[{self.contact_name}] Receiver error: {e}")
+            # Populate sdk_events for error tracing
+            if self._producer and hasattr(self._producer, 'send_sdk_event'):
+                self._producer.send_sdk_event(
+                    session_name=f"{self.source}/{self.chat_id}",
+                    chat_id=self.chat_id,
+                    event_type="error",
+                    is_error=True,
+                    payload=str(e)[:2048],
+                )
             # Buffer overflow is fatal - the SDK connection is broken
             error_str = str(e).lower()
             is_fatal = "buffer" in error_str or "1048576" in error_str
@@ -669,6 +704,15 @@ class SDKSession:
                         block.input if isinstance(block.input, dict) else {},
                         block.name,
                     )
+                    # Populate sdk_events for tool-level tracing
+                    if self._producer and hasattr(self._producer, 'send_sdk_event'):
+                        self._producer.send_sdk_event(
+                            session_name=f"{self.source}/{self.chat_id}",
+                            chat_id=self.chat_id,
+                            event_type="tool_use",
+                            tool_name=block.name,
+                            tool_use_id=block.id,
+                        )
 
         elif isinstance(message, UserMessage):
             # UserMessage contains tool results - track completion timing
@@ -686,6 +730,17 @@ class SDKSession:
                             duration_ms=duration_ms,
                             is_error=block.is_error or False,
                         )
+                        # Populate sdk_events for tool-level tracing
+                        if self._producer and hasattr(self._producer, 'send_sdk_event'):
+                            self._producer.send_sdk_event(
+                                session_name=session_name,
+                                chat_id=self.chat_id,
+                                event_type="tool_result",
+                                tool_name=tool_name,
+                                tool_use_id=tool_use_id,
+                                duration_ms=duration_ms,
+                                is_error=block.is_error or False,
+                            )
                     else:
                         self._log.warning(f"TOOL_RESULT_ORPHAN | tool_use_id={tool_use_id}")
 
@@ -694,6 +749,7 @@ class SDKSession:
             if message.session_id:
                 self.session_id = message.session_id
             self.last_activity = datetime.now()
+            self.last_response_at = datetime.now()  # Track for stuck detection
             if message.is_error:
                 self._consecutive_error_turns += 1
             else:
@@ -703,8 +759,9 @@ class SDKSession:
                 f"duration={message.duration_ms}ms | error={message.is_error} | "
                 f"sid={message.session_id}"
             )
+            session_name = f"{self.source}/{self.chat_id}"
             produce_event(self._producer, "system", "sdk.turn_complete", {
-                "session_name": f"{self.source}/{self.chat_id}",
+                "session_name": session_name,
                 "chat_id": self.chat_id,
                 "contact_name": self.contact_name,
                 "tier": self.tier,
@@ -712,7 +769,17 @@ class SDKSession:
                 "num_turns": message.num_turns,
                 "is_error": message.is_error,
                 "total_turns": self.turn_count,
-            }, key=f"{self.source}/{self.chat_id}", source="sdk")
+            }, key=session_name, source="sdk")
+            # Populate sdk_events table for tool-level observability
+            if self._producer and hasattr(self._producer, 'send_sdk_event'):
+                self._producer.send_sdk_event(
+                    session_name=session_name,
+                    chat_id=self.chat_id,
+                    event_type="result",
+                    duration_ms=message.duration_ms,
+                    is_error=message.is_error or False,
+                    num_turns=message.num_turns,
+                )
 
         elif isinstance(message, SystemMessage):
             # Capture session_id from init message

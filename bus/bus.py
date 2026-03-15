@@ -7,6 +7,7 @@ Core concepts (1:1 with Kafka):
 - Producers: write records with key-based partition assignment (murmur2 hash)
 - Consumer Groups: coordinate to split partitions, track offsets independently
 - Offsets: monotonic per partition, committed after processing
+- Timestamps: ALL timestamps in bus.db are Unix milliseconds (ms since epoch)
 - Retention: time-based pruning, NOT consumption-based deletion
 - Generation IDs: epoch fencing prevents zombie consumers from corrupting offsets
 - Rebalance callbacks: onPartitionsRevoked/onPartitionsAssigned

@@ -33,6 +33,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from bus.bus import Bus
 
 
+def _normalize_timestamp_ms(ts: int) -> int:
+    """Auto-detect seconds vs ms timestamps.
+
+    All bus.db timestamps are in Unix milliseconds. But users naturally think
+    in seconds. If the value is less than 2e12 (year ~2033 in ms, but year
+    ~65000 in seconds), it's likely seconds and should be multiplied by 1000.
+    """
+    if ts < 2_000_000_000_000:
+        return ts * 1000
+    return ts
+
+
 def cmd_create_topic(args):
     with Bus(args.db) as bus:
         retention_ms = args.retention_days * 24 * 60 * 60 * 1000
@@ -258,7 +270,7 @@ def cmd_seek(args):
                 cursor2 = bus._conn.execute(
                     "SELECT MIN(offset) - 1 FROM records "
                     "WHERE topic = ? AND partition = ? AND timestamp >= ?",
-                    (args.topic, p, args.to_timestamp),
+                    (args.topic, p, _normalize_timestamp_ms(args.to_timestamp)),
                 )
                 result = cursor2.fetchone()
                 if result and result[0] is not None:
@@ -286,7 +298,7 @@ def cmd_replay(args):
 
         if args.from_timestamp is not None:
             query += " AND timestamp >= ?"
-            params.append(args.from_timestamp)
+            params.append(_normalize_timestamp_ms(args.from_timestamp))
 
         if hasattr(args, 'type') and args.type:
             query += " AND type = ?"

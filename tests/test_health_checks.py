@@ -565,3 +565,62 @@ class TestHealingDeduplication:
                 await sdk_backend.deep_health_check(skip_chat_ids=set(healed))
                 mock_entries.assert_not_called()
                 mock_haiku.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────
+# Stuck session detection (is_healthy with last_inject_at / last_response_at)
+# ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+class TestStuckSessionDetection:
+    """Test that is_healthy() detects stuck sessions where a message was
+    injected but no ResultMessage received for 10+ minutes."""
+
+    async def test_healthy_fresh_session(self, sdk_backend):
+        """Fresh session (system prompt injected, no response yet) should be healthy
+        because it hasn't been stuck for 10+ minutes."""
+        session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
+        assert session.is_healthy()
+        # last_inject_at is set by the system prompt injection during create_session
+        assert session.last_inject_at is not None
+
+    async def test_healthy_when_response_after_inject(self, sdk_backend):
+        """Session with response after inject should be healthy."""
+        session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
+        session.last_inject_at = datetime.now() - timedelta(minutes=15)
+        session.last_response_at = datetime.now() - timedelta(minutes=5)
+        assert session.is_healthy()
+
+    async def test_unhealthy_when_stuck_over_10_min(self, sdk_backend):
+        """Session stuck for >10 min after inject should be unhealthy."""
+        session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
+        session.last_inject_at = datetime.now() - timedelta(minutes=15)
+        session.last_response_at = datetime.now() - timedelta(minutes=20)
+        assert not session.is_healthy()
+
+    async def test_healthy_when_stuck_under_10_min(self, sdk_backend):
+        """Session stuck for <10 min should still be healthy (processing)."""
+        session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
+        session.last_inject_at = datetime.now() - timedelta(minutes=5)
+        session.last_response_at = datetime.now() - timedelta(minutes=10)
+        assert session.is_healthy()
+
+    async def test_inject_updates_last_inject_at(self, sdk_backend):
+        """inject() should update last_inject_at to current time."""
+        session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
+        # last_inject_at already set by system prompt injection
+        old_inject_at = session.last_inject_at
+        before = datetime.now()
+        await session.inject("test message")
+        assert session.last_inject_at is not None
+        assert session.last_inject_at >= before
+        assert session.last_inject_at > old_inject_at
+
+    async def test_stuck_detection_triggers_health_check_restart(self, sdk_backend):
+        """health_check_all should detect and restart stuck sessions."""
+        session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
+        session.last_inject_at = datetime.now() - timedelta(minutes=15)
+        session.last_response_at = datetime.now() - timedelta(minutes=20)
+        assert not session.is_healthy()
+        results = await sdk_backend.health_check_all()
+        assert "test:+15555550006" in results
