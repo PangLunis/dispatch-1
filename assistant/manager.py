@@ -2630,6 +2630,23 @@ class Manager:
             except Exception:
                 pass
 
+            # Disk space monitoring — alert admin if disk is filling up
+            try:
+                from assistant.health import check_disk_space, should_send_disk_alert
+                from assistant import config
+                disk = check_disk_space()
+                perf.gauge("disk_used_pct", disk["used_pct"], component="daemon")
+                perf.gauge("disk_free_gb", disk["free_gb"], component="daemon")
+
+                if disk["message"]:
+                    log.warning(f"DISK | {disk['message']}")
+                    if should_send_disk_alert():
+                        admin_phone = config.get("owner.phone")
+                        if admin_phone:
+                            self._send_sms(admin_phone, f"[SVEN] ⚠️ {disk['message']}")
+            except Exception as e:
+                log.error(f"Disk space check failed: {e}")
+
             log.info("Health check completed (background)")
 
         except Exception as e:

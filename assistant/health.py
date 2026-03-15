@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -377,3 +378,59 @@ def _find_transcript(session_cwd: str, session_id: Optional[str]) -> Optional[Pa
         return jsonl_files[0]
 
     return None
+
+
+# ──────────────────────────────────────────────────────────────
+# Disk space monitoring
+# ──────────────────────────────────────────────────────────────
+
+# Track last alert time to avoid spamming (alert at most once per 30 min)
+_last_disk_alert_time: float = 0.0
+
+
+def check_disk_space(warn_pct: float = 90.0, critical_pct: float = 95.0) -> dict[str, Any]:
+    """Check disk space on the root volume.
+
+    Returns dict with:
+        total_gb, used_gb, free_gb, used_pct,
+        warning (bool), critical (bool), message (str or None)
+    """
+    usage = shutil.disk_usage("/")
+    total_gb = usage.total / (1024 ** 3)
+    used_gb = usage.used / (1024 ** 3)
+    free_gb = usage.free / (1024 ** 3)
+    used_pct = (usage.used / usage.total) * 100
+
+    result: dict[str, Any] = {
+        "total_gb": round(total_gb, 1),
+        "used_gb": round(used_gb, 1),
+        "free_gb": round(free_gb, 1),
+        "used_pct": round(used_pct, 1),
+        "warning": used_pct >= warn_pct,
+        "critical": used_pct >= critical_pct,
+        "message": None,
+    }
+
+    if used_pct >= critical_pct:
+        result["message"] = (
+            f"DISK CRITICAL: {used_pct:.1f}% used "
+            f"({free_gb:.1f}GB free of {total_gb:.0f}GB)"
+        )
+    elif used_pct >= warn_pct:
+        result["message"] = (
+            f"DISK WARNING: {used_pct:.1f}% used "
+            f"({free_gb:.1f}GB free of {total_gb:.0f}GB)"
+        )
+
+    return result
+
+
+def should_send_disk_alert() -> bool:
+    """Rate-limit disk alerts to at most once per 30 minutes."""
+    global _last_disk_alert_time
+    import time
+    now = time.time()
+    if now - _last_disk_alert_time >= 1800:  # 30 minutes
+        _last_disk_alert_time = now
+        return True
+    return False
