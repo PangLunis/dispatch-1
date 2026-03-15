@@ -32,6 +32,7 @@
 
   <section>
     <h2>Event Taxonomy</h2>
+    <p>Common events shown. See <code>assistant/bus_helpers.py</code> for the full list (~50 event types).</p>
     <table>
       <thead>
         <tr>

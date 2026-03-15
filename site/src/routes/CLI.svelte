@@ -199,7 +199,7 @@
       <div class="cmd-name">bus tail</div>
       <div class="cmd-desc">Tail recent events (like kafka-console-consumer)</div>
       <pre><code>./bin/bus tail
-./bin/bus tail --type msg.received
+./bin/bus tail --type message.received
 ./bin/bus tail --type session.compacted --limit 10</code></pre>
     </div>
 
@@ -260,6 +260,24 @@
   <section id="env">
     <h2>Environment Variables</h2>
     <p>See <button class="text-link" on:click={() => navigateTo('configuration')}>Configuration</button> for the full environment variables reference.</p>
+  </section>
+
+  <section class="related">
+    <h2>Related</h2>
+    <div class="related-links">
+      <button class="related-link" on:click={() => navigateTo('configuration')}>
+        <span class="related-label">Configuration</span>
+        <span class="related-desc">Config file and env vars</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('architecture')}>
+        <span class="related-label">Architecture</span>
+        <span class="related-desc">System design and message flow</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('messaging')}>
+        <span class="related-label">Messaging</span>
+        <span class="related-desc">Send commands and backends</span>
+      </button>
+    </div>
   </section>
 </article>
 
@@ -391,5 +409,50 @@
 
   .text-link:hover {
     color: var(--accent-hover);
+  }
+
+  .related {
+    margin-top: var(--space-12);
+    padding-top: var(--space-8);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .related h2 {
+    font-size: 14px;
+    margin-bottom: var(--space-4);
+  }
+
+  .related-links {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .related-link {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-4);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    transition: border-color var(--transition-fast);
+  }
+
+  .related-link:hover {
+    border-color: var(--border-strong);
+  }
+
+  .related-label {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .related-desc {
+    font-size: 12px;
+    color: var(--text-tertiary);
   }
 </style>

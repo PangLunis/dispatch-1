@@ -1,4 +1,5 @@
 <script>
+  export let navigateTo;
   let animating = false;
   let step = 0;
 
@@ -369,6 +370,78 @@
       </div>
     </div>
     <p class="explain-note">Each contact gets their own isolated session in <code>~/transcripts/{'{backend}'}/{'{chat_id}'}/</code></p>
+  </section>
+
+  <!-- Prose explanation -->
+  <section>
+    <h2>How It Works</h2>
+    <p>
+      The <strong>Manager Daemon</strong> is a single Python async event loop that polls
+      iMessage's <code>chat.db</code> every 100ms and listens on Signal's JSON-RPC socket
+      for push notifications. Both backends feed into the same pipeline.
+    </p>
+    <p>
+      When a message arrives, the daemon looks up the sender in macOS Contacts.app to
+      determine their <button class="text-link" on:click={() => navigateTo('tiers')}>tier</button>.
+      Unknown contacts are ignored. Known contacts get their message wrapped with metadata
+      and injected into their dedicated Claude SDK session.
+    </p>
+    <p>
+      Each contact's session runs in the same async event loop (no separate processes).
+      Sessions persist across daemon restarts via SDK resume tokens stored in the
+      <code>sessions.json</code> registry. When a session's context fills up, it compacts
+      (summarizes conversation history) and restarts with the summary.
+    </p>
+    <p>
+      All events — messages, session lifecycle, health checks — flow through the
+      <button class="text-link" on:click={() => navigateTo('message-bus')}>Message Bus</button>
+      for audit trails and analytics. A separate
+      <button class="text-link" on:click={() => navigateTo('health')}>watchdog daemon</button>
+      monitors the manager and auto-recovers from crashes.
+    </p>
+  </section>
+
+  <section>
+    <h2>Session Lifecycle</h2>
+    <div class="lifecycle">
+      <div class="lifecycle-step">
+        <div class="lifecycle-label">Create</div>
+        <div class="lifecycle-desc">New message from known contact → SDK session spawned with SOUL.md + skills</div>
+      </div>
+      <div class="lifecycle-arrow">→</div>
+      <div class="lifecycle-step">
+        <div class="lifecycle-label">Active</div>
+        <div class="lifecycle-desc">Messages injected between tool calls, mid-turn steering enabled</div>
+      </div>
+      <div class="lifecycle-arrow">→</div>
+      <div class="lifecycle-step">
+        <div class="lifecycle-label">Compact</div>
+        <div class="lifecycle-desc">Context full → summarize history → restart with summary</div>
+      </div>
+      <div class="lifecycle-arrow">→</div>
+      <div class="lifecycle-step">
+        <div class="lifecycle-label">Idle</div>
+        <div class="lifecycle-desc">No messages for 2h → session stopped, resume token saved</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="related">
+    <h2>Related</h2>
+    <div class="related-links">
+      <button class="related-link" on:click={() => navigateTo('messaging')}>
+        <span class="related-label">Messaging</span>
+        <span class="related-desc">iMessage and Signal backends</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('health')}>
+        <span class="related-label">Health & Healing</span>
+        <span class="related-desc">Monitoring and recovery</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('cli')}>
+        <span class="related-label">CLI Reference</span>
+        <span class="related-desc">Daemon and session commands</span>
+      </button>
+    </div>
   </section>
 </article>
 
@@ -828,6 +901,98 @@
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 12px;
+  }
+
+  .text-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .text-link:hover {
+    color: var(--accent-hover);
+  }
+
+  .lifecycle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    margin: var(--space-4) 0;
+  }
+
+  .lifecycle-step {
+    flex: 1;
+    min-width: 120px;
+    padding: var(--space-3);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+  }
+
+  .lifecycle-label {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: var(--space-1);
+  }
+
+  .lifecycle-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .lifecycle-arrow {
+    color: var(--text-muted);
+    font-size: 16px;
+  }
+
+  .related {
+    margin-top: var(--space-12);
+    padding-top: var(--space-8);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .related h2 {
+    font-size: 14px;
+    margin-bottom: var(--space-4);
+  }
+
+  .related-links {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .related-link {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-4);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    transition: border-color var(--transition-fast);
+  }
+
+  .related-link:hover {
+    border-color: var(--border-strong);
+  }
+
+  .related-label {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .related-desc {
+    font-size: 12px;
+    color: var(--text-tertiary);
   }
 
   @media (max-width: 600px) {
