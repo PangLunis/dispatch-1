@@ -486,7 +486,7 @@ class SDKBackend:
                         "message_id": umsg["message_id"],
                         "replayed": True,
                     }, key=chat_id, source="sdk_backend.replay")
-                await session.inject(umsg["text"])
+                await session.inject(umsg["text"], replay_source_message_id=umsg["message_id"])
                 seen_texts.add(umsg["text"])
                 replayed += 1
             except Exception as e:

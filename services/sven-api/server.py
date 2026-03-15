@@ -677,24 +677,30 @@ if __name__ == "__main__":
 
     # Configure uvicorn with socket reuse to prevent "address already in use" crashes
     # when the daemon restarts and the old process hasn't fully released the port.
-    # Note: Uses uvicorn internal (config.loaded) — tested with uvicorn 0.32+.
+    # Uses uvicorn internal (config.loaded) — tested with uvicorn 0.32+.
+    # Falls back to plain uvicorn.run() if the internal API has changed.
     config = uvicorn.Config(app, host="0.0.0.0", port=9091, log_level="warning")
-    server = uvicorn.Server(config)
 
-    # Enable SO_REUSEADDR on the socket before binding
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("0.0.0.0", 9091))
-    sock.listen(128)
-    sock.set_inheritable(True)
+    if hasattr(config, "loaded"):
+        server = uvicorn.Server(config)
 
-    # Pass pre-bound socket to uvicorn
-    assert hasattr(config, "loaded"), "uvicorn version incompatible — needs config.loaded attr"
-    config.loaded = True  # Skip uvicorn's own bind
-    server.servers = []  # Will be populated by serve()
+        # Enable SO_REUSEADDR on the socket before binding
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 9091))
+        sock.listen(128)
+        sock.set_inheritable(True)
 
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(server.serve(sockets=[sock]))
+        # Pass pre-bound socket to uvicorn
+        config.loaded = True  # Skip uvicorn's own bind
+        server.servers = []  # Will be populated by serve()
+
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(server.serve(sockets=[sock]))
+    else:
+        # Fallback: uvicorn manages its own socket (no SO_REUSEADDR guarantee)
+        logger.warning("uvicorn missing config.loaded — falling back to plain uvicorn.run()")
+        uvicorn.run(app, host="0.0.0.0", port=9091, log_level="warning")

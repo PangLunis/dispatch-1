@@ -556,10 +556,11 @@ def query_undelivered_messages(db_path: str, chat_id: str, max_age_hours: int = 
                   SELECT 1 FROM records r2
                   WHERE r2.topic = 'messages'
                     AND r2.type = 'message.delivered'
+                    AND r2.key = ?
                     AND json_extract(r2.payload, '$.message_id') = json_extract(r1.payload, '$.message_id')
               )
             ORDER BY r1.timestamp ASC
-        """, (chat_id, cutoff)).fetchall()
+        """, (chat_id, cutoff, chat_id)).fetchall()
 
         results = []
         for row in rows:

@@ -269,8 +269,13 @@ class SDKSession:
         self._log.info(f"SESSION_STOP | turns={self.turn_count}")
         log.info(f"[{self.contact_name}] SDK session stopped (turns={self.turn_count})")
 
-    async def inject(self, text: str):
-        """Queue a message for delivery to the Claude session."""
+    async def inject(self, text: str, *, replay_source_message_id: str | None = None):
+        """Queue a message for delivery to the Claude session.
+
+        Args:
+            replay_source_message_id: If this inject is a replay of a previously
+                lost message, the original message_id for lineage tracing.
+        """
         # Sentinel passes through without WAL
         if text == "__SHUTDOWN__":
             await self._message_queue.put(QueueItem(None, "__SHUTDOWN__"))
@@ -281,12 +286,16 @@ class SDKSession:
         message_id = str(uuid4())
         if self._producer:
             try:
-                produce_event(self._producer, "messages", "message.queued", {
+                payload = {
                     "message_id": message_id,
                     "chat_id": self.chat_id,
                     "text": text,
                     "source": self.source,
-                }, key=self.chat_id, source="sdk_session")
+                }
+                if replay_source_message_id:
+                    payload["replay_source_message_id"] = replay_source_message_id
+                produce_event(self._producer, "messages", "message.queued",
+                    payload, key=self.chat_id, source="sdk_session")
             except Exception as e:
                 self._log.warning(f"WAL_WRITE_FAILED | msg_id={message_id[:8]} | {e}")
 

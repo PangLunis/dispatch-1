@@ -409,12 +409,12 @@ class TestReplayUndelivered:
         call_count = 0
         original_inject = session.inject
 
-        async def failing_inject(text):
+        async def failing_inject(text, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise Exception("inject failed")
-            return await original_inject(text)
+            return await original_inject(text, **kwargs)
 
         session.inject = failing_inject
 
@@ -448,9 +448,9 @@ class TestReplayUndelivered:
         event_order = []
         original_inject = session.inject
 
-        async def tracking_inject(text):
+        async def tracking_inject(text, **kwargs):
             event_order.append(("inject", text))
-            return await original_inject(text)
+            return await original_inject(text, **kwargs)
 
         session.inject = tracking_inject
 
