@@ -600,11 +600,11 @@ class TestHealingDeduplication:
 @pytest.mark.asyncio
 class TestStuckSessionDetection:
     """Test that is_healthy() detects stuck sessions where a message was
-    injected but no ResultMessage received for 20+ minutes."""
+    injected but no ResultMessage received for 10+ minutes."""
 
     async def test_healthy_fresh_session(self, sdk_backend):
         """Fresh session (system prompt injected, no response yet) should be healthy
-        because it hasn't been stuck for 20+ minutes."""
+        because it hasn't been stuck for 10+ minutes."""
         session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
         healthy, reason = session.is_healthy()
         assert healthy
@@ -620,20 +620,21 @@ class TestStuckSessionDetection:
         healthy, reason = session.is_healthy()
         assert healthy
 
-    async def test_unhealthy_when_stuck_over_20_min(self, sdk_backend):
-        """Session stuck for >20 min after inject should be unhealthy."""
+    async def test_unhealthy_when_stuck_over_10_min(self, sdk_backend):
+        """Session stuck for >10 min after inject should be flagged as stuck.
+        Note: check_session_health() will then use Haiku to confirm before restarting."""
         session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
-        session.last_inject_at = datetime.now() - timedelta(minutes=25)
-        session.last_response_at = datetime.now() - timedelta(minutes=30)
+        session.last_inject_at = datetime.now() - timedelta(minutes=15)
+        session.last_response_at = datetime.now() - timedelta(minutes=20)
         healthy, reason = session.is_healthy()
         assert not healthy
         assert "stuck" in reason
 
-    async def test_healthy_when_stuck_under_20_min(self, sdk_backend):
-        """Session stuck for <20 min should still be healthy (long subagent ops)."""
+    async def test_healthy_when_stuck_under_10_min(self, sdk_backend):
+        """Session stuck for <10 min should still be healthy (processing)."""
         session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
-        session.last_inject_at = datetime.now() - timedelta(minutes=15)
-        session.last_response_at = datetime.now() - timedelta(minutes=20)
+        session.last_inject_at = datetime.now() - timedelta(minutes=5)
+        session.last_response_at = datetime.now() - timedelta(minutes=10)
         healthy, reason = session.is_healthy()
         assert healthy
 
@@ -648,11 +649,11 @@ class TestStuckSessionDetection:
         assert session.last_inject_at >= before
         assert session.last_inject_at > old_inject_at
 
-    async def test_stuck_detection_triggers_health_check_restart(self, sdk_backend):
-        """health_check_all should detect and restart stuck sessions."""
+    async def test_stuck_detection_triggers_health_check(self, sdk_backend):
+        """health_check_all should detect stuck sessions (Haiku investigation handles restart)."""
         session = await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")
-        session.last_inject_at = datetime.now() - timedelta(minutes=25)
-        session.last_response_at = datetime.now() - timedelta(minutes=30)
+        session.last_inject_at = datetime.now() - timedelta(minutes=15)
+        session.last_response_at = datetime.now() - timedelta(minutes=20)
         healthy, reason = session.is_healthy()
         assert not healthy
         results = await sdk_backend.health_check_all()

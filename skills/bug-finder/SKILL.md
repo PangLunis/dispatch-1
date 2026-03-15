@@ -23,6 +23,11 @@ Launch **4 parallel Explore subagents** simultaneously. Each focuses on a differ
 
 **Scope:** The entire codebase is in scope for bugs, not just recent changes. Recent changes (last 24h) are the **primary signal** for where to focus exploration first, but explorers should also look at surrounding code, callers, integration points, and anything else that seems suspicious.
 
+**Admin transcript context:** When targeting `~/dispatch/`, Explorer 1 (Recent Code Changes) MUST also read recent admin transcripts to understand the context of changes — what was being built, what problems were being solved, and what the admin's intent was. This prevents flagging intentional changes as bugs.
+- Read: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "+16175969496" --limit 40`
+- This gives the last 40 messages from the admin's 1:1 chat, which contains discussion of recent changes, bug reports, and feature requests.
+- Use this context to: (a) understand WHY code changed, (b) identify bugs the admin already knows about vs new ones, (c) find issues mentioned in conversation but not yet fixed.
+
 **Determine the target directory first:**
 - If the user specifies a project/directory, use that
 - If running from a git repo, use the repo root (`git rev-parse --show-toplevel`)

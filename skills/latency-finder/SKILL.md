@@ -48,6 +48,11 @@ Launch **4 parallel Explore subagents** simultaneously. Each focuses on a differ
 
 **IMPORTANT: All subagents (both discovery and refinement) MUST use `model: "opus"`.** Never use sonnet or haiku.
 
+**Admin transcript context:** When scanning `~/dispatch/`, Explorer 1 (Perf Metrics) MUST also read recent admin transcripts to understand the context of changes — what was being built, what problems were being solved, and what the admin's intent was. This prevents flagging intentional changes as regressions.
+- Read: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "+16175969496" --limit 40`
+- This gives the last 40 messages from the admin's 1:1 chat, which contains discussion of recent changes, performance complaints, and optimization intent.
+- Use this context to: (a) understand WHY metrics changed, (b) identify latency issues the admin already knows about vs new ones, (c) find performance complaints mentioned in conversation but not yet fixed.
+
 **Time window:** Default to last 24 hours. For multi-day scans, adjust queries:
 - Perf JSONL: glob `~/dispatch/logs/perf-*.jsonl` and filter by date, or iterate over specific date files
 - bus.db: change `-24 hours` to `-48 hours`, `-7 days`, etc. in the `strftime` expressions

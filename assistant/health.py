@@ -226,6 +226,107 @@ async def check_deep_haiku(entries: list[dict[str, Any]], session_name: str) -> 
 
 
 # ──────────────────────────────────────────────────────────────
+# Tier 3: Haiku-based stuck session investigation
+# ──────────────────────────────────────────────────────────────
+
+STUCK_INVESTIGATION_PROMPT = """You are investigating whether an AI assistant session is genuinely stuck or just working on a long task.
+
+Context: A message was injected {stuck_minutes:.0f} minutes ago with no ResultMessage returned yet. The session process is alive.
+
+Analyze the recent transcript entries below. These are the most recent tool calls, thinking, and messages from the session.
+
+STUCK means the session is genuinely unresponsive or broken:
+- No tool calls or thinking activity in the last 5+ minutes
+- Session is in an error loop (same error repeating)
+- Process is alive but producing no output at all
+- Last activity was a tool call that seems to have hung (no result)
+
+WORKING means the session is actively processing and should NOT be interrupted:
+- Recent tool calls (Read, Grep, Bash, Agent, Write, Edit) — even if slow
+- Thinking blocks indicate active reasoning
+- Subagent operations in progress (Agent tool calls without results yet are normal — subagents can run 15+ min)
+- Code exploration or research happening (multiple Read/Grep calls)
+- The session is making forward progress, just slowly
+
+Recent transcript entries (most recent last):
+{entries}
+
+Respond with ONLY one of:
+STUCK: <one-line reason>
+WORKING: <what it appears to be doing>"""
+
+
+async def check_stuck_haiku(session_cwd: str, session_id: str | None,
+                            session_name: str, stuck_minutes: float) -> bool:
+    """Investigate if a session is genuinely stuck using Haiku.
+
+    Reads recent transcript JSONL entries and asks Haiku to classify
+    whether the session is stuck or just working on something long.
+
+    Returns True if stuck (should restart), False if working (leave alone).
+    """
+    try:
+        transcript_path = _find_transcript(session_cwd, session_id)
+        if not transcript_path or not transcript_path.exists():
+            log.warning(f"STUCK_CHECK | {session_name} | No transcript found, assuming stuck")
+            return True
+
+        # Read last 64KB of transcript for recent activity
+        entries_text = ""
+        with open(transcript_path, "r") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            chunk = min(size, 65536)  # 64KB
+            f.seek(size - chunk)
+            raw = f.read()
+            # Get last 30 valid JSON lines
+            lines = [line for line in raw.strip().split("\n") if line.strip()]
+            recent = lines[-30:]
+            entries_text = "\n".join(recent)
+
+        if not entries_text or len(entries_text.strip()) < 20:
+            log.warning(f"STUCK_CHECK | {session_name} | Empty transcript, assuming stuck")
+            return True
+
+        from claude_agent_sdk import (
+            query as sdk_query,
+            ClaudeAgentOptions,
+            AssistantMessage,
+            TextBlock,
+        )
+
+        options = ClaudeAgentOptions(
+            cli_path=Path.home() / ".local" / "bin" / "claude",
+            model="haiku",
+            max_turns=1,
+            permission_mode="bypassPermissions",
+        )
+
+        prompt = STUCK_INVESTIGATION_PROMPT.format(
+            stuck_minutes=stuck_minutes,
+            entries=entries_text,
+        )
+        result_text = ""
+        async for message in sdk_query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        result_text += block.text
+
+        result = result_text.strip()
+        log.info(f"STUCK_CHECK | {session_name} | Haiku verdict: {result}")
+
+        if result.startswith("STUCK:"):
+            return True
+        return False
+
+    except Exception as e:
+        log.warning(f"STUCK_CHECK | {session_name} | Haiku investigation failed: {e}")
+        # On failure, don't restart — avoid false positives
+        return False
+
+
+# ──────────────────────────────────────────────────────────────
 # Transcript file location
 # ──────────────────────────────────────────────────────────────
 

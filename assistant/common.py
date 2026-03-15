@@ -402,23 +402,31 @@ def ensure_transcript_dir(session_name: str) -> Path:
     if not link_path.exists() and target_path.exists():
       link_path.symlink_to(target_path)
 
-  # Create settings.json (hooks are handled by Python SDK hooks in sdk_session.py,
-  # so settings.json only needs minimal config — no command hooks needed)
+  # Create/update settings.json with PostCompact hook.
+  # PreCompact is handled by Python SDK hooks in sdk_session.py.
+  # PostCompact uses a settings.json command hook because the Python SDK
+  # doesn't have a PostCompact hook type yet — but the CLI supports it.
+  post_compact_hook = {
+    "hooks": [
+      {
+        "type": "command",
+        "command": f"{HOME}/dispatch/bin/post-compact-hook",
+      }
+    ]
+  }
   settings_file = claude_dir / "settings.json"
   if not settings_file.exists():
-    settings = {}
+    settings = {"hooks": {"PostCompact": [post_compact_hook]}}
     settings_file.write_text(json.dumps(settings, indent=2))
   else:
-    # Migrate existing settings.json: remove old PreCompact command hooks
-    # since compaction is now handled natively by the SDK with Python hooks
     try:
       existing = json.loads(settings_file.read_text())
-      hooks = existing.get("hooks", {})
-      if "PreCompact" in hooks:
-        del hooks["PreCompact"]
-        if not hooks:
-          existing.pop("hooks", None)
-        settings_file.write_text(json.dumps(existing, indent=2))
+      hooks = existing.setdefault("hooks", {})
+      # Remove old PreCompact command hooks (migration)
+      hooks.pop("PreCompact", None)
+      # Ensure PostCompact hook is present and up-to-date
+      hooks["PostCompact"] = [post_compact_hook]
+      settings_file.write_text(json.dumps(existing, indent=2))
     except (json.JSONDecodeError, Exception):
       pass
 

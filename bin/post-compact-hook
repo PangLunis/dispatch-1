@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# PostCompact hook script — called by Claude Code CLI via settings.json
+# after compaction completes. Reads hook input from stdin (JSON).
+#
+# Sends "Done compacting ✓" SMS and logs to bus + compactions.log.
+# The compact_summary is available in stdin JSON under .compact_summary
+#
+# Usage (by Claude Code CLI, not manual):
+#   echo '{"session_id":"...","cwd":"...","compact_summary":"..."}' | post-compact-hook
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOME_DIR="$HOME"
+
+# Read hook input from stdin
+INPUT="$(cat)"
+
+# Extract fields from JSON input
+CWD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")
+COMPACT_SUMMARY=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('compact_summary',''))" 2>/dev/null || echo "")
+SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")
+
+# Derive session_name from cwd: ~/transcripts/imessage/_16175969496 -> imessage/_16175969496
+SESSION_NAME=""
+if [[ "$CWD" == *"/transcripts/"* ]]; then
+  SESSION_NAME="${CWD#*transcripts/}"
+fi
+
+# Derive chat_id and source from session_name
+SOURCE=""
+CHAT_ID=""
+if [[ -n "$SESSION_NAME" ]]; then
+  SOURCE="${SESSION_NAME%%/*}"
+  RAW_CHAT_ID="${SESSION_NAME#*/}"
+  # Convert _16175969496 back to +16175969496
+  CHAT_ID="${RAW_CHAT_ID/#_/+}"
+fi
+
+TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
+
+# 1. Log to compactions.log
+echo "$TIMESTAMP | HOOK | Compaction completed for $SESSION_NAME" >> "$HOME_DIR/dispatch/logs/compactions.log"
+
+# 2. Archive compact summary
+if [[ -n "$CWD" && -n "$COMPACT_SUMMARY" ]]; then
+  ARCHIVE_DIR="$CWD/.compactions"
+  mkdir -p "$ARCHIVE_DIR"
+  ARCHIVE_FILE="$ARCHIVE_DIR/$(date '+%Y%m%d-%H%M%S').md"
+  echo "# Compaction Summary" > "$ARCHIVE_FILE"
+  echo "" >> "$ARCHIVE_FILE"
+  echo "$COMPACT_SUMMARY" >> "$ARCHIVE_FILE"
+fi
+
+# 3. Send "Done compacting ✓" SMS
+if [[ -n "$CHAT_ID" ]]; then
+  # Determine send command based on source
+  if [[ "$SOURCE" == "signal" ]]; then
+    SEND_CMD="$HOME_DIR/.claude/skills/signal/scripts/send-signal"
+  else
+    SEND_CMD="$HOME_DIR/.claude/skills/sms-assistant/scripts/send-sms"
+  fi
+
+  # Check if group chat (hex UUID without + prefix)
+  BARE_CHAT_ID="${CHAT_ID#+}"
+  if [[ "$RAW_CHAT_ID" != _* && ${#RAW_CHAT_ID} -ge 20 ]]; then
+    # Group chat — use group send for signal, regular for imessage (uses hex ID)
+    if [[ "$SOURCE" == "signal" ]]; then
+      SEND_CMD="$HOME_DIR/.claude/skills/signal/scripts/send-signal-group"
+    fi
+    "$SEND_CMD" "$BARE_CHAT_ID" "[SVEN] Done compacting ✓" 2>/dev/null &
+  else
+    "$SEND_CMD" "$BARE_CHAT_ID" "[SVEN] Done compacting ✓" 2>/dev/null &
+  fi
+fi
+
+# 4. Log to bus via bus CLI
+if [[ -n "$SESSION_NAME" ]]; then
+  "$SCRIPT_DIR/bus" produce system compaction.completed \
+    --key "$SESSION_NAME" \
+    --source compaction \
+    --payload "{\"session_name\":\"$SESSION_NAME\",\"chat_id\":\"$CHAT_ID\",\"session_id\":\"$SESSION_ID\"}" \
+    2>/dev/null || true
+fi

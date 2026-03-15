@@ -1424,7 +1424,12 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         return None
 
     async def check_session_health(self, chat_id: str) -> bool:
-        """Check if a session is healthy. Auto-restarts if not."""
+        """Check if a session is healthy. Auto-restarts if not.
+
+        For "stuck" sessions (inject pending >10 min), launches a Haiku investigation
+        to determine if the session is genuinely stuck or just running a long operation
+        (e.g. subagent tasks). Only restarts if Haiku confirms the session is stuck.
+        """
         session = self.sessions.get(chat_id)
         if not session:
             return False
@@ -1437,10 +1442,58 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                 f"HEALTH_CHECK | {session.contact_name} | UNHEALTHY | "
                 f"reason={reason} alive={session.is_alive()} errors={session._error_count}"
             )
+
+            # For stuck sessions, investigate with Haiku before restarting
+            if reason.startswith("stuck("):
+                from assistant.common import get_session_name
+                session_name = get_session_name(session.chat_id, session.source)
+                stuck_minutes = (datetime.now() - session.last_inject_at).total_seconds() / 60
+
+                async def _investigate_and_maybe_restart(cid: str):
+                    try:
+                        from assistant.health import check_stuck_haiku
+                        is_stuck = await check_stuck_haiku(
+                            session.cwd, session.session_id,
+                            session_name, stuck_minutes,
+                        )
+                        if is_stuck:
+                            lifecycle_log.info(
+                                f"STUCK_CONFIRMED | {session_name} | Haiku says stuck, restarting"
+                            )
+                            produce_session_event(self._producer, cid, "session.crashed", {
+                                "contact_name": session.contact_name,
+                                "error_count": session._error_count,
+                                "turn_count": session.turn_count,
+                                "reason": reason,
+                                "haiku_verdict": "stuck",
+                            }, source="daemon")
+                            await self.restart_session(cid)
+                        else:
+                            lifecycle_log.info(
+                                f"STUCK_FALSE_POSITIVE | {session_name} | Haiku says working, leaving alone"
+                            )
+                            produce_session_event(self._producer, cid, "session.stuck_cleared", {
+                                "contact_name": session.contact_name,
+                                "turn_count": session.turn_count,
+                                "stuck_minutes": stuck_minutes,
+                                "haiku_verdict": "working",
+                            }, source="daemon")
+                    except Exception as e:
+                        log.error(f"Stuck investigation failed for {cid}: {e}")
+
+                self._recently_healed[chat_id] = datetime.now()
+                _fire_and_forget(
+                    _investigate_and_maybe_restart(chat_id),
+                    name=f"stuck-investigate-{chat_id}",
+                )
+                return False
+
+            # Non-stuck failures: restart immediately
             produce_session_event(self._producer, chat_id, "session.crashed", {
                 "contact_name": session.contact_name,
                 "error_count": session._error_count,
                 "turn_count": session.turn_count,
+                "reason": reason,
             }, source="daemon")
             # Mark as recently healed to prevent double-restart from other health checks
             self._recently_healed[chat_id] = datetime.now()

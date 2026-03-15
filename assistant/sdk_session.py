@@ -276,13 +276,13 @@ class SDKSession:
             idle = (datetime.now() - self.last_activity).total_seconds()
             if idle > 600:
                 return False, f"stale_queue(qsize={self._message_queue.qsize()}, idle={idle:.0f}s)"
-        # Stuck: message was injected but no ResultMessage received for 20+ min.
+        # Stuck: message was injected but no ResultMessage received for 10+ min.
         # Catches silent SDK connection hangs where process is alive but not responding.
-        # Using 20 min (1200s) instead of 10 min to avoid false positives during
-        # long subagent operations (e.g. explore/plan subagents can run 10-15 min).
+        # When this triggers, check_session_health() launches a Haiku investigation
+        # to determine if the session is genuinely stuck or just running a long operation.
         if self.last_inject_at and self.last_inject_at > self.last_response_at:
             stuck_seconds = (datetime.now() - self.last_inject_at).total_seconds()
-            if stuck_seconds > 1200:
+            if stuck_seconds > 600:
                 return False, f"stuck(inject={stuck_seconds:.0f}s_ago)"
         return True, "ok"
 
@@ -495,7 +495,8 @@ class SDKSession:
                 "PreToolUse": [HookMatcher(matcher="Read", hooks=[self._resize_image_hook])],  # type: ignore[list-item]
                 "Stop": [HookMatcher(hooks=[self._stop_hook])],  # type: ignore[list-item]
                 "PreCompact": [HookMatcher(hooks=[self._pre_compact_hook])],  # type: ignore[list-item]
-                "Notification": [HookMatcher(hooks=[self._notification_hook])],  # type: ignore[list-item]
+                # PostCompact is handled by settings.json command hook (bin/post-compact-hook)
+                # because the Python SDK doesn't have a PostCompact hook type yet.
             }
         )
 
@@ -655,73 +656,9 @@ class SDKSession:
         # Let native compaction proceed (no more summarize-and-restart)
         return {}
 
-    async def _notification_hook(self, input_data: "HookInputType", tool_use_id: str | None, context: "HookContext") -> "SyncHookJSONOutput":
-        """Notification hook: handle post-compaction notifications.
-
-        The SDK fires a Notification event after compaction completes.
-        We use this to send the "done compacting" SMS and archive the compact summary.
-        """
-        notification_type = input_data.get("notification_type", "")
-        message = input_data.get("message", "")
-
-        # Only handle compaction-related notifications
-        if "compact" not in notification_type.lower() and "compact" not in message.lower():
-            return {}
-
-        from assistant.common import get_session_name
-        session_name = get_session_name(self.chat_id, self.source)
-        self._log.info(f"POSTCOMPACT | completed | session={session_name}")
-        log.info(f"[{self.contact_name}] Compaction completed")
-
-        # Log compaction.completed bus event with compact summary
-        produce_event(self._producer, "system", "compaction.completed", {
-            "session_name": session_name,
-            "chat_id": self.chat_id,
-            "contact_name": self.contact_name,
-            "turn_count": self.turn_count,
-            "compact_summary": message,
-        }, source="compaction")
-
-        # Log to compactions.log
-        compaction_log = Path.home() / "dispatch/logs/compactions.log"
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(compaction_log, "a") as f:
-            f.write(f"{timestamp} | HOOK | Compaction completed for {session_name}\n")
-
-        # Archive the compact summary to .compactions/ directory
-        try:
-            transcript_dir = Path(self.cwd)
-            compactions_dir = transcript_dir / ".compactions"
-            compactions_dir.mkdir(exist_ok=True)
-            archive_file = compactions_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
-            archive_file.write_text(f"# Compaction Summary\n\nNotification: {message}\n")
-            self._log.info(f"POSTCOMPACT | archived to {archive_file}")
-        except Exception as e:
-            self._log.error(f"POSTCOMPACT | archive failed: {e}")
-
-        # Send "done compacting" SMS (fire-and-forget)
-        try:
-            from assistant import config
-            from assistant.backends import get_backend
-            assistant_name = config.get("assistant.name", "Assistant")
-            backend = get_backend(self.source)
-            if self.session_type == "group":
-                send_tpl = backend.send_group_cmd
-            else:
-                send_tpl = backend.send_cmd
-            script_path = str(Path(send_tpl.split()[0]).expanduser())
-            bare_chat_id = self.chat_id.lstrip("+")
-            proc = subprocess.Popen(
-                [script_path, bare_chat_id, f"[{assistant_name.upper()}] Done compacting \u2713"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            import threading
-            threading.Thread(target=proc.wait, daemon=True, name="reap-compact-done-sms").start()
-        except Exception as e:
-            self._log.error(f"POSTCOMPACT | send notice failed: {e}")
-
-        return {}
+    # PostCompact is handled by settings.json command hook (bin/post-compact-hook).
+    # The old _notification_hook workaround has been removed since the CLI now
+    # supports PostCompact as a native hook event in settings.json.
 
     async def _stop_hook(self, input_data: "HookInputType", tool_use_id: str | None, context: "HookContext") -> "SyncHookJSONOutput":
         """Stop hook: remind Claude to send updates via send-sms if needed.
