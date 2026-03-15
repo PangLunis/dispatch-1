@@ -485,15 +485,19 @@ Your job:
    - What's the user-visible effect (slow responses, timeouts, dropped messages)?
    - How often does this occur (constant, periodic, rare)?
 
-4. Propose specific fixes with effort estimates:
-   - Code change: what file, what function, what to change
-   - Config change: what parameter, what value
-   - Architecture change: what to redesign
+4. Propose specific fixes with effort estimates. Fixes MUST be concrete:
+   - Code change: specific file path, specific function name, specific change (e.g., "In assistant/sdk_session.py:_run_loop(), add a queue.task_done() call after processing each message")
+   - Config change: specific parameter name, specific value, specific file
+   - Architecture change: what to redesign, with specific entry points
+
+   **"Investigate why X" is NOT a valid fix.** If you cannot identify a specific code change, use REFINE verdict instead.
 
 5. Make a verdict:
-   - **ACCEPT**: This is a real, actionable performance bottleneck. Root cause identified, fix proposed.
-   - **REFINE**: Data is concerning but root cause unclear. Needs monitoring or deeper investigation.
+   - **ACCEPT**: This is a real, actionable performance bottleneck. Root cause identified AND a specific fix proposed (file + function + change). If you can identify the root cause but not a specific fix, use REFINE.
+   - **REFINE**: Data is concerning but root cause unclear, OR root cause is clear but the fix requires deeper investigation. Needs monitoring or further analysis.
    - **REFUTE**: This is not actionable — expected behavior, transient spike, or within acceptable bounds.
+
+   **IMPORTANT**: Every ACCEPT verdict MUST include at least one concrete file path in the fix.files array. "Tool configuration" or "session prompt" are NOT valid file paths. If you cannot identify the file, use REFINE.
 
 6. Return your verdict as JSON:
    {
@@ -526,6 +530,20 @@ Collect all refinement results:
 - Group ACCEPT verdicts by severity: critical > high > medium > low
 - List REFINE verdicts as "Needs Investigation"
 
+**IMPORTANT report quality rules:**
+
+1. **Explorer coverage**: For EACH of the 4 explorers, the report MUST either include findings from it or explicitly state "Explorer N ({name}): No anomalies detected." Do NOT silently drop an explorer's results.
+
+2. **Explorer attribution**: Preserve the explorer source ID prefix (PERF1, SDK1, MSG1, SYS1) on each finding so readers know which data source produced it.
+
+3. **Complete system summary**: The summary table MUST include ALL metrics from the baselines table above. If a metric has no data, show "N/A" in its row. Never omit a metric.
+
+4. **Consistent metric names**: Always use the exact metric names from the baselines table (e.g., `session_wake_latency_ms` not `session_wake_ms`). No abbreviations or variations.
+
+5. **Specific file paths**: Every ACCEPT verdict MUST include at least one concrete file path (not "Tool configuration" or "session prompt"). If the refinement agent couldn't identify a specific file, it should be REFINE not ACCEPT.
+
+6. **Specific fixes**: ACCEPT verdicts must propose fixes at the function level (e.g., "In `sdk_session.py:_run_loop()`, add a drain check before enqueuing"). "Investigate why X" is not an acceptable fix — that belongs in REFINE.
+
 #### Report Format
 
 ```
@@ -535,7 +553,7 @@ Explorers: 4 | Candidates: {N} | Accepted: {A} | Refuted: {R} | Needs Investigat
 
 --- CRITICAL ---
 
-1. {title}
+1. [{source_id}] {title}
    Metric: {metric} | Current p95: {value} | Baseline: {baseline}
    Root cause: {root_cause}
    Impact: {impact}
@@ -552,11 +570,17 @@ Explorers: 4 | Candidates: {N} | Accepted: {A} | Refuted: {R} | Needs Investigat
 --- LOW ---
 ...
 
+--- EXPLORER COVERAGE ---
+- Explorer 1 (Perf JSONL): {N} candidates | {summary}
+- Explorer 2 (SDK Events): {N} candidates | {summary}
+- Explorer 3 (Message Delivery): {N} candidates | {summary or "No anomalies detected"}
+- Explorer 4 (System Resources): {N} candidates | {summary}
+
 --- NEEDS INVESTIGATION ---
-- {title} — {reason}
+- [{source_id}] {title} — {reason}
 
 --- REFUTED ({R} total) ---
-- {title} — {reason}
+- [{source_id}] {title} — {reason}
 
 --- SYSTEM SUMMARY ---
 | Metric | p50 | p95 | p99 | Max | Count | Status |
@@ -568,7 +592,11 @@ Explorers: 4 | Candidates: {N} | Accepted: {A} | Refuted: {R} | Needs Investigat
 | message_staleness_ms | ... | ... | ... | ... | ... | ... |
 | send_sms_ms | ... | ... | ... | ... | ... | ... |
 | session_spawn_ms | ... | ... | ... | ... | ... | ... |
+| session_wake_latency_ms | ... | ... | ... | ... | ... | ... |
 | sdk_queue_depth | ... | ... | ... | ... | ... | ... |
+| messages_batch_size | ... | ... | ... | ... | ... | ... |
+| wal_checkpoint_status | ... | ... | ... | ... | ... | ... |
+| gemini_vision_ms | ... | ... | ... | ... | ... | ... |
 ```
 
 #### Output Modes
