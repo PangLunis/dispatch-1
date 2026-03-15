@@ -690,6 +690,7 @@ if __name__ == "__main__":
     sock.set_inheritable(True)
 
     # Pass pre-bound socket to uvicorn
+    assert hasattr(config, "loaded"), "uvicorn version incompatible — needs config.loaded attr"
     config.loaded = True  # Skip uvicorn's own bind
     server.servers = []  # Will be populated by serve()
 

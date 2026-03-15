@@ -419,7 +419,8 @@ class SDKBackend:
         return recreated
 
 
-    async def _replay_undelivered(self, chat_id: str, stored_session_id: str | None) -> int:
+    async def _replay_undelivered(self, chat_id: str, stored_session_id: str | None,
+                                   max_replay: int = 50) -> int:
         """Replay undelivered messages from bus WAL for a session.
 
         Queries bus for message.queued events without matching message.delivered,
@@ -429,18 +430,29 @@ class SDKBackend:
         so a crash during replay doesn't cause infinite replay loops. The re-inject
         creates a NEW message.queued event with its own delivery tracking.
 
+        Args:
+            max_replay: Cap on messages to replay per session. Prevents thundering
+                herd after long downtime. Remaining are left for next restart.
+
         Returns count of messages replayed.
         """
         try:
             from .bus_helpers import query_undelivered_messages
             bus_db_path = str(Path.home() / "dispatch" / "state" / "bus.db")
             undelivered = query_undelivered_messages(bus_db_path, chat_id)
+        except FileNotFoundError:
+            log.warning(f"REPLAY_DB_MISSING | {chat_id} | bus.db not found")
+            return 0
         except Exception as e:
             log.error(f"REPLAY_QUERY_FAILED | {chat_id} | {e}")
             return 0
 
         if not undelivered:
             return 0
+
+        if len(undelivered) > max_replay:
+            log.warning(f"REPLAY_TRUNCATED | {chat_id} | {len(undelivered)} undelivered, capping at {max_replay}")
+            undelivered = undelivered[:max_replay]
 
         session = self.sessions.get(chat_id)
         if not session:

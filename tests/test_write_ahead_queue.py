@@ -466,3 +466,52 @@ class TestReplayUndelivered:
         assert len(event_order) == 2
         assert event_order[0][0] == "delivered"
         assert event_order[1][0] == "inject"
+
+    async def test_replay_caps_at_max_replay(self, sdk_backend):
+        """Replay should respect max_replay limit."""
+        await sdk_backend.create_session(
+            "Test User", "test:+15555551234", "admin", source="test"
+        )
+
+        undelivered = [
+            {"message_id": f"msg-{i:03d}", "text": f"msg {i}", "source": "imessage", "timestamp": i}
+            for i in range(100)
+        ]
+
+        with patch("assistant.bus_helpers.query_undelivered_messages", return_value=undelivered):
+            count = await sdk_backend._replay_undelivered("test:+15555551234", "session-id", max_replay=5)
+
+        assert count == 5
+
+
+# ── _is_send_command adversarial tests ───────────────────────────────
+
+class TestIsSendCommandAdversarial:
+    """Test send command detection against false positives."""
+
+    def test_echo_containing_send_path(self):
+        """echo with send path should NOT match."""
+        assert not _is_send_command('echo "/scripts/send-sms"')
+
+    def test_cat_send_script(self):
+        """cat of a send script should NOT match."""
+        assert not _is_send_command("cat /scripts/send-sms")
+
+    def test_grep_in_send_script(self):
+        """grep inside a send script should NOT match."""
+        assert not _is_send_command("grep pattern /scripts/send-signal")
+
+    def test_send_sms_debug_variant(self):
+        """A different script that contains send-sms should NOT match."""
+        assert not _is_send_command("/scripts/send-sms-debug '+1234' 'msg'")
+
+    def test_pipe_to_send(self):
+        """Piped command where first token isn't a send script should NOT match."""
+        assert not _is_send_command("echo hello | /scripts/send-sms '+1234'")
+
+    def test_actual_send_with_full_path(self):
+        """Full path to real send script should match."""
+        assert _is_send_command('~/.claude/skills/sms-assistant/scripts/send-sms "+1234" "hello"')
+
+    def test_actual_reply_with_full_path(self):
+        assert _is_send_command('~/.claude/skills/sms-assistant/scripts/reply "hello"')

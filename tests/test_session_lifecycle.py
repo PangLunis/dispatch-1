@@ -110,7 +110,8 @@ class TestSessionHealthStates:
         """Messages pending but no activity for 10+ minutes = unhealthy."""
         await sdk_session.start()
         # Manually put something in queue without processing
-        await sdk_session._message_queue.put((None, "stale msg"))
+        from assistant.sdk_session import QueueItem
+        await sdk_session._message_queue.put(QueueItem(None, "stale msg"))
         # Backdate last_activity
         sdk_session.last_activity = datetime.now() - timedelta(minutes=15)
         healthy, reason = sdk_session.is_healthy()
@@ -120,7 +121,8 @@ class TestSessionHealthStates:
     async def test_healthy_with_recent_queue(self, sdk_session):
         """Messages pending with recent activity = still healthy."""
         await sdk_session.start()
-        await sdk_session._message_queue.put((None, "fresh msg"))
+        from assistant.sdk_session import QueueItem
+        await sdk_session._message_queue.put(QueueItem(None, "fresh msg"))
         sdk_session.last_activity = datetime.now()
         healthy, reason = sdk_session.is_healthy()
         assert healthy

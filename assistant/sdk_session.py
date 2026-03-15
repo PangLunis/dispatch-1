@@ -18,9 +18,15 @@ import uuid
 from datetime import datetime
 from uuid import uuid4
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from typing import TYPE_CHECKING
+
+
+class QueueItem(NamedTuple):
+    """Item in the session message queue. message_id is None for sentinels."""
+    message_id: str | None
+    text: str
 
 from claude_agent_sdk import (
     ClaudeSDKClient,
@@ -89,8 +95,15 @@ _SEND_SCRIPT_PATTERNS = (
 )
 
 def _is_send_command(cmd: str) -> bool:
-    """Check if a Bash command is a message send."""
-    return any(pattern in cmd for pattern in _SEND_SCRIPT_PATTERNS)
+    """Check if a Bash command is a message send.
+
+    Matches the executable (first token) against known send script paths.
+    Strips leading env vars and quotes to find the actual command.
+    """
+    # Extract first token (the executable), stripping quotes
+    stripped = cmd.strip().strip('"').strip("'")
+    first_token = stripped.split()[0] if stripped else ""
+    return any(first_token.endswith(pattern) for pattern in _SEND_SCRIPT_PATTERNS)
 
 log = logging.getLogger(__name__)
 
@@ -159,7 +172,7 @@ class SDKSession:
         self.resume_id = resume_id
 
         self._client: Optional[ClaudeSDKClient] = None
-        self._message_queue: asyncio.Queue[tuple[str | None, str]] = asyncio.Queue()
+        self._message_queue: asyncio.Queue[QueueItem] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
         self._pending_queries = 0  # Tracks in-flight queries; reset to 0 on ResultMessage
         self.running = False
@@ -260,7 +273,7 @@ class SDKSession:
         """Queue a message for delivery to the Claude session."""
         # Sentinel passes through without WAL
         if text == "__SHUTDOWN__":
-            await self._message_queue.put((None, "__SHUTDOWN__"))
+            await self._message_queue.put(QueueItem(None, "__SHUTDOWN__"))
             return
 
         # Write-ahead: persist to bus BEFORE memory queue
@@ -278,7 +291,7 @@ class SDKSession:
                 self._log.warning(f"WAL_WRITE_FAILED | msg_id={message_id[:8]} | {e}")
 
         queue_depth = self._message_queue.qsize()
-        await self._message_queue.put((message_id, text))
+        await self._message_queue.put(QueueItem(message_id, text))
 
         self.last_inject_at = datetime.now()
         perf.gauge("sdk_queue_depth", queue_depth + 1, component="session", contact=self.contact_name)
@@ -457,14 +470,14 @@ class SDKSession:
                 self.running = False
                 # Wake _run_loop immediately instead of waiting for 30s timeout
                 try:
-                    self._message_queue.put_nowait((None, "__SHUTDOWN__"))
+                    self._message_queue.put_nowait(QueueItem(None, "__SHUTDOWN__"))
                 except Exception:
                     pass
             elif self._error_count >= 3:
                 self._log.error("RECEIVER_DEAD | Stopping session")
                 self.running = False
                 try:
-                    self._message_queue.put_nowait((None, "__SHUTDOWN__"))
+                    self._message_queue.put_nowait(QueueItem(None, "__SHUTDOWN__"))
                 except Exception:
                     pass
 
