@@ -2360,6 +2360,7 @@ class Manager:
         self._sven_api_log_fh = open(sven_api_log_path, "a")
 
         # Kill any orphaned process on port 9091 to prevent bind failures
+        killed_any = False
         try:
             import subprocess as _sp
             result = _sp.run(["lsof", "-ti", "tcp:9091"], capture_output=True, text=True)
@@ -2369,10 +2370,15 @@ class Manager:
                         import os as _os
                         _os.kill(int(pid_str.strip()), 9)
                         log.info(f"Killed orphaned process on port 9091: PID {pid_str.strip()}")
+                        killed_any = True
                     except (ProcessLookupError, ValueError):
                         pass
         except Exception:
             pass  # Best-effort cleanup
+        # Give the OS time to release the port after killing orphans
+        if killed_any:
+            import time as _time
+            _time.sleep(1)
 
         try:
             proc = subprocess.Popen(

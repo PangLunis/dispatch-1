@@ -675,4 +675,24 @@ if __name__ == "__main__":
     # Initialize database on startup
     init_db()
 
-    uvicorn.run(app, host="0.0.0.0", port=9091, log_level="warning")
+    # Configure uvicorn with socket reuse to prevent "address already in use" crashes
+    # when the daemon restarts and the old process hasn't fully released the port.
+    config = uvicorn.Config(app, host="0.0.0.0", port=9091, log_level="warning")
+    server = uvicorn.Server(config)
+
+    # Enable SO_REUSEADDR on the socket before binding
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", 9091))
+    sock.listen(128)
+    sock.set_inheritable(True)
+
+    # Pass pre-bound socket to uvicorn
+    config.loaded = True  # Skip uvicorn's own bind
+    server.servers = []  # Will be populated by serve()
+
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(server.serve(sockets=[sock]))
