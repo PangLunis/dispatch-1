@@ -601,6 +601,21 @@ Only send if there are ACCEPT or REFINE verdicts. If everything was refuted or w
 
 **CI mode** (prompt contains "--ci"): Exit with non-zero status if any critical or high bottlenecks are accepted. Print report to stdout.
 
+#### Persist Results to Bus
+
+**After generating the report (in ALL modes)**, publish a `scan.completed` event to the bus for historical tracking:
+
+```bash
+RUN_ID=$(date +%Y%m%d-%H%M)
+~/dispatch/bus/cli.py produce system \
+  '{"scanner":"latency-finder","run_id":"'"$RUN_ID"'","mode":"nightly","duration_seconds":DURATION,"summary":{"candidates":N,"accepted":A,"refuted":R,"needs_investigation":I},"findings":[ACCEPTED_AND_REFINED_FINDINGS_AS_JSON]}' \
+  --type scan.completed --source latency-finder --key "scan-latency-finder-$RUN_ID"
+```
+
+The `findings` array should include all ACCEPT and REFINE verdicts with their full details (id, title, severity, category, metric, current_p95, baseline_p95, root_cause, fix, etc.). Refuted items go in `summary.refuted` count only, not in findings.
+
+This enables `bus reports --scanner latency-finder` to query historical scan results (stored in archive for 90 days).
+
 ## Graceful Degradation
 
 - **DuckDB not installed** — Fall back to jq/awk pipelines for perf JSONL analysis. Note the degradation.
