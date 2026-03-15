@@ -61,7 +61,7 @@
 <aside class="sidebar" class:mobile-open={mobileMenuOpen}>
   <div class="sidebar-header">
     <span class="logo">Dispatch</span>
-    <span class="version">v2.5</span>
+    <span class="version">v2.6</span>
   </div>
 
   <nav class="nav">
