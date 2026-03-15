@@ -161,6 +161,14 @@ class TestIsGroupChatId:
         # 44-char base64 Signal group ID
         assert is_group_chat_id("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop1234") is True
 
+    def test_signal_prefixed_base64_is_group(self):
+        """signal: prefixed group ID should still be detected as group (fix for bare_id bug)."""
+        assert is_group_chat_id("signal:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop1234") is True
+
+    def test_signal_prefixed_hex_is_group(self):
+        """signal: prefixed hex group ID should still be detected as group."""
+        assert is_group_chat_id("signal:b3d258b9a4de447ca412eb335c82a077") is True
+
 
 class TestSessionName:
     """Test session name generation per backend (chat_id-based)."""

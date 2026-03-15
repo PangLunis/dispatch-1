@@ -1417,6 +1417,9 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         session = self.sessions.get(chat_id)
         if not session:
             return False
+        # Skip if recently healed by fast_health_check or deep_health_check
+        if chat_id in self._recently_healed:
+            return True
         if not session.is_healthy():
             lifecycle_log.info(
                 f"HEALTH_CHECK | {session.contact_name} | UNHEALTHY | "
@@ -1427,6 +1430,8 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                 "error_count": session._error_count,
                 "turn_count": session.turn_count,
             }, source="daemon")
+            # Mark as recently healed to prevent double-restart from other health checks
+            self._recently_healed[chat_id] = datetime.now()
             # Fire-and-forget: do NOT await restart_session at all.
             async def _isolated_restart(cid: str):
                 try:

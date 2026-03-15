@@ -131,11 +131,11 @@ def is_group_chat_id(chat_id: str) -> bool:
     return False
 
   # Signal group IDs are base64 encoded (44 chars typically)
-  if re.match(r"^[A-Za-z0-9+/=]{40,}$", chat_id):
+  if re.match(r"^[A-Za-z0-9+/=]{40,}$", bare_id):
     return True
 
   # iMessage group IDs are hex UUIDs (32+ chars, lowercase)
-  return bool(re.match(r"^[a-f0-9]{20,}$", chat_id.lower()))
+  return bool(re.match(r"^[a-f0-9]{20,}$", bare_id.lower()))
 
 
 def get_session_name(chat_id: str, source: str = "imessage") -> str:

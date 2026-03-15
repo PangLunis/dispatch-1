@@ -2495,13 +2495,27 @@ class Manager:
             SIGNAL_SOCKET.unlink()
 
     def _stop_sven_api(self):
-        """Stop Sven API daemon."""
+        """Stop Sven API daemon (kills entire process group, not just wrapper)."""
         if self.sven_api_daemon:
-            self.sven_api_daemon.terminate()
+            # Kill the entire process group (wrapper + child processes)
+            # since start_new_session=True creates a new process group
+            try:
+                pgid = os.getpgid(self.sven_api_daemon.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                # Process already dead
+                pass
             try:
                 self.sven_api_daemon.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.sven_api_daemon.kill()
+                try:
+                    pgid = os.getpgid(self.sven_api_daemon.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    try:
+                        self.sven_api_daemon.kill()
+                    except (ProcessLookupError, OSError):
+                        pass
             self.sven_api_daemon = None
             log.info("Stopped Sven API daemon")
 

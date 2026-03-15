@@ -546,6 +546,32 @@ class TestHealingDeduplication:
         assert "old" not in sdk_backend._recently_healed
         assert "recent" in sdk_backend._recently_healed
 
+    async def test_recently_healed_prevents_check_session_health(self, sdk_backend):
+        """check_session_health should skip sessions in _recently_healed (prevents double-restart)."""
+        session = await sdk_backend.create_session("User", "test:+15555550099", "admin", source="test")
+        # Make session unhealthy
+        session._error_count = 100
+
+        # Mark as recently healed
+        sdk_backend._recently_healed["test:+15555550099"] = datetime.now()
+
+        # check_session_health should return True (skip) and NOT fire a restart
+        result = await sdk_backend.check_session_health("test:+15555550099")
+        assert result is True
+
+    async def test_check_session_health_marks_recently_healed(self, sdk_backend):
+        """check_session_health should mark chat_id in _recently_healed before restarting."""
+        session = await sdk_backend.create_session("User", "test:+15555550098", "admin", source="test")
+        # Make session unhealthy
+        session._error_count = 100
+
+        assert "test:+15555550098" not in sdk_backend._recently_healed
+
+        with patch.object(sdk_backend, "restart_session", new_callable=AsyncMock):
+            await sdk_backend.check_session_health("test:+15555550098")
+
+        assert "test:+15555550098" in sdk_backend._recently_healed
+
     async def test_tier1_heal_prevents_tier2(self, sdk_backend):
         """Session healed by fast check should be skipped by deep check."""
         await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")

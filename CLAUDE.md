@@ -95,10 +95,12 @@ The system includes an event bus built on SQLite for audit trails, analytics, an
   - `records` table: Business events (messages, sessions, system) with 7-day retention
   - `sdk_events` table: Tool call traces with structured columns, 3-day retention
 
-**Event taxonomy (v6) — 3 topics:**
+**Event taxonomy (v6) — 5 topics:**
 - `messages`: message.received/sent/failed/ignored, reaction.received/ignored
 - `sessions`: session.created/restarted/killed/crashed/injected/idle_killed/prewarmed/tier_mismatch, permission.denied, command.restart
 - `system`: daemon.started/stopped, health.check_completed/failed, consumer.crashed, sdk.turn_complete, signal.connection_state, and more
+- `reminders`: reminder.fired, task.requested
+- `tasks`: task.started/completed/failed/timeout
 
 **Integration status:** Fully integrated. `produce_event()` is called throughout manager.py and sdk_backend.py — all message routing, session lifecycle, health checks, and system events are recorded. The `Producer` is initialized in Manager and registered with the ResourceRegistry for clean shutdown.
 
@@ -238,7 +240,7 @@ Supported backends: iMessage, Signal, sven-app (via `supports_image_context` fla
 
 ### Session resume
 
-Sessions save their `session_id` to `session_registry.json` on shutdown. On restart, `ClaudeSDKClient` resumes from that ID so conversation context is preserved.
+Sessions save their `session_id` to `sessions.json` on shutdown. On restart, `ClaudeSDKClient` resumes from that ID so conversation context is preserved.
 
 ## Running the System
 
