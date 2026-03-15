@@ -523,7 +523,204 @@ Your job:
 Be rigorous. A performance issue must cause measurable user-visible impact under normal operating conditions. Do not accept transient spikes, expected cold starts, or theoretical concerns.
 ```
 
-### Phase 3: Report
+### Phase 3: Fix Proposals (Single Subagent)
+
+After refinement, spawn a **single Fix Proposal subagent** to analyze all accepted findings holistically. This agent needs visibility across ALL findings to cross-reference shared root causes and avoid proposing conflicting optimizations. Use `subagent_type="general-purpose"` and `model="opus"`.
+
+**This phase is PLAN ONLY — no code changes are made.**
+
+Prompt for the Fix Proposal subagent:
+
+```
+You are a performance fix planning agent. You have been given all accepted and needs-investigation latency findings from a system scan. Your job is to propose concrete optimization plans for each finding WITHOUT implementing any changes.
+
+Accepted findings (ACCEPT and REFINE verdicts):
+{ALL_ACCEPTED_AND_REFINED_FINDINGS_AS_JSON}
+
+Your job:
+
+1. **Cross-reference related findings.** Group bottlenecks that share a root cause or would be fixed by the same optimization. For example:
+   - High poll_cycle_ms and high message_staleness_ms likely share a root cause (slow poll loop body)
+   - A slow Bash tool execution and a high sdk_queue_depth in the same session are cause-and-effect
+   - WAL buildup and slow sqlite3 reads are the same underlying issue
+   - A session restart loop and cold start latency compound into the same user-visible problem
+   Output a "related_groups" array where each group has a shared_root_cause and list of finding IDs.
+
+2. **Triage each finding (or group) by complexity:**
+
+   - 🟢 **Simple** — Isolated code change, <30 lines, no architectural impact. Examples:
+     - Add an index to a sqlite3 query
+     - Add LRU cache / memoization to a hot function
+     - Add SO_REUSEADDR to prevent bind failures on restart
+     - Increase WAL checkpoint frequency
+     - Batch N individual queries into one
+     - Add a timeout to a blocking call
+
+   - 🟡 **Coordinated** — Multiple files change together, but the approach is clear. Examples:
+     - Coalesce queue messages + add batch tracking across producer and consumer
+     - Add connection pooling that touches the DB layer and all callers
+     - Move a blocking I/O call to a thread pool, updating callers to await
+     - Add a circuit breaker to an external service call + update health checks
+
+   - 🔴 **Architectural** — Requires rethinking a design decision, needs a plan before code. Examples:
+     - Moving from polling to event-driven (e.g., inotify/kqueue on chat.db)
+     - Redesigning single-threaded session processing to be concurrent
+     - Splitting a monolithic poll loop into separate async pipelines
+     - Replacing synchronous message injection with an async queue
+
+3. **For each finding, produce a fix proposal:**
+
+   For 🟢 Simple fixes:
+   - Exact file path
+   - Exact function/method name (or line range)
+   - Description of the exact change (what to add, remove, or modify)
+   - Expected performance improvement (e.g., "reduces p95 from Xms to Yms")
+   - Expected diff size estimate
+
+   For 🟡 Coordinated fixes:
+   - List ALL affected files with the change needed in each
+   - Describe the coordination: what order to apply changes, what must stay consistent
+   - Note any metrics that should improve and by how much
+   - Identify tests that need updating or new benchmarks to add
+
+   For 🔴 Architectural fixes:
+   - Write up the design tradeoffs with latency impact estimates for each approach
+   - Propose 2-3 approaches with effort estimates (hours/days)
+   - Identify the entry points and blast radius of each approach
+   - Recommend which approach to take and why
+   - Note what can be done incrementally vs what requires a big-bang change
+   - Include before/after latency projections for each approach
+
+4. **Identify quick wins.** Flag any simple fix that would yield disproportionate latency improvement (e.g., a missing index causing 10x query slowdown). Mark these as "quick_win": true.
+
+5. Return your fix proposals as JSON:
+   {
+     "related_groups": [
+       {
+         "group_id": "GRP-001",
+         "shared_root_cause": "Description of the common root cause",
+         "finding_ids": ["PERF1-001", "MSG1-002"]
+       }
+     ],
+     "proposals": [
+       {
+         "proposal_id": "FIX-001",
+         "finding_ids": ["PERF1-001"],
+         "group_id": "GRP-001 or null if standalone",
+         "title": "Short description of the optimization",
+         "complexity": "simple|coordinated|architectural",
+         "quick_win": false,
+         "fix_plan": {
+           "files": [
+             {
+               "path": "/absolute/path/to/file.py",
+               "function": "function_name or null",
+               "change": "Description of exact change"
+             }
+           ],
+           "coordination_notes": "For coordinated: what order, what must stay consistent",
+           "approaches": [
+             {
+               "name": "Approach name (architectural only)",
+               "description": "What this approach entails",
+               "effort": "2 hours | 1 day | 3 days",
+               "latency_projection": "Expected p95 improvement",
+               "tradeoffs": "Pros and cons"
+             }
+           ],
+           "recommended_approach": "For architectural: which approach and why",
+           "tests_to_update": ["paths to test files if applicable"],
+           "estimated_diff_lines": 15,
+           "expected_improvement": "Reduces p95 from X to Y for metric Z"
+         },
+         "side_effects": "Any known risks — could this hurt other metrics?",
+         "prerequisites": "Other fixes or conditions that must be in place first",
+         "rollback_plan": "How to detect if this fix makes things worse and revert"
+       }
+     ]
+   }
+
+Be specific and concrete. Every simple/coordinated fix must name exact files and functions. Vague proposals like "optimize the query" or "add caching" are not acceptable — say WHERE, WHAT, and HOW MUCH improvement is expected.
+```
+
+### Phase 4: Fix Refinement (Iterative Subagent Review)
+
+Review each fix proposal using the **subagent-review pattern** (iterative review loop). Spawn a single review subagent with `subagent_type="general-purpose"` and `model="opus"`.
+
+The reviewer iterates: **review → score → fix issues → re-review** until the proposal scores **9+/10** or **3 iterations** are reached (whichever comes first).
+
+Prompt for the Fix Refinement subagent:
+
+```
+You are a performance fix proposal reviewer. You will review optimization proposals for latency bottlenecks found in a system scan. Your job is to ensure each proposal is sound, specific, and safe to deploy.
+
+Original findings (for reference):
+{ALL_ACCEPTED_AND_REFINED_FINDINGS_AS_JSON}
+
+Fix proposals to review:
+{FIX_PROPOSALS_JSON}
+
+For EACH fix proposal, score it on these criteria (each 0-10):
+
+1. **Root cause alignment** — Does the fix actually address the root cause of the latency, not just a symptom? For example, adding a cache in front of a slow query might mask the real issue (missing index).
+
+2. **Complexity triage accuracy** — Is the complexity rating correct?
+   - Is a "simple" fix truly isolated and <30 lines, or does it have hidden dependencies?
+   - Is a "coordinated" fix actually architectural (requires rethinking a pipeline)?
+   - Is an "architectural" proposal over-engineering what could be a simple index addition?
+   - Are "quick_win" flags accurate? A quick win must be both simple AND high-impact.
+
+3. **Side effect awareness** — Does the fix miss side effects?
+   - Could it hurt other metrics? (e.g., aggressive caching reduces latency but increases memory)
+   - Could it change correctness? (e.g., batching messages might reorder them)
+   - Does the rollback plan make sense?
+
+4. **Specificity** — Is it specific enough to implement right now?
+   - Simple/coordinated: exact file paths, function names, precise change description?
+   - Includes expected improvement numbers? (not just "faster" but "reduces p95 from 200ms to 50ms")
+   - Architectural: well-defined approaches with entry points, effort estimates, latency projections?
+   - "Optimize the poll loop" is NOT specific. "In manager.py:poll_messages(), replace per-message INSERT with executemany(), reducing p95 poll_cycle_ms from ~200ms to ~30ms" IS specific.
+
+5. **Cross-reference correctness** — Related findings properly grouped? Would implementing one fix invalidate another? Prerequisites ordered correctly?
+
+**Overall score** = average of the 5 criteria, rounded to nearest integer.
+
+For each proposal:
+- If score >= 9: PASS — proposal is ready
+- If score < 9: REVISE — provide specific feedback, then output a revised proposal
+
+After revising, re-score. Repeat until 9+ or 3 iterations.
+
+Return your review as JSON:
+{
+  "reviews": [
+    {
+      "proposal_id": "FIX-001",
+      "iteration": 1,
+      "scores": {
+        "root_cause_alignment": 8,
+        "complexity_triage": 9,
+        "side_effect_awareness": 7,
+        "specificity": 6,
+        "cross_reference": 9
+      },
+      "overall_score": 8,
+      "verdict": "REVISE",
+      "feedback": "Specificity: the fix says 'add caching' but doesn't specify cache size, TTL, or eviction policy. Expected improvement number is missing.",
+      "revised_proposal": { ... same schema as original proposal, with issues fixed ... }
+    }
+  ],
+  "final_proposals": [
+    { ... each proposal in its final reviewed form ... }
+  ]
+}
+
+Be rigorous. Hold every proposal to the standard: "Could someone implement this RIGHT NOW with only this description and access to the codebase, and be confident it won't regress other metrics?"
+```
+
+**Output of Phase 4** feeds into Phase 5 (Report). Each finding in the report includes its vetted fix proposal.
+
+### Phase 5: Report
 
 Collect all refinement results:
 - Drop REFUTE verdicts (note them in a "Refuted" section for transparency)
@@ -557,9 +754,11 @@ Explorers: 4 | Candidates: {N} | Accepted: {A} | Refuted: {R} | Needs Investigat
    Metric: {metric} | Current p95: {value} | Baseline: {baseline}
    Root cause: {root_cause}
    Impact: {impact}
-   Fix ({effort}): {fix_description}
-   Files: {files}
-   Priority: {priority}
+   Fix proposal (FIX-{id}) [{complexity_emoji} {complexity}] — review score: {score}/10
+     Files: {fix_files}
+     Change: {fix_description}
+     Expected improvement: {expected_improvement}
+     Side effects: {side_effects}
 
 --- HIGH ---
 ...

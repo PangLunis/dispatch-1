@@ -268,7 +268,196 @@ Be rigorous. A bug must be something that causes incorrect behavior, crashes, da
 **IMPORTANT: When fixing dead code or unused files/functions, recommend DELETION not deprecation.** Just delete the dead code — don't add deprecation warnings or keep it around "for reference." Dead code is noise.
 ```
 
-### Phase 3: Report
+### Phase 3: Fix Proposals (Single Subagent)
+
+After refinement, spawn a **single Fix Proposal subagent** to analyze all accepted findings holistically. This agent needs visibility across ALL findings to cross-reference shared root causes and avoid proposing conflicting fixes. Use `subagent_type="general-purpose"` and `model="opus"`.
+
+**This phase is PLAN ONLY — no code changes are made.**
+
+Prompt for the Fix Proposal subagent:
+
+```
+You are a fix planning agent. You have been given all accepted and needs-investigation bug findings from a codebase scan. Your job is to propose concrete fix plans for each finding WITHOUT implementing any changes.
+
+Accepted findings (ACCEPT and REFINE verdicts):
+{ALL_ACCEPTED_AND_REFINED_FINDINGS_AS_JSON}
+
+Your job:
+
+1. **Cross-reference related findings.** Group bugs that share a root cause or affect the same subsystem. For example:
+   - Two race conditions in the same module likely need a single locking strategy, not two independent fixes
+   - A missing error handler and a resource leak in the same code path should be fixed together
+   - A doc bug in SKILL.md and a code bug it documents are related — fix both or neither
+   Output a "related_groups" array where each group has a shared_root_cause and list of finding IDs.
+
+2. **Triage each finding (or group) by complexity:**
+
+   - 🟢 **Simple** — Isolated code change, <30 lines, no architectural impact. Examples:
+     - Add a missing null check
+     - Fix an inverted boolean condition
+     - Add SO_REUSEADDR to a socket
+     - Add LRU cache to a hot function
+     - Fix a wrong command in SKILL.md or CLAUDE.md
+     - Delete dead code or unused imports
+
+   - 🟡 **Coordinated** — Multiple files change together, but the approach is clear. Examples:
+     - Add error handling across 3 callers of the same function
+     - Rename a moved file and update all references
+     - Add a lock to shared state accessed from multiple modules
+     - Update SKILL.md + code + tests together for a behavior change
+
+   - 🔴 **Architectural** — Requires rethinking a design decision, needs a plan before code. Examples:
+     - Changing from polling to event-driven
+     - Restructuring session lifecycle management
+     - Replacing a synchronous pipeline with async
+     - Redesigning a data model that multiple subsystems depend on
+
+3. **For each finding, produce a fix proposal:**
+
+   For 🟢 Simple fixes:
+   - Exact file path
+   - Exact function/method name (or line range)
+   - Description of the exact change (what to add, remove, or modify)
+   - Expected diff size estimate
+
+   For 🟡 Coordinated fixes:
+   - List ALL affected files with the change needed in each
+   - Describe the coordination: what order to apply changes, what must stay consistent
+   - Note any tests that need updating
+   - If this is a doc bug + code bug pair, specify both fixes
+
+   For 🔴 Architectural fixes:
+   - Write up the design tradeoffs
+   - Propose 2-3 approaches with effort estimates (hours/days)
+   - Identify the entry points and blast radius of each approach
+   - Recommend which approach to take and why
+   - Note what can be done incrementally vs what requires a big-bang change
+
+4. **Identify doc-only bugs separately.** For findings where the bug is in SKILL.md, CLAUDE.md, or other markdown docs (wrong commands, stale paths, incorrect instructions), flag them as "doc_fix": true. These are often quick wins that prevent future Claude sessions from being misled.
+
+5. Return your fix proposals as JSON:
+   {
+     "related_groups": [
+       {
+         "group_id": "GRP-001",
+         "shared_root_cause": "Description of the common root cause",
+         "finding_ids": ["DISC1-001", "DISC4-003"]
+       }
+     ],
+     "proposals": [
+       {
+         "proposal_id": "FIX-001",
+         "finding_ids": ["DISC1-001"],
+         "group_id": "GRP-001 or null if standalone",
+         "title": "Short description of the fix",
+         "complexity": "simple|coordinated|architectural",
+         "doc_fix": false,
+         "fix_plan": {
+           "files": [
+             {
+               "path": "/absolute/path/to/file.py",
+               "function": "function_name or null",
+               "change": "Description of exact change"
+             }
+           ],
+           "coordination_notes": "For coordinated: what order, what must stay consistent",
+           "approaches": [
+             {
+               "name": "Approach name (architectural only)",
+               "description": "What this approach entails",
+               "effort": "2 hours | 1 day | 3 days",
+               "tradeoffs": "Pros and cons"
+             }
+           ],
+           "recommended_approach": "For architectural: which approach and why",
+           "tests_to_update": ["paths to test files if applicable"],
+           "estimated_diff_lines": 15
+         },
+         "side_effects": "Any known risks or things that could break",
+         "prerequisites": "Other fixes or conditions that must be in place first"
+       }
+     ]
+   }
+
+Be specific and concrete. Every simple/coordinated fix must name exact files and functions. Vague proposals like "improve error handling" or "add tests" are not acceptable — say WHERE and WHAT.
+```
+
+### Phase 4: Fix Refinement (Iterative Subagent Review)
+
+Review each fix proposal using the **subagent-review pattern** (iterative review loop). Spawn a single review subagent with `subagent_type="general-purpose"` and `model="opus"`.
+
+The reviewer iterates: **review → score → fix issues → re-review** until the proposal scores **9+/10** or **3 iterations** are reached (whichever comes first).
+
+Prompt for the Fix Refinement subagent:
+
+```
+You are a fix proposal reviewer. You will review fix proposals for bugs found in a codebase scan. Your job is to ensure each proposal is sound, specific, and safe to implement.
+
+Original findings (for reference):
+{ALL_ACCEPTED_AND_REFINED_FINDINGS_AS_JSON}
+
+Fix proposals to review:
+{FIX_PROPOSALS_JSON}
+
+For EACH fix proposal, score it on these criteria (each 0-10):
+
+1. **Root cause alignment** — Does the fix actually address the root cause of the bug, not just a symptom? Would the bug recur under different conditions if only this fix is applied?
+
+2. **Complexity triage accuracy** — Is the complexity rating correct?
+   - Is a "simple" fix truly isolated and <30 lines, or does it have hidden dependencies?
+   - Is a "coordinated" fix actually architectural (requires design rethinking)?
+   - Is an "architectural" proposal over-engineering what could be a simple fix?
+
+3. **Side effect awareness** — Does the fix miss side effects?
+   - Could it break callers or downstream consumers?
+   - Does it change behavior that other code depends on?
+   - For doc fixes: does the doc fix match what the code actually does (not what it should do)?
+
+4. **Specificity** — Is it specific enough to implement right now?
+   - Simple/coordinated: Does it name exact file paths, function names, and describe the precise change?
+   - Architectural: Are the approaches well-defined with clear entry points and effort estimates?
+   - "Add better error handling" is NOT specific. "In manager.py:poll_messages(), wrap the sqlite3.execute() call on line 142 in a try/except OperationalError that logs and retries once" IS specific.
+
+5. **Cross-reference correctness** — Are related findings properly grouped? Are there ungrouped findings that share a root cause? Would implementing one fix invalidate another?
+
+**Overall score** = average of the 5 criteria, rounded to nearest integer.
+
+For each proposal:
+- If score >= 9: PASS — proposal is ready
+- If score < 9: REVISE — provide specific feedback on what to fix, then output a revised proposal with the issues addressed
+
+After revising, re-score the revised proposal. Repeat until 9+ or 3 iterations.
+
+Return your review as JSON:
+{
+  "reviews": [
+    {
+      "proposal_id": "FIX-001",
+      "iteration": 1,
+      "scores": {
+        "root_cause_alignment": 8,
+        "complexity_triage": 9,
+        "side_effect_awareness": 7,
+        "specificity": 6,
+        "cross_reference": 9
+      },
+      "overall_score": 8,
+      "verdict": "REVISE",
+      "feedback": "Specificity: the fix says 'add null check' but doesn't specify which variable or what the fallback behavior should be.",
+      "revised_proposal": { ... same schema as original proposal, with issues fixed ... }
+    }
+  ],
+  "final_proposals": [
+    { ... each proposal in its final reviewed form ... }
+  ]
+}
+
+Be rigorous. Hold every proposal to the standard: "Could someone implement this RIGHT NOW with only this description and access to the codebase?"
+```
+
+**Output of Phase 4** feeds into Phase 5 (Report). Each finding in the report includes its vetted fix proposal.
+
+### Phase 5: Report
 
 Collect all refinement results:
 - Drop REFUTE verdicts (note them in a "Refuted" section for transparency)
@@ -288,7 +477,10 @@ Explorers: 4 | Candidates: {N} | Accepted: {A} | Refuted: {R} | Needs Investigat
    Root cause: {root_cause}
    Impact: {impact}
    Reproduction: {reproduction}
-   Fix: {suggested_fix}
+   Fix proposal (FIX-{id}) [{complexity_emoji} {complexity}] — review score: {score}/10
+     Files: {fix_files}
+     Change: {fix_description}
+     Side effects: {side_effects}
    Affected files: {affected_files}
 
 ### High
