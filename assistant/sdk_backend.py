@@ -403,11 +403,10 @@ class SDKBackend:
                         restart_role=restart_role,
                     )
                 recreated += 1
+                # Clear the was_active flag after successful recreation
+                self.registry.clear_was_active(chat_id)
             except Exception as e:
                 log.error(f"STARTUP | Failed to recreate {session_name}: {e}")
-
-            # Clear the was_active flag after successful recreation
-            self.registry.clear_was_active(chat_id)
 
         if recreated:
             log.info(f"STARTUP | Recreated {recreated} sessions")

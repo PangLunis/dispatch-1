@@ -437,7 +437,7 @@ def list_reminders_cli(contact: Optional[str] = None,
         reminders = data["reminders"]
 
         if contact:
-            reminders = [r for r in reminders if r["contact"] == contact]
+            reminders = [r for r in reminders if r.get("contact") == contact]
 
         if show_failed:
             max_retries = config["max_retries"]

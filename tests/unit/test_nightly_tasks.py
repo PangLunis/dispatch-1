@@ -434,6 +434,7 @@ class TestStartupCheck:
         reminders_data = {"reminders": [
             {"event": {"payload": {"task_id": "nightly-consolidation"}}},
             {"event": {"payload": {"task_id": "nightly-skillify"}}},
+            {"event": {"payload": {"task_id": "nightly-bugfinder"}}},
         ]}
 
         with patch("assistant.reminders.load_reminders", return_value=reminders_data), \

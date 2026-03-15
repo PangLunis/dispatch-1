@@ -495,7 +495,7 @@ export class ContactsIndexer {
 
     try {
       // Use contacts CLI to get notes
-      const proc = Bun.spawn(["bash", "-c", `${HOME}/code/contacts-cli/contacts list --json 2>/dev/null || echo "[]"`], {
+      const proc = Bun.spawn(["bash", "-c", `${HOME}/.claude/skills/contacts/scripts/contacts list --json 2>/dev/null || echo "[]"`], {
         stdout: "pipe",
       });
 

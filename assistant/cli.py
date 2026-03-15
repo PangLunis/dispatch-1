@@ -602,7 +602,7 @@ def _lookup_contact_phone(contact_name: str) -> Optional[str]:
 
 def _lookup_contact_by_phone(phone: str) -> Optional[Dict[str, str]]:
     """Lookup contact info by phone number from Contacts.app."""
-    contacts_cli = Path.home() / "code/contacts-cli/contacts"
+    contacts_cli = Path.home() / ".claude/skills/contacts/scripts/contacts"
     if not contacts_cli.exists():
         return None
 
@@ -843,6 +843,12 @@ def cmd_remind(args):
         # Handle add command
         if not hasattr(args, 'title') or not args.title:
             print("Usage: claude-assistant remind add 'title' --contact NAME --in 2h")
+            print("       claude-assistant remind add 'title' --event '{...}' --cron '0 2 * * *'")
+            return 1
+
+        event_json = getattr(args, 'event_json', None)
+        if not args.contact and not event_json:
+            print("Error: Must specify --contact or --event")
             return 1
 
         if not args.in_duration and not args.at_time and not args.cron:
@@ -857,14 +863,18 @@ def cmd_remind(args):
                 at_time=args.at_time,
                 cron_pattern=args.cron,
                 tz_override=args.tz,
-                target=args.target
+                target=args.target,
+                event_json=event_json
             )
             tz = args.tz or "America/New_York"
             display_time = format_for_display(reminder["next_fire"], tz)
             print(f"Created: {reminder['id']} → {reminder['title']}")
             print(f"  Fires: {display_time}")
-            print(f"  Contact: {reminder['contact']}")
-            print(f"  Target: {reminder['target']}")
+            if reminder.get('contact'):
+                print(f"  Contact: {reminder['contact']}")
+                print(f"  Target: {reminder['target']}")
+            elif reminder.get('event'):
+                print(f"  Event: {reminder['event']['type']}")
             return 0
         except Exception as e:
             print(f"Error: {e}")
@@ -881,18 +891,25 @@ def cmd_remind(args):
                 return 0
 
             # Print table
-            print(f"{'ID':<10} {'Title':<30} {'Next Fire':<25} {'Contact':<15}")
+            print(f"{'ID':<10} {'Title':<30} {'Next Fire':<25} {'Contact/Event':<15}")
             print("-" * 80)
             for r in reminders:
                 title = r['title'][:28] + '..' if len(r['title']) > 30 else r['title']
                 display = r.get('_display_time', r['next_fire'])[:23]
-                contact = r['contact'][:13] + '..' if len(r['contact']) > 15 else r['contact']
+                # Handle both legacy (contact) and generalized (event) reminders
+                if r.get('contact'):
+                    contact_col = r['contact']
+                elif r.get('event'):
+                    contact_col = f"Event: {r['event'].get('type', '?')}"
+                else:
+                    contact_col = "(none)"
+                contact_col = contact_col[:13] + '..' if len(contact_col) > 15 else contact_col
                 status = ""
                 if r.get('retry_count', 0) >= 3:
                     status = " [DEAD]"
                 elif r.get('last_error'):
                     status = f" [retry {r['retry_count']}]"
-                print(f"{r['id']:<10} {title:<30} {display:<25} {contact:<15}{status}")
+                print(f"{r['id']:<10} {title:<30} {display:<25} {contact_col:<15}{status}")
             return 0
         except Exception as e:
             print(f"Error: {e}")
@@ -1091,13 +1108,14 @@ def main():
     # remind add (default when just using remind "title")
     remind_add = remind_subparsers.add_parser("add", help="Add a reminder")
     remind_add.add_argument("title", help="Reminder title/task")
-    remind_add.add_argument("--contact", "-c", required=True, help="Contact name, phone, or chat_id")
+    remind_add.add_argument("--contact", "-c", help="Contact name, phone, or chat_id (required unless --event is used)")
     remind_add.add_argument("--in", dest="in_duration", help="Fire in duration (e.g., 30m, 2h, 1d)")
     remind_add.add_argument("--at", dest="at_time", help="Fire at time (e.g., 3pm, 15:00)")
     remind_add.add_argument("--cron", help="Cron pattern (e.g., '0 9 * * *' for 9am daily)")
     remind_add.add_argument("--tz", help="Timezone override (e.g., America/Los_Angeles)")
     remind_add.add_argument("--target", "-t", choices=["fg", "bg", "spawn"], default="fg",
                            help="Target: fg (foreground session), bg (background), spawn (new agent)")
+    remind_add.add_argument("--event", dest="event_json", help="Event template JSON (generalized mode, no --contact needed)")
 
     # remind list
     remind_list = remind_subparsers.add_parser("list", help="List reminders")

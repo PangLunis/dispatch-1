@@ -2,14 +2,15 @@
 """
 Set up nightly ephemeral tasks via the reminder/scheduler system.
 
-Creates two cron reminders that fire task.requested events at 2am:
-1. Memory consolidation (script mode) - runs consolidate_3pass + consolidate_chat
-2. Skillify analysis (agent mode) - runs /skillify --nightly
+Creates three cron reminders that fire task.requested events:
+1. Memory consolidation (script mode, 2:00am) - runs consolidate_3pass + consolidate_chat
+2. Skillify analysis (agent mode, 2:00am) - runs /skillify --nightly
+3. Bug finder scan (agent mode, 2:00am) - runs /bug-finder --nightly
 
 These replace the hardcoded 2am consolidation in manager.py.
 
 Usage:
-    setup-nightly-tasks.py           # Add both reminders
+    setup-nightly-tasks.py           # Add all reminders
     setup-nightly-tasks.py --list    # Show existing nightly task reminders
     setup-nightly-tasks.py --remove  # Remove existing nightly task reminders
 """
@@ -38,8 +39,20 @@ def _get_admin_phone() -> str:
 # Task IDs are stable so we can detect duplicates
 CONSOLIDATION_TASK_ID = "nightly-consolidation"
 SKILLIFY_TASK_ID = "nightly-skillify"
+BUGFINDER_TASK_ID = "nightly-bugfinder"
 
-NIGHTLY_TASK_IDS = {CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID}
+NIGHTLY_TASK_IDS = {CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID, BUGFINDER_TASK_ID}
+
+# Bug finder prompt
+BUGFINDER_PROMPT = (
+    "Run /bug-finder --nightly to scan ~/dispatch/ for bugs. "
+    "Focus on code changed in the last 24 hours but scan the whole codebase. "
+    "Use the full 3-phase pipeline: parallel discovery explorers, "
+    "parallel refinement reviewers (ACCEPT/REFINE/REFUTE), then compile report. "
+    "All subagents must use opus. "
+    "Send the bug report to admin via SMS only if there are ACCEPT or REFINE verdicts. "
+    "If clean scan, log silently."
+)
 
 # Skillify prompt (single source of truth, used in both instructions and execution.prompt)
 SKILLIFY_PROMPT = (
@@ -67,7 +80,7 @@ def _build_consolidation_reminder(admin_phone: str) -> dict:
                 "requested_by": admin_phone,
                 "instructions": "Run the nightly memory consolidation scripts",
                 "notify": True,
-                "timeout_minutes": 30,
+                "timeout_minutes": 60,
                 "execution": {
                     "mode": "script",
                     # Store $HOME-relative path; bash expands $HOME at runtime
@@ -86,7 +99,7 @@ def _build_skillify_reminder(admin_phone: str) -> dict:
     return {
         "title": "Nightly skillify analysis",
         "schedule_type": "cron",
-        "schedule_value": "30 2 * * *",  # 2:30am daily (after consolidation's 30min timeout)
+        "schedule_value": "0 2 * * *",  # 2am daily (parallel with consolidation)
         "tz_name": "America/New_York",
         "event": {
             "topic": "tasks",
@@ -98,10 +111,37 @@ def _build_skillify_reminder(admin_phone: str) -> dict:
                 "requested_by": admin_phone,
                 "instructions": SKILLIFY_PROMPT,
                 "notify": True,
-                "timeout_minutes": 45,
+                "timeout_minutes": 90,
                 "execution": {
                     "mode": "agent",
                     "prompt": SKILLIFY_PROMPT,
+                },
+            },
+        },
+    }
+
+
+def _build_bugfinder_reminder(admin_phone: str) -> dict:
+    """Build the bug finder reminder config."""
+    return {
+        "title": "Nightly bug finder scan",
+        "schedule_type": "cron",
+        "schedule_value": "0 2 * * *",  # 2am daily (parallel with others)
+        "tz_name": "America/New_York",
+        "event": {
+            "topic": "tasks",
+            "type": "task.requested",
+            "key": admin_phone,
+            "payload": {
+                "task_id": BUGFINDER_TASK_ID,
+                "title": "Nightly bug finder scan",
+                "requested_by": admin_phone,
+                "instructions": BUGFINDER_PROMPT,
+                "notify": True,
+                "timeout_minutes": 90,
+                "execution": {
+                    "mode": "agent",
+                    "prompt": BUGFINDER_PROMPT,
                 },
             },
         },
@@ -169,12 +209,19 @@ def cmd_add():
         # Create skillify reminder
         r2 = create_reminder(**_build_skillify_reminder(admin_phone))
         data["reminders"].append(r2)
-        print(f"  Added: {r2['title']} (id={r2['id']}, cron=30 2 * * *, mode=agent)")
+        print(f"  Added: {r2['title']} (id={r2['id']}, cron=0 2 * * *, mode=agent)")
+
+        # Create bug finder reminder
+        r3 = create_reminder(**_build_bugfinder_reminder(admin_phone))
+        data["reminders"].append(r3)
+        print(f"  Added: {r3['title']} (id={r3['id']}, cron=0 2 * * *, mode=agent)")
 
         save_reminders(data)
 
-    print("\n✅ Both nightly tasks scheduled. They'll fire at 2:00am and 2:30am ET.")
-    print("Consolidation has 30min timeout; skillify starts after that window.")
+    print("\n✅ All nightly tasks scheduled at 2:00am ET (parallel):")
+    print("  Memory consolidation (60min timeout, script mode)")
+    print("  Skillify analysis (90min timeout, agent mode)")
+    print("  Bug finder scan (90min timeout, agent mode)")
 
 
 def main():

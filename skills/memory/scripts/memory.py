@@ -72,7 +72,7 @@ def normalize_contact(identifier: str) -> str:
     if identifier.startswith("+") or identifier.replace("-", "").replace(" ", "").isdigit():
         import subprocess
         result = subprocess.run(
-            [str(Path.home() / "code/contacts-cli/contacts"), "lookup", identifier],
+            [str(Path.home() / ".claude/skills/contacts/scripts/contacts"), "lookup", identifier],
             capture_output=True, text=True
         )
         if result.returncode == 0 and result.stdout.strip():

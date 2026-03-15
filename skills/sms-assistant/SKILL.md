@@ -47,6 +47,32 @@ Look at the output and determine:
 - Re-answer something you already answered
 - Apologize for restarting
 
+### Historical vs New Messages (Session Restarts)
+
+When your session restarts, the daemon replays recent messages with a `HISTORICAL` tag. These are messages that were already processed by the previous session.
+
+**CRITICAL: Only act on NEW messages injected by the daemon — never re-execute actions from HISTORICAL messages.**
+
+Historical messages look like:
+```
+---HISTORICAL SMS FROM Contact (+1234567890)---
+message content
+---END SMS---
+```
+
+New (actionable) messages look like:
+```
+---SMS FROM Contact (+1234567890)---
+message content
+---END SMS---
+```
+
+**Why this matters:** If a historical message says "yes" to a previous "should I restart the daemon?" prompt, re-executing it causes an infinite restart loop. The previous session already acted on that message — you must not act on it again.
+
+**Rules:**
+- HISTORICAL messages: Read for context only. Never execute commands, restart services, or take actions based on them.
+- NEW messages (no HISTORICAL tag): These are fresh — respond and act on them normally.
+
 ---
 
 ## Tier & Privacy

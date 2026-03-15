@@ -144,54 +144,37 @@ Reminder fires → task.requested event on "tasks" topic
 
 **Adding a new scheduled task:**
 
-1. For script-mode: create a shell script in `~/dispatch/scripts/`
-2. Add it to `scripts/setup-nightly-tasks.py` following the existing pattern:
-```python
-def _build_my_task_reminder(admin_phone: str) -> dict:
-    return {
-        "title": "My nightly task",
-        "schedule_type": "cron",
-        "schedule_value": "0 3 * * *",  # 3am daily
-        "tz_name": "America/New_York",
-        "event": {
-            "topic": "tasks",
-            "type": "task.requested",
-            "key": admin_phone,
-            "payload": {
-                "task_id": "my-task-id",          # Stable ID for dedup
-                "title": "My nightly task",
-                "requested_by": admin_phone,
-                "instructions": "What to do",
-                "notify": True,                    # Text requester on start/done
-                "timeout_minutes": 30,
-                "execution": {
-                    "mode": "script",              # or "agent"
-                    "command": ["bash", "-c", "$HOME/dispatch/scripts/my-task.sh"],
-                    # For agent mode, use "prompt" instead of "command":
-                    # "prompt": "Run /some-skill and send results via SMS",
-                },
-            },
-        },
-    }
-```
-3. Run `uv run python scripts/setup-nightly-tasks.py --remove && uv run python scripts/setup-nightly-tasks.py` to recreate reminders
-4. Add tests in `tests/unit/test_nightly_tasks.py`
+Use `claude-assistant remind add --cron --event` to create scheduled tasks. This is the only supported method.
 
-**Or create a one-off task via the reminder CLI:**
+1. For script-mode: create a shell script in `~/dispatch/scripts/`
+2. Create the reminder via CLI:
 ```bash
+# Recurring nightly task at 3am ET
+claude-assistant remind add "My nightly task" --cron "0 3 * * *" \
+  --event '{"topic":"tasks","type":"task.requested","key":"+1...","payload":{"task_id":"my-task-id","title":"My nightly task","requested_by":"+1...","instructions":"What to do","notify":true,"timeout_minutes":30,"execution":{"mode":"script","command":["bash","-c","$HOME/dispatch/scripts/my-task.sh"]}}}'
+
+# For agent mode, use "prompt" instead of "command" in the execution block:
+claude-assistant remind add "My agent task" --cron "0 3 * * *" \
+  --event '{"topic":"tasks","type":"task.requested","key":"+1...","payload":{"task_id":"my-agent-task","title":"My agent task","requested_by":"+1...","notify":true,"timeout_minutes":30,"execution":{"mode":"agent","prompt":"Run /some-skill and send results via SMS"}}}'
+
+# One-off task in 10 minutes
 claude-assistant remind add "Check something" --in 10m \
   --event '{"topic":"tasks","type":"task.requested","key":"+1...","payload":{...}}'
 ```
+3. Verify with `claude-assistant remind list`
+
+> **DEPRECATED:** `scripts/setup-nightly-tasks.py` was the old way to manage nightly tasks. Do NOT use it for new tasks. All task management should go through `claude-assistant remind add --event`.
 
 **Current scheduled tasks:**
 - `nightly-consolidation` (2:00am ET, script) — person-facts + chat-context consolidation
-- `nightly-skillify` (2:30am ET, agent) — skill opportunity analysis
+- `nightly-skillify` (2:00am ET, agent) — skill opportunity analysis
+- `nightly-bugfinder` (2:00am ET, agent) — codebase bug scanning
 
 **Key files:**
 - `assistant/manager.py` — `_run_task_consumer()`, `_handle_task_requested()`, `_run_script_task()`, `_supervise_ephemeral_tasks()`
 - `assistant/sdk_backend.py` — `create_ephemeral_session()`, `kill_ephemeral_session()`
 - `assistant/reminders.py` — `create_reminder()` with event templates, `validate_event_template()`
-- `scripts/setup-nightly-tasks.py` — creates/manages nightly cron reminders
+- `scripts/setup-nightly-tasks.py` — DEPRECATED: use `claude-assistant remind add --event` instead
 - `scripts/nightly-consolidation.sh` — wrapper for consolidation scripts
 - `plans/ephemeral-tasks-and-scheduler.md` — full design doc
 
@@ -210,18 +193,19 @@ ReminderPoller (every 5s) → checks next_fire times
   → Save state to reminders.json
 ```
 
-**Creating reminders:**
+**Creating reminders (two modes):**
 ```bash
-# One-off: remind in 10 minutes
+# Legacy mode (contact + target): inject into a chat session
 claude-assistant remind add "Check the deploy" --contact "+1..." --in 10m
-
-# Recurring: every day at 9am
 claude-assistant remind add "Morning check-in" --contact "+1..." --cron "0 9 * * *"
+claude-assistant remind add "Background task" --contact "+1..." --in 1h --target bg
 
-# Generalized: fire any bus event on schedule
+# Event mode (--event): fire any bus event on schedule (no --contact needed)
 claude-assistant remind add "Nightly task" --cron "0 2 * * *" \
   --event '{"topic":"tasks","type":"task.requested","key":"+1...","payload":{...}}'
 ```
+
+**Listing reminders:** `claude-assistant remind list` shows both modes. Event-mode reminders display "Event: task.requested" (or similar) in the Contact/Event column instead of a contact name.
 
 **Key files:**
 - `assistant/reminders.py` — Core module (create, validate, fire, schedule)

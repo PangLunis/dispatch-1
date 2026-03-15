@@ -7,11 +7,14 @@ description: Create and manage reminders using native JSON system. Use when aske
 
 Native reminder system with local timezone support, crash safety, and automatic retry.
 
-## ⚠️ CRITICAL: Reminders MUST have a contact
+## Two Modes
 
-**Reminders without a contact are SILENTLY SKIPPED by the daemon.**
+Reminders operate in two modes:
 
-Always use `--contact "Name"` when creating reminders. The daemon routes reminders to sessions by contact - no contact = no injection.
+1. **Legacy (contact) mode**: Injects a task into a contact's chat session. Requires `--contact`.
+2. **Generalized (event) mode**: Produces any bus event on schedule. Uses `--event` with a JSON event template. No `--contact` needed.
+
+**Legacy reminders without a contact are SILENTLY SKIPPED by the daemon.** Always use `--contact` for legacy mode.
 
 ---
 
@@ -19,7 +22,7 @@ Always use `--contact "Name"` when creating reminders. The daemon routes reminde
 
 Example: "Check the weather and text forecast" → Claude checks weather API, then texts the user the forecast.
 
-## Add a Reminder
+## Add a Reminder (Legacy Mode)
 
 ```bash
 # In 2 hours
@@ -46,6 +49,22 @@ claude-assistant remind add "Long analysis task" --contact "John Smith" --in 1h 
 - **fg** (default): Inject into the contact's foreground session. Session texts the user when starting/finishing.
 - **bg**: Inject into the contact's background session. Silent execution, no user notification.
 - **spawn**: Create a fresh agent SDK session for this task. Good for isolated, long-running tasks.
+
+## Add a Reminder (Event Mode)
+
+Use `--event` with a JSON event template to fire any bus event on schedule. No `--contact` needed.
+
+```bash
+# Nightly script task at 2am
+claude-assistant remind add "Nightly consolidation" --cron "0 2 * * *" \
+  --event '{"topic":"tasks","type":"task.requested","key":"+1234567890","payload":{"task_id":"nightly-consolidation","title":"Nightly consolidation","requested_by":"+1234567890","notify":true,"timeout_minutes":30,"execution":{"mode":"script","command":["bash","-c","$HOME/dispatch/scripts/nightly-consolidation.sh"]}}}'
+
+# One-off agent task in 10 minutes
+claude-assistant remind add "Analyze logs" --in 10m \
+  --event '{"topic":"tasks","type":"task.requested","key":"+1234567890","payload":{"task_id":"log-analysis","title":"Analyze logs","requested_by":"+1234567890","execution":{"mode":"agent","prompt":"Check ~/dispatch/logs/manager.log for errors in the last hour"}}}'
+```
+
+The `--event` JSON must have at minimum `topic` and `type` fields. For `task.requested` events, `payload.execution.mode` must be `"agent"` or `"script"`.
 
 ### Time Formats
 
@@ -82,10 +101,11 @@ claude-assistant remind list --failed
 
 Output:
 ```
-ID         Title                          Next Fire                 Contact
+ID         Title                          Next Fire                 Contact/Event
 --------------------------------------------------------------------------------
 abc12345   Check chess game               2026-03-03 03:00 PM EST   John Smith
 def67890   Daily standup                  2026-03-04 09:00 AM EST   John Smith
+ghi11111   Nightly consolidation          2026-03-04 02:00 AM EST   Event: task.r..
 ```
 
 ## Cancel a Reminder

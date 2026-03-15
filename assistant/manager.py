@@ -136,7 +136,7 @@ class ContactsManager:
     Cache is loaded once on first use (~1 second), then lookups are microseconds.
     """
 
-    CONTACTS_CLI = HOME / "code/contacts-cli/contacts"
+    CONTACTS_CLI = HOME / ".claude/skills/contacts/scripts/contacts"
 
     def __init__(self):
         import sys
@@ -1996,6 +1996,7 @@ class Manager:
         start_time = time.time()
         log.info(f"SCRIPT_TASK_START | task_id={task_id} | command={command}")
 
+        proc = None
         try:
             import os as _os
             proc = await asyncio.create_subprocess_exec(
@@ -2047,16 +2048,17 @@ class Manager:
                 key=requested_by, source="task-runner", headers=headers)
             log.error(f"SCRIPT_TASK_TIMEOUT | task_id={task_id} | duration={duration:.1f}s")
             # Kill entire process group (catches child processes too)
-            try:
-                _os.killpg(_os.getpgid(proc.pid), 9)  # SIGKILL the group
-            except (ProcessLookupError, OSError):
-                proc.kill()  # Fallback to killing just the process
-            # Reap zombie process (with timeout to avoid hanging on D-state)
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=10)
-            except asyncio.TimeoutError:
-                log.warning(f"SCRIPT_TASK_REAP_TIMEOUT | task_id={task_id} | "
-                            "process did not exit after SIGKILL + 10s")
+            if proc is not None:
+                try:
+                    _os.killpg(_os.getpgid(proc.pid), 9)  # SIGKILL the group
+                except (ProcessLookupError, OSError):
+                    proc.kill()  # Fallback to killing just the process
+                # Reap zombie process (with timeout to avoid hanging on D-state)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    log.warning(f"SCRIPT_TASK_REAP_TIMEOUT | task_id={task_id} | "
+                                "process did not exit after SIGKILL + 10s")
 
             if notify:
                 _fire_and_forget(
@@ -2074,7 +2076,7 @@ class Manager:
             log.error(f"SCRIPT_TASK_ERROR | task_id={task_id} | error={e}")
             # Clean up the process if it's still running
             try:
-                if proc.returncode is None:
+                if proc is not None and proc.returncode is None:
                     try:
                         _os.killpg(_os.getpgid(proc.pid), 9)
                     except (ProcessLookupError, OSError):
@@ -2356,12 +2358,28 @@ class Manager:
         self._close_log_fh('_sven_api_log_fh')
         self._sven_api_log_fh = open(sven_api_log_path, "a")
 
+        # Kill any orphaned process on port 9091 to prevent bind failures
+        try:
+            import subprocess as _sp
+            result = _sp.run(["lsof", "-ti", "tcp:9091"], capture_output=True, text=True)
+            for pid_str in result.stdout.strip().split('\n'):
+                if pid_str.strip():
+                    try:
+                        import os as _os
+                        _os.kill(int(pid_str.strip()), 9)
+                        log.info(f"Killed orphaned process on port 9091: PID {pid_str.strip()}")
+                    except (ProcessLookupError, ValueError):
+                        pass
+        except Exception:
+            pass  # Best-effort cleanup
+
         try:
             proc = subprocess.Popen(
                 [str(UV), "run", str(SVEN_API_SCRIPT)],
                 stdout=self._sven_api_log_fh,
                 stderr=self._sven_api_log_fh,
                 cwd=str(SVEN_API_DIR),
+                start_new_session=True,
             )
         except Exception:
             self._close_log_fh('_sven_api_log_fh')
@@ -3222,7 +3240,7 @@ You have 15 minutes. Work efficiently.
                 tid = payload.get("task_id")
                 if tid:
                     task_ids.add(tid)
-            expected = {"nightly-consolidation", "nightly-skillify"}
+            expected = {"nightly-consolidation", "nightly-skillify", "nightly-bugfinder"}
             missing = expected - task_ids
             if missing:
                 log.warning(
