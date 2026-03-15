@@ -56,6 +56,7 @@ DEFAULT_POLL_TIMEOUT_MS = 100
 DEFAULT_MAX_POLL_RECORDS = 500
 HEARTBEAT_TIMEOUT_MS = 300_000  # 5 minutes (all consumers are in-process, heartbeats are mainly for stale cleanup)
 AUTO_PRUNE_INTERVAL = 1000  # prune every N produces
+ARCHIVE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000  # 90 days
 
 
 @dataclass
@@ -210,6 +211,61 @@ class Bus:
                 ON sdk_events(tool_name) WHERE tool_name IS NOT NULL;
         """)
 
+        # Archive tables — prune moves records here instead of deleting.
+        # Per-topic archive control via topics.archive column (default=1).
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS records_archive (
+                topic TEXT NOT NULL,
+                partition INTEGER NOT NULL,
+                offset INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                key TEXT,
+                type TEXT,
+                source TEXT,
+                payload TEXT NOT NULL,
+                headers TEXT,
+                archived_at INTEGER NOT NULL,
+                PRIMARY KEY (topic, partition, offset)
+            ) WITHOUT ROWID;
+
+            CREATE INDEX IF NOT EXISTS idx_archive_topic_ts
+                ON records_archive(topic, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_archive_type
+                ON records_archive(topic, type) WHERE type IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_archive_key
+                ON records_archive(topic, key) WHERE key IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_archive_archived_at
+                ON records_archive(archived_at);
+
+            CREATE TABLE IF NOT EXISTS sdk_events_archive (
+                id INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                session_name TEXT NOT NULL,
+                chat_id TEXT,
+                event_type TEXT NOT NULL,
+                tool_name TEXT,
+                tool_use_id TEXT,
+                duration_ms REAL,
+                is_error INTEGER DEFAULT 0,
+                payload TEXT,
+                num_turns INTEGER,
+                archived_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sdk_archive_session
+                ON sdk_events_archive(session_name, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_sdk_archive_tool
+                ON sdk_events_archive(tool_name) WHERE tool_name IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_sdk_archive_archived_at
+                ON sdk_events_archive(archived_at);
+        """)
+
+        # Migration: add archive column to topics table (defaults to 1 = enabled)
+        cursor = self._conn.execute("PRAGMA table_info(topics)")
+        topic_columns = {row[1] for row in cursor.fetchall()}
+        if "archive" not in topic_columns:
+            self._conn.execute("ALTER TABLE topics ADD COLUMN archive INTEGER NOT NULL DEFAULT 1")
+
     def _migrate_schema(self):
         """Migrate existing databases to the latest schema."""
         # Check if records table has the old 'value' column (needs rename to 'payload')
@@ -259,15 +315,17 @@ class Bus:
             self._conn.execute("ALTER TABLE records ADD COLUMN type TEXT")
             self._conn.execute("ALTER TABLE records ADD COLUMN source TEXT")
 
-    def create_topic(self, name: str, partitions: int = 1, retention_ms: int = DEFAULT_RETENTION_MS) -> bool:
+    def create_topic(self, name: str, partitions: int = 1, retention_ms: int = DEFAULT_RETENTION_MS,
+                     archive: bool = True) -> bool:
         """
         Create a topic. Returns True if created, False if already exists.
         Mirrors: kafka-topics --create --topic <name> --partitions <n>
+        archive: whether pruned records should be moved to records_archive (default True).
         """
         try:
             self._conn.execute(
-                "INSERT INTO topics (name, partitions, retention_ms, created_at) VALUES (?, ?, ?, ?)",
-                (name, partitions, retention_ms, _now_ms()),
+                "INSERT INTO topics (name, partitions, retention_ms, created_at, archive) VALUES (?, ?, ?, ?, ?)",
+                (name, partitions, retention_ms, _now_ms(), 1 if archive else 0),
             )
             logger.info("Created topic '%s' with %d partition(s)", name, partitions)
             return True
@@ -294,7 +352,7 @@ class Bus:
     def list_topics(self) -> list[dict[str, Any]]:
         """List all topics with metadata."""
         cursor = self._conn.execute(
-            "SELECT name, partitions, retention_ms, created_at FROM topics ORDER BY name"
+            "SELECT name, partitions, retention_ms, created_at, archive FROM topics ORDER BY name"
         )
         return [
             {
@@ -302,6 +360,7 @@ class Bus:
                 "partitions": row[1],
                 "retention_ms": row[2],
                 "created_at": row[3],
+                "archive": bool(row[4]),
             }
             for row in cursor.fetchall()
         ]
@@ -309,7 +368,7 @@ class Bus:
     def topic_info(self, name: str) -> dict[str, Any] | None:
         """Get topic info including partition offsets."""
         cursor = self._conn.execute(
-            "SELECT name, partitions, retention_ms, created_at FROM topics WHERE name = ?",
+            "SELECT name, partitions, retention_ms, created_at, archive FROM topics WHERE name = ?",
             (name,),
         )
         row = cursor.fetchone()
@@ -321,6 +380,7 @@ class Bus:
             "partitions": row[1],
             "retention_ms": row[2],
             "created_at": row[3],
+            "archive": bool(row[4]),
             "partition_offsets": {},
             "total_records": 0,
         }
@@ -419,32 +479,79 @@ class Bus:
 
     def prune(self) -> int:
         """
-        Delete records past their topic's retention period.
-        Also runs incremental vacuum to reclaim space.
-        Returns number of records deleted.
+        Archive and delete records past their topic's retention period.
+        Records are moved to records_archive before deletion (if topic.archive=1).
+        Also prunes old archive records past ARCHIVE_RETENTION_MS.
+        Returns number of records deleted from hot tables.
         """
         now = _now_ms()
-        cursor = self._conn.execute("SELECT name, retention_ms FROM topics")
+        cursor = self._conn.execute("SELECT name, retention_ms, archive FROM topics")
         total_deleted = 0
-        for topic_name, retention_ms in cursor.fetchall():
+        total_archived = 0
+        for topic_name, retention_ms, archive in cursor.fetchall():
             if retention_ms <= 0:
                 continue  # retention_ms=0 means infinite retention (no pruning)
             cutoff = now - retention_ms
-            result = self._conn.execute(
-                "DELETE FROM records WHERE topic = ? AND timestamp < ?",
-                (topic_name, cutoff),
-            )
-            total_deleted += result.rowcount
 
-        # Prune sdk_events with 3-day retention
+            # Archive before delete (in implicit transaction per executescript,
+            # but we use BEGIN IMMEDIATE for atomicity)
+            if archive:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    archived = self._conn.execute(
+                        "INSERT OR IGNORE INTO records_archive "
+                        "SELECT topic, partition, offset, timestamp, key, type, source, payload, headers, ? "
+                        "FROM records WHERE topic = ? AND timestamp < ?",
+                        (now, topic_name, cutoff),
+                    ).rowcount
+                    total_archived += archived
+                    self._conn.execute(
+                        "DELETE FROM records WHERE topic = ? AND timestamp < ?",
+                        (topic_name, cutoff),
+                    )
+                    self._conn.execute("COMMIT")
+                except Exception:
+                    self._conn.execute("ROLLBACK")
+                    raise
+            else:
+                result = self._conn.execute(
+                    "DELETE FROM records WHERE topic = ? AND timestamp < ?",
+                    (topic_name, cutoff),
+                )
+            total_deleted += self._conn.execute(
+                "SELECT changes()"
+            ).fetchone()[0] if not archive else archived
+
+        # Archive and prune sdk_events with 3-day retention
         sdk_retention_ms = 3 * 24 * 60 * 60 * 1000
         sdk_cutoff = now - sdk_retention_ms
-        result = self._conn.execute(
-            "DELETE FROM sdk_events WHERE timestamp < ?",
-            (sdk_cutoff,),
-        )
-        sdk_deleted = result.rowcount
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            sdk_archived = self._conn.execute(
+                "INSERT INTO sdk_events_archive "
+                "SELECT id, timestamp, session_name, chat_id, event_type, tool_name, "
+                "tool_use_id, duration_ms, is_error, payload, num_turns, ? "
+                "FROM sdk_events WHERE timestamp < ?",
+                (now, sdk_cutoff),
+            ).rowcount
+            sdk_deleted = self._conn.execute(
+                "DELETE FROM sdk_events WHERE timestamp < ?",
+                (sdk_cutoff,),
+            ).rowcount
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
         total_deleted += sdk_deleted
+
+        # Prune old archive records past archive retention
+        archive_cutoff = now - ARCHIVE_RETENTION_MS
+        archive_pruned = self._conn.execute(
+            "DELETE FROM records_archive WHERE timestamp < ?", (archive_cutoff,)
+        ).rowcount
+        archive_pruned += self._conn.execute(
+            "DELETE FROM sdk_events_archive WHERE timestamp < ?", (archive_cutoff,)
+        ).rowcount
 
         # Prune stale consumer groups: members with no heartbeat for >1 hour
         # and groups with zero live members. Prevents unbounded metadata growth
@@ -471,11 +578,14 @@ class Bus:
             logger.info("Pruned %d stale consumer member(s), %d orphan group(s)",
                         stale_member_count, orphan_count)
 
-        if total_deleted > 0 or orphan_count > 0:
+        if total_deleted > 0 or orphan_count > 0 or total_archived > 0:
             self._conn.execute("PRAGMA incremental_vacuum")
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            logger.info("Pruned %d record(s) (incl. %d sdk_events), checkpointed WAL",
-                        total_deleted, sdk_deleted)
+            logger.info("Pruned %d record(s) (incl. %d sdk_events), archived %d, checkpointed WAL",
+                        total_deleted, sdk_deleted, total_archived + sdk_archived)
+            if archive_pruned > 0:
+                logger.info("Pruned %d old archive record(s) past %dd retention",
+                            archive_pruned, ARCHIVE_RETENTION_MS // (24 * 60 * 60 * 1000))
 
         return total_deleted
 
@@ -659,6 +769,8 @@ class Producer:
         Uses a fresh connection instead of bus._conn to avoid cross-thread
         SQLite corruption. Also guards against concurrent prune threads via
         the _prune_running flag.
+
+        Archives records before deleting (if topic.archive=1).
         """
         try:
             # Create a dedicated connection for pruning — bus._conn is used
@@ -666,30 +778,77 @@ class Producer:
             prune_conn = self._bus._connect()
             try:
                 now_ms = int(time.time() * 1000)
-                cursor = prune_conn.execute("SELECT name, retention_ms FROM topics")
+                cursor = prune_conn.execute("SELECT name, retention_ms, archive FROM topics")
                 total_deleted = 0
-                for topic_name, retention_ms in cursor.fetchall():
+                total_archived = 0
+                for topic_name, retention_ms, archive in cursor.fetchall():
                     if retention_ms <= 0:
                         continue
                     cutoff = now_ms - retention_ms
-                    result = prune_conn.execute(
-                        "DELETE FROM records WHERE topic = ? AND timestamp < ?",
-                        (topic_name, cutoff),
-                    )
-                    total_deleted += result.rowcount
 
-                # Prune sdk_events with 3-day retention
+                    if archive:
+                        # Archive + delete in a single transaction for atomicity
+                        prune_conn.execute("BEGIN IMMEDIATE")
+                        try:
+                            archived = prune_conn.execute(
+                                "INSERT OR IGNORE INTO records_archive "
+                                "SELECT topic, partition, offset, timestamp, key, type, source, payload, headers, ? "
+                                "FROM records WHERE topic = ? AND timestamp < ?",
+                                (now_ms, topic_name, cutoff),
+                            ).rowcount
+                            total_archived += archived
+                            prune_conn.execute(
+                                "DELETE FROM records WHERE topic = ? AND timestamp < ?",
+                                (topic_name, cutoff),
+                            )
+                            prune_conn.execute("COMMIT")
+                        except Exception:
+                            prune_conn.execute("ROLLBACK")
+                            raise
+                        total_deleted += archived
+                    else:
+                        result = prune_conn.execute(
+                            "DELETE FROM records WHERE topic = ? AND timestamp < ?",
+                            (topic_name, cutoff),
+                        )
+                        total_deleted += result.rowcount
+
+                # Archive + prune sdk_events with 3-day retention
                 sdk_cutoff = now_ms - (3 * 24 * 60 * 60 * 1000)
-                result = prune_conn.execute(
-                    "DELETE FROM sdk_events WHERE timestamp < ?",
-                    (sdk_cutoff,),
+                prune_conn.execute("BEGIN IMMEDIATE")
+                try:
+                    sdk_archived = prune_conn.execute(
+                        "INSERT INTO sdk_events_archive "
+                        "SELECT id, timestamp, session_name, chat_id, event_type, tool_name, "
+                        "tool_use_id, duration_ms, is_error, payload, num_turns, ? "
+                        "FROM sdk_events WHERE timestamp < ?",
+                        (now_ms, sdk_cutoff),
+                    ).rowcount
+                    prune_conn.execute(
+                        "DELETE FROM sdk_events WHERE timestamp < ?",
+                        (sdk_cutoff,),
+                    )
+                    prune_conn.execute("COMMIT")
+                except Exception:
+                    prune_conn.execute("ROLLBACK")
+                    raise
+                total_deleted += sdk_archived
+                total_archived += sdk_archived
+
+                # Prune old archive records past archive retention
+                archive_cutoff = now_ms - ARCHIVE_RETENTION_MS
+                prune_conn.execute(
+                    "DELETE FROM records_archive WHERE timestamp < ?", (archive_cutoff,)
                 )
-                total_deleted += result.rowcount
+                prune_conn.execute(
+                    "DELETE FROM sdk_events_archive WHERE timestamp < ?", (archive_cutoff,)
+                )
 
                 if total_deleted > 0:
                     prune_conn.execute("PRAGMA incremental_vacuum")
                     prune_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    logger.info("Auto-prune: deleted %d record(s)", total_deleted)
+                    logger.info("Auto-prune: deleted %d record(s), archived %d",
+                                total_deleted, total_archived)
             finally:
                 prune_conn.close()
         except Exception as e:

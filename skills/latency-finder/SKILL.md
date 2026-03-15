@@ -26,6 +26,8 @@ The system has 4 key data sources for latency analysis:
 
 4. **System resources** — Process memory/CPU, open FDs, WAL file sizes, daemon health logs.
 
+5. **Archive tables** (`bus.db`, tables `records_archive` and `sdk_events_archive`) — Same schema as hot tables plus `archived_at` column. 90-day retention. Auto-populated when records are pruned from hot tables. Use for longer-term baselines and trend analysis beyond the hot table retention windows.
+
 ### Dynamic Baselines
 
 **NEVER hardcode baseline thresholds.** Baselines are computed dynamically by reading historical perf data. The approach:
@@ -161,8 +163,12 @@ Prompt for the Explore subagent:
 ```
 You are a tool execution performance analyst. Analyze the sdk_events table in bus.db for slow tool calls and session bottlenecks.
 
-1. Check what data is available:
-   sqlite3 ~/dispatch/state/bus.db "SELECT COUNT(*), MIN(datetime(timestamp/1000,'unixepoch','localtime')), MAX(datetime(timestamp/1000,'unixepoch','localtime')) FROM sdk_events"
+NOTE: bus.db has both hot tables (sdk_events: 3-day retention) and archive tables (sdk_events_archive: 90-day retention).
+For recent data (last 24h), query sdk_events. For longer-term baselines and trends, query sdk_events_archive.
+You can UNION ALL across both tables for complete coverage.
+
+1. Check what data is available (hot + archive):
+   sqlite3 ~/dispatch/state/bus.db "SELECT 'hot' as source, COUNT(*), MIN(datetime(timestamp/1000,'unixepoch','localtime')), MAX(datetime(timestamp/1000,'unixepoch','localtime')) FROM sdk_events UNION ALL SELECT 'archive', COUNT(*), MIN(datetime(timestamp/1000,'unixepoch','localtime')), MAX(datetime(timestamp/1000,'unixepoch','localtime')) FROM sdk_events_archive"
 
 2. Find the slowest tool executions in the last 24 hours:
    sqlite3 -header ~/dispatch/state/bus.db "
@@ -267,6 +273,9 @@ Prompt for the Explore subagent:
 
 ```
 You are a message delivery latency analyst. Measure end-to-end message delivery times using bus.db records. This covers both iMessage and Signal messages.
+
+NOTE: bus.db has both hot tables (records: 7-day retention) and archive tables (records_archive: 90-day retention).
+For recent data (last 24h), query records. For longer-term trends, use UNION ALL with records_archive.
 
 1. Find message.received -> message.sent pairs to measure response time:
    sqlite3 -header ~/dispatch/state/bus.db "

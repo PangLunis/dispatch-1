@@ -22,6 +22,8 @@ Topic/type taxonomy (v6):
                 consolidation.started, consolidation.completed, consolidation.failed,
                 consumer.crashed, consumer.restart_failed,
                 skillify.started, skillify.completed,
+                scan.started, scan.completed, scan.failed
+                    (source=bug-finder|latency-finder|skillify, key=scan-{scanner}-{run_id}),
                 reminder.fired, reminder.failed,
                 healme.triggered, healme.completed,
                 vision.analyzed, vision.failed,
@@ -457,3 +459,68 @@ def task_skipped_payload(task_id: str, reason: str, **extra) -> dict:
     }
     payload.update(extra)
     return payload
+
+
+# ─── Scan report event payload builders ────────────────────────────
+
+def scan_started_payload(scanner: str, run_id: str, mode: str = "interactive",
+                         target_dir: str | None = None, **extra) -> dict:
+    """Build a scan.started payload for bug-finder/latency-finder/skillify."""
+    payload = {
+        "scanner": scanner,
+        "run_id": run_id,
+        "mode": mode,
+    }
+    if target_dir:
+        payload["target_dir"] = target_dir
+    payload.update(extra)
+    return payload
+
+
+def scan_completed_payload(scanner: str, run_id: str, duration_seconds: float,
+                           summary: dict, findings: list,
+                           mode: str = "interactive", **extra) -> dict:
+    """Build a scan.completed payload.
+
+    Args:
+        scanner: "bug-finder", "latency-finder", or "skillify"
+        run_id: unique run identifier (e.g., "20260315-0200")
+        duration_seconds: total scan duration
+        summary: dict with counts like {candidates: N, accepted: N, refuted: N, ...}
+        findings: list of accepted/refined finding dicts (full details)
+        mode: "interactive" or "nightly"
+    """
+    payload = {
+        "scanner": scanner,
+        "run_id": run_id,
+        "mode": mode,
+        "duration_seconds": round(duration_seconds, 1),
+        "summary": summary,
+        "findings": findings,
+    }
+    payload.update(extra)
+    return payload
+
+
+def scan_failed_payload(scanner: str, run_id: str, error: str,
+                        partial_results: bool = False, **extra) -> dict:
+    """Build a scan.failed payload."""
+    payload = {
+        "scanner": scanner,
+        "run_id": run_id,
+        "error": error,
+        "partial_results": partial_results,
+    }
+    payload.update(extra)
+    return payload
+
+
+def produce_scan_event(producer, scanner: str, event_type: str, payload: dict):
+    """Convenience wrapper for scan events on the system topic.
+
+    Usage:
+        produce_scan_event(producer, "bug-finder", "scan.completed", payload)
+    """
+    run_id = payload.get("run_id", "unknown")
+    produce_event(producer, "system", event_type, payload,
+                  key=f"scan-{scanner}-{run_id}", source=scanner)

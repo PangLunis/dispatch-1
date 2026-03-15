@@ -19,6 +19,7 @@ Usage:
     bus tail <topic> --group GROUP
     bus prune
     bus stats [--topic TOPIC]
+    bus reports [--scanner NAME] [--since DAYS] [--findings-only] [--severity LEVEL]
 """
 
 import argparse
@@ -360,26 +361,43 @@ def cmd_prune(args):
 def cmd_stats(args):
     with Bus(args.db) as bus:
         if args.topic:
-            topics = [args.topic]
+            topics_list = [t for t in bus.list_topics() if t["name"] == args.topic]
         else:
-            topics = [t["name"] for t in bus.list_topics()]
+            topics_list = bus.list_topics()
 
-        if not topics:
+        if not topics_list:
             print("No topics")
             return
 
-        print(f"{'TOPIC':<25} {'RECORDS':>10} {'FIRST':>22} {'LATEST':>22}")
-        print("-" * 81)
+        print(f"{'TOPIC':<25} {'RECORDS':>10} {'ARCHIVE':>10} {'FIRST':>22} {'LATEST':>22}")
+        print("-" * 101)
 
-        for topic in topics:
+        for t in topics_list:
+            topic = t["name"]
             cursor = bus._conn.execute(
                 "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM records WHERE topic = ?",
                 (topic,),
             )
             count, min_ts, max_ts = cursor.fetchone()
+
+            # Archive count
+            archive_cursor = bus._conn.execute(
+                "SELECT COUNT(*) FROM records_archive WHERE topic = ?",
+                (topic,),
+            )
+            archive_count = archive_cursor.fetchone()[0]
+            archive_str = str(archive_count) if t.get("archive", True) else "off"
+
             first = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(min_ts / 1000)) if min_ts else "—"
             latest = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(max_ts / 1000)) if max_ts else "—"
-            print(f"{topic:<25} {count:>10} {first:>22} {latest:>22}")
+            print(f"{topic:<25} {count:>10} {archive_str:>10} {first:>22} {latest:>22}")
+
+        # SDK events stats
+        cursor = bus._conn.execute("SELECT COUNT(*) FROM sdk_events")
+        sdk_count = cursor.fetchone()[0]
+        cursor = bus._conn.execute("SELECT COUNT(*) FROM sdk_events_archive")
+        sdk_archive_count = cursor.fetchone()[0]
+        print(f"\n{'sdk_events':<25} {sdk_count:>10} {sdk_archive_count:>10}")
 
         # Consumer groups summary
         groups = bus.list_consumer_groups()
@@ -390,6 +408,85 @@ def cmd_stats(args):
             for g in groups:
                 alive = sum(1 for m in g["members"] if m["alive"])
                 print(f"{g['group_id']:<30} {g['generation']:>10} {alive:>10}")
+
+
+def cmd_reports(args):
+    """Query scan reports from hot + archive tables."""
+    with Bus(args.db) as bus:
+        since_ms = _now_ms() - (args.since * 24 * 60 * 60 * 1000)
+
+        # Build query across both tables
+        conditions = "type = 'scan.completed' AND timestamp > ?"
+        params = [since_ms]
+        if args.scanner:
+            conditions += " AND source = ?"
+            params.append(args.scanner)
+
+        query = f"""
+            SELECT timestamp, source, payload FROM records
+            WHERE topic = 'system' AND {conditions}
+            UNION ALL
+            SELECT timestamp, source, payload FROM records_archive
+            WHERE topic = 'system' AND {conditions}
+            ORDER BY timestamp DESC
+        """
+        # Double the params for UNION ALL
+        all_params = params + params
+        if args.limit:
+            query = f"SELECT * FROM ({query}) LIMIT ?"
+            all_params.append(args.limit)
+
+        cursor = bus._conn.execute(query, all_params)
+        rows = cursor.fetchall()
+
+        if not rows:
+            print("No scan reports found")
+            return
+
+        if args.findings_only:
+            for ts, source, payload_json in rows:
+                ts_str = time.strftime("%Y-%m-%d", time.localtime(ts / 1000))
+                payload = json.loads(payload_json)
+                findings = payload.get("findings", [])
+                for f in findings:
+                    severity = f.get("severity", "?").upper()
+                    if args.severity and severity.lower() not in _severity_at_or_above(args.severity):
+                        continue
+                    title = f.get("title", "?")
+                    file_info = ""
+                    if "file" in f:
+                        file_info = f"\n  File: {f['file']}"
+                        if "line_range" in f:
+                            file_info += f":{f['line_range']}"
+                    fix_info = ""
+                    if "fix" in f and isinstance(f["fix"], dict):
+                        fix_info = f"\n  Fix: {f['fix'].get('description', '')}"
+                    elif "suggested_fix" in f:
+                        fix_info = f"\n  Fix: {f['suggested_fix']}"
+                    print(f"[{ts_str}] [{source}] {severity}: {title}{file_info}{fix_info}\n")
+        else:
+            print(f"{'DATE':<12} {'SCANNER':<18} {'ACCEPTED':>8} {'REFUTED':>8} {'INVESTIGATE':>12} {'DURATION':>10}")
+            print("-" * 70)
+            for ts, source, payload_json in rows:
+                ts_str = time.strftime("%Y-%m-%d", time.localtime(ts / 1000))
+                payload = json.loads(payload_json)
+                summary = payload.get("summary", {})
+                accepted = summary.get("accepted", "?")
+                refuted = summary.get("refuted", summary.get("refuted_count", "?"))
+                investigate = summary.get("needs_investigation", "?")
+                duration = payload.get("duration_seconds", "?")
+                dur_str = f"{duration}s" if isinstance(duration, (int, float)) else duration
+                print(f"{ts_str:<12} {source:<18} {accepted:>8} {refuted:>8} {investigate:>12} {dur_str:>10}")
+
+
+def _severity_at_or_above(level: str) -> set:
+    """Return set of severity levels at or above the given level."""
+    levels = ["low", "medium", "high", "critical"]
+    try:
+        idx = levels.index(level.lower())
+        return set(levels[idx:])
+    except ValueError:
+        return set(levels)
 
 
 def _print_record(r):
@@ -495,6 +592,14 @@ def main():
     p = subparsers.add_parser("stats", help="Show bus statistics")
     p.add_argument("--topic", help="Filter by topic")
 
+    # reports
+    p = subparsers.add_parser("reports", help="Query scan reports (bug-finder, latency-finder, skillify)")
+    p.add_argument("--scanner", help="Filter by scanner name (e.g. bug-finder, latency-finder, skillify)")
+    p.add_argument("--since", type=int, default=30, help="Days to look back (default: 30)")
+    p.add_argument("--findings-only", action="store_true", help="Show only individual findings")
+    p.add_argument("--severity", help="Minimum severity (low, medium, high, critical)")
+    p.add_argument("--limit", type=int, help="Max reports to show")
+
     args = parser.parse_args()
 
     commands = {
@@ -511,6 +616,7 @@ def main():
         "tail": cmd_tail,
         "prune": cmd_prune,
         "stats": cmd_stats,
+        "reports": cmd_reports,
     }
     commands[args.command](args)
 
