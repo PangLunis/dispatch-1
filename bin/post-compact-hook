@@ -54,6 +54,14 @@ fi
 
 # 3. Send "Done compacting ✓" SMS
 if [[ -n "$CHAT_ID" ]]; then
+  # Get assistant name from config (matches PreCompact hook behavior)
+  ASSISTANT_NAME=$(uv run python -c "
+import sys; sys.path.insert(0, '$HOME_DIR/dispatch')
+from assistant import config
+print(config.get('assistant.name', 'Assistant'))
+" 2>/dev/null || echo "Assistant")
+  ASSISTANT_TAG=$(echo "$ASSISTANT_NAME" | tr '[:lower:]' '[:upper:]')
+
   # Determine send command based on source
   if [[ "$SOURCE" == "signal" ]]; then
     SEND_CMD="$HOME_DIR/.claude/skills/signal/scripts/send-signal"
@@ -68,7 +76,7 @@ if [[ -n "$CHAT_ID" ]]; then
       SEND_CMD="$HOME_DIR/.claude/skills/signal/scripts/send-signal-group"
     fi
   fi
-  "$SEND_CMD" "$CHAT_ID" "[SVEN] Done compacting ✓" 2>/dev/null &
+  "$SEND_CMD" "$CHAT_ID" "[$ASSISTANT_TAG] Done compacting ✓" 2>/dev/null &
 fi
 
 # 4. Log to bus via bus CLI
