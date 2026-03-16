@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Dispatch</title>
+    <script>
+      // Single Page App redirect for GitHub Pages
+      // Redirects 404s to index.html with the path as a hash route
+      const path = window.location.pathname.replace('/dispatch/', '').replace(/\/$/, '');
+      if (path) {
+        window.location.replace('/dispatch/#' + path);
+      } else {
+        window.location.replace('/dispatch/');
+      }
+    </script>
+  </head>
+  <body>
+    <p>Redirecting...</p>
+  </body>
+</html>

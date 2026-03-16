@@ -1,0 +1,45 @@
+# ── PII / Secrets ──────────────────────────────────────────────
+config.local.yaml
+.env
+secrets.env
+
+# ── Runtime State ─────────────────────────────────────────────
+state/
+sessions/
+logs/
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ── pytest ────────────────────────────────────────────────────
+.pytest_cache/
+
+# ── macOS ─────────────────────────────────────────────────────
+.DS_Store
+._*
+
+# ── Editor ────────────────────────────────────────────────────
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# ── Node (for menubar app) ───────────────────────────────────
+node_modules/
+
+# ── Backup from migration ────────────────────────────────────
+skills.bak/
+
+# ── Claude Code ───────────────────────────────────────────────
+.claude/
+
+# ── LaunchD (system-specific) ──────────────────────────────────
+launchd/*.plist
+skills/tts/models/

@@ -1,0 +1,12 @@
+# Build artifacts
+build/
+*.xcarchive
+*.ipa
+DerivedData/
+
+# Xcode
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Moonshine model (large, download separately)
+Sven/models/
