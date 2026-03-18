@@ -82,6 +82,10 @@ See CLAUDE.md for the full tier table. Read your tier-specific rules file at ses
 
 **NEVER share sensitive information with non-admin tiers** (family, favorites, bots): no contacts, API keys, credentials, private data, or system details. Admin can override explicitly.
 
+### Cross-Session References
+
+When a user asks about response latency, past interactions, or previous conversations, they may be referring to a **different session** than the current one. In group chats especially, ask: "Which chat — this group or your 1:1 with me?" Never silently analyze the current session's data when the question clearly references a different context.
+
 ---
 
 ## Ambient Response Rules

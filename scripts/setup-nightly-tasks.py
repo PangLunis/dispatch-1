@@ -2,11 +2,12 @@
 """
 Set up nightly ephemeral tasks via the reminder/scheduler system.
 
-Creates four cron reminders that fire task.requested events:
-1. Memory consolidation (script mode, 2:00am) - runs consolidate_3pass + consolidate_chat
-2. Skillify analysis (agent mode, 2:10am) - runs /skillify --nightly
-3. Bug finder scan (agent mode, 2:20am) - runs /bug-finder --nightly
-4. Latency finder scan (agent mode, 2:30am) - runs /latency-finder --nightly
+Creates five cron reminders that fire task.requested events:
+1. Vacation house scraper (agent mode, 1:45am) - runs nightly-scraper + builds HTML report
+2. Memory consolidation (script mode, 2:00am) - runs consolidate_3pass + consolidate_chat
+3. Skillify analysis (agent mode, 2:10am) - runs /skillify --nightly
+4. Bug finder scan (agent mode, 2:20am) - runs /bug-finder --nightly
+5. Latency finder scan (agent mode, 2:30am) - runs /latency-finder --nightly
 
 These replace the hardcoded 2am consolidation in manager.py.
 
@@ -38,12 +39,23 @@ def _get_admin_phone() -> str:
 
 
 # Task IDs are stable so we can detect duplicates
+VACATION_SCRAPER_TASK_ID = "nightly-vacation-scraper"
 CONSOLIDATION_TASK_ID = "nightly-consolidation"
 SKILLIFY_TASK_ID = "nightly-skillify"
 BUGFINDER_TASK_ID = "nightly-bugfinder"
 LATENCYFINDER_TASK_ID = "nightly-latencyfinder"
 
-NIGHTLY_TASK_IDS = {CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID, BUGFINDER_TASK_ID, LATENCYFINDER_TASK_ID}
+NIGHTLY_TASK_IDS = {VACATION_SCRAPER_TASK_ID, CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID, BUGFINDER_TASK_ID, LATENCYFINDER_TASK_ID}
+
+# Vacation house scraper prompt
+VACATION_SCRAPER_PROMPT = (
+    "Run the nightly vacation house scraper: "
+    "~/.claude/skills/vacation-house/scripts/nightly-scraper --notify "
+    "Then build a beautiful HTML report from the results using the bus dashboard "
+    "design pattern (Space Grotesk + warm papery palette) with photo carousels, "
+    "exec summary, and score badges. Publish to sven-pages as vacation-scraper-YYYY-MM-DD. "
+    "Send a short SMS summary + link to the group chat 95fa934b84bc4f9aa4dfe22ac9d72afb."
+)
 
 # Bug finder prompt
 BUGFINDER_PROMPT = (
@@ -72,6 +84,33 @@ SKILLIFY_PROMPT = (
     "This runs the full discovery→refinement pipeline. "
     "When done, send a concise summary of findings to the admin via SMS."
 )
+
+
+def _build_vacation_scraper_reminder(admin_phone: str) -> dict:
+    """Build the vacation house scraper reminder config."""
+    return {
+        "title": "Nightly vacation house scraper",
+        "schedule_type": "cron",
+        "schedule_value": "45 1 * * *",  # 1:45am daily (before consolidation)
+        "tz_name": "America/New_York",
+        "event": {
+            "topic": "tasks",
+            "type": "task.requested",
+            "key": admin_phone,
+            "payload": {
+                "task_id": VACATION_SCRAPER_TASK_ID,
+                "title": "Nightly vacation house scraper",
+                "requested_by": admin_phone,
+                "instructions": VACATION_SCRAPER_PROMPT,
+                "notify": True,
+                "timeout_minutes": 120,
+                "execution": {
+                    "mode": "agent",
+                    "prompt": VACATION_SCRAPER_PROMPT,
+                },
+            },
+        },
+    }
 
 
 def _build_consolidation_reminder(admin_phone: str) -> dict:
@@ -239,6 +278,11 @@ def cmd_add():
             print("\nUse --remove first to replace them.")
             return
 
+        # Create vacation scraper reminder
+        r0 = create_reminder(**_build_vacation_scraper_reminder(admin_phone))
+        data["reminders"].append(r0)
+        print(f"  Added: {r0['title']} (id={r0['id']}, cron=45 1 * * *, mode=agent)")
+
         # Create consolidation reminder
         r1 = create_reminder(**_build_consolidation_reminder(admin_phone))
         data["reminders"].append(r1)
@@ -262,6 +306,7 @@ def cmd_add():
         save_reminders(data)
 
     print("\n✅ All nightly tasks scheduled (staggered, ET):")
+    print("  1:45am - Vacation house scraper (120min timeout, agent mode)")
     print("  2:00am - Memory consolidation (60min timeout, script mode)")
     print("  2:10am - Skillify analysis (90min timeout, agent mode)")
     print("  2:20am - Bug finder scan (90min timeout, agent mode)")

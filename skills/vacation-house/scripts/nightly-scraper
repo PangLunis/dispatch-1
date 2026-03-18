@@ -899,6 +899,24 @@ def verify_listing(listing: dict) -> dict:
         log(f"VERIFY: {address} — unverifiable (no source text)")
         return listing
 
+    # Detect maintenance/downtime pages — skip verification instead of failing
+    maintenance_indicators = [
+        "we'll be back soon",
+        "we'll be back soon",
+        "busy making redfin even better",
+        "scheduled maintenance",
+        "temporarily unavailable",
+        "under maintenance",
+        "service unavailable",
+        "503 service",
+    ]
+    scraped_lower = scraped_text.lower()
+    if any(indicator in scraped_lower for indicator in maintenance_indicators):
+        listing["verified"] = None
+        listing["verification_notes"] = ["Source site was down for maintenance, skipped verification"]
+        log(f"VERIFY: {address} — skipped (site maintenance detected)")
+        return listing
+
     # Build verification prompt
     acres = listing.get("acres", "unknown")
     construction_style = listing.get("construction_style", "unknown")
@@ -1222,7 +1240,8 @@ def main():
         if args.json:
             print(json.dumps({"new": 0, "results": []}))
         if args.notify:
-            log("NOTIFY: No new listings, skipping SMS")
+            send_sms(f"🏡 Nightly scraper ran — scanned {len(all_listings)} listings, 0 new. All previously seen.")
+            log("NOTIFY: Sent summary SMS (no new listings)")
         return
 
     # Step 2.5: Pre-filter by hard requirements (skip obviously wrong listings before expensive enrichment)
@@ -1290,7 +1309,15 @@ def main():
         message = format_sms(verified, args.min_score)
         send_sms(message)
     elif args.notify:
-        log("NOTIFY: No matches above threshold, skipping SMS")
+        # Always send a summary so they know the pipeline ran
+        total_new = len(verified)
+        top_score = max((r.get("score", 0) for r in verified), default=0) if verified else 0
+        maint_skipped = sum(1 for r in verified if any("maintenance" in (n or "").lower() for n in (r.get("verification_notes") or [])))
+        summary_parts = [f"🏡 Nightly scraper ran — {total_new} new listing{'s' if total_new != 1 else ''}, none scored {args.min_score}+/10 (top score: {top_score})."]
+        if maint_skipped:
+            summary_parts.append(f"⚠️ {maint_skipped} listing{'s' if maint_skipped != 1 else ''} had verification skipped due to site maintenance.")
+        send_sms("\n".join(summary_parts))
+        log("NOTIFY: Sent summary SMS (no matches above threshold)")
 
     log("NIGHTLY SCRAPER: Pipeline complete")
 

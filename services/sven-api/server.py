@@ -96,6 +96,7 @@ APNS_TOKENS_FILE = Path.home() / "dispatch" / "state" / "sven-apns-tokens.json"
 DB_PATH = Path.home() / "dispatch" / "state" / "sven-messages.db"
 AUDIO_DIR = Path.home() / "dispatch" / "state" / "sven-audio"
 IMAGE_DIR = Path.home() / "dispatch" / "state" / "sven-images"
+CLAUDE_ASSISTANT_CLI = str(Path.home() / "dispatch" / "bin" / "claude-assistant")
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX = 30  # requests per window
 
@@ -217,7 +218,7 @@ async def inject_prompt_to_sven_session(transcript: str, image_path: str | None 
         # Use inject-prompt to send to the sven-app session
         # The session will respond via reply-sven CLI which stores in message bus
         cmd = [
-            "/Users/sven/dispatch/bin/claude-assistant", "inject-prompt",
+            CLAUDE_ASSISTANT_CLI, "inject-prompt",
             "sven-app:voice",  # Dedicated sven-app session
             "--sms",  # Wrap with SMS format (includes tier in prompt)
             "--sven-app",  # Format for Sven iOS app (adds 🎤 prefix)
@@ -637,7 +638,7 @@ async def restart_session(token: Optional[str] = None):
     try:
         result = subprocess.run(
             [
-                "/Users/sven/dispatch/bin/claude-assistant", "restart-session",
+                CLAUDE_ASSISTANT_CLI, "restart-session",
                 "sven-app:voice"
             ],
             capture_output=True,

@@ -165,6 +165,14 @@ class TestCheckFatalRegex:
         result = check_fatal_regex(entries)
         assert result is not None
 
+    def test_detects_image_processing_failed(self):
+        from assistant.health import check_fatal_regex
+        entries = [_make_assistant_entry(
+            'Could not process image at /path/to/image.png'
+        )]
+        result = check_fatal_regex(entries)
+        assert result == "image_processing_failed"
+
     def test_detects_auth_failed(self):
         from assistant.health import check_fatal_regex
         entries = [_make_assistant_entry(

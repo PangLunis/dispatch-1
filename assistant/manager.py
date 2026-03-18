@@ -267,13 +267,20 @@ class MessagesReader:
                 pass
             self._conn = None
 
+    def run_wal_checkpoint(self):
+        """Run WAL checkpoint as a standalone operation (not in poll path).
+
+        Called periodically from a separate async task to avoid blocking
+        the 100ms message poll cycle when Messages.app holds write locks.
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        self._maybe_checkpoint(cursor)
+
     def get_new_messages(self, since_rowid: int) -> list:
         """Get messages newer than the given ROWID."""
         conn = self._get_conn()
         cursor = conn.cursor()
-
-        # Checkpoint WAL periodically (not every poll) for visibility
-        self._maybe_checkpoint(cursor)
 
         cursor.execute("""
             SELECT
@@ -752,9 +759,16 @@ class SignalListener(threading.Thread):
             body = data_msg.get("message")
             timestamp = data_msg.get("timestamp", 0)
 
-            # Skip if no text message
-            if not body:
+            # Extract attachments early so we can accept attachment-only messages
+            attachments = self._extract_attachments(data_msg)
+
+            # Skip if no text message AND no attachments
+            if not body and not attachments:
                 return
+
+            # For attachment-only messages, use placeholder text
+            if not body and attachments:
+                body = "(image)" if any(a["mime_type"].startswith("image/") for a in attachments) else "(attachment)"
 
             # Skip duplicates (use set to handle out-of-order messages)
             if timestamp in self._seen_timestamps:
@@ -777,7 +791,7 @@ class SignalListener(threading.Thread):
                 "timestamp": datetime.fromtimestamp(timestamp / 1000),
                 "phone": source_number,
                 "text": body,
-                "attachments": self._extract_attachments(data_msg),
+                "attachments": attachments,
                 "is_group": bool(group_id),
                 "group_name": group_info.get("groupName"),
                 "chat_identifier": group_id if group_id else source_number,
@@ -813,11 +827,26 @@ class SignalListener(threading.Thread):
             log.error(f"SignalListener: error processing message: {e}")
 
     def _extract_attachments(self, data_msg: dict) -> List[dict]:
-        """Extract attachment info from a Signal message."""
+        """Extract attachment info from a Signal message.
+
+        signal-cli daemon stores downloaded attachments at
+        ~/.local/share/signal-cli/attachments/<id> but does NOT include
+        a ``file`` path in the JSON-RPC notification.  We construct the
+        path from the attachment ``id`` field instead.
+        """
         attachments = []
         for att in data_msg.get("attachments", []):
+            # Prefer explicit file path (future-proofing), fall back to
+            # constructing from id in the signal-cli attachments dir.
+            path = att.get("file", "")
+            if not path:
+                att_id = att.get("id", "")
+                if att_id:
+                    candidate = Path.home() / ".local/share/signal-cli/attachments" / att_id
+                    if candidate.exists():
+                        path = str(candidate)
             attachments.append({
-                "path": att.get("file", ""),
+                "path": path,
                 "mime_type": att.get("contentType", "unknown"),
                 "name": att.get("filename", "attachment"),
                 "size": att.get("size", 0),
@@ -1533,7 +1562,9 @@ class Manager:
         self._bus.create_topic("system", retention_ms=168 * 3600 * 1000)
         self._bus.create_topic("reminders", retention_ms=168 * 3600 * 1000)
         self._bus.create_topic("tasks", retention_ms=168 * 3600 * 1000)  # 7 days
+        self._bus.create_topic("messages.dlq", retention_ms=30 * 24 * 3600 * 1000)  # 30 days
         self._producer = self._bus.producer()
+        self._dlq_retry_counts: dict[str, int] = {}  # offset_key -> retry_count
 
         self.sessions = SDKBackend(
             registry=self.registry,
@@ -1728,15 +1759,61 @@ class Manager:
                         raise
                     except Exception as e:
                         failed += 1
-                        log.error(
-                            f"Consumer: failed to process message "
-                            f"(offset={record.offset}, key={record.key}): {e}"
+                        error_str = str(e)
+                        retry_key = f"{record.topic}:{record.offset}"
+                        retry_count = self._dlq_retry_counts.get(retry_key, 0)
+
+                        # Classify: transient errors get retried, permanent go straight to DLQ
+                        transient_patterns = (
+                            "timeout", "timed out", "connection",
+                            "initialize", "ECONNREFUSED", "ENOTFOUND",
+                            "temporarily unavailable", "overloaded",
                         )
-                        produce_event(self._producer, "messages", "message.processing_failed", {
-                            "chat_id": record.key,
-                            "error": str(e),
-                            "original_offset": record.offset,
-                        }, key=record.key, source="consumer")
+                        is_transient = any(p in error_str.lower() for p in transient_patterns)
+                        max_retries = 2 if is_transient else 0
+
+                        if retry_count < max_retries:
+                            # Transient error, retry later — re-produce to messages topic
+                            self._dlq_retry_counts[retry_key] = retry_count + 1
+                            log.warning(
+                                f"Consumer: transient failure "
+                                f"(offset={record.offset}, key={record.key}, "
+                                f"retry={retry_count + 1}/{max_retries}): {e}"
+                            )
+                            produce_event(self._producer, "messages", "message.received", {
+                                **record.payload,
+                                "_retry_count": retry_count + 1,
+                                "_original_offset": record.offset,
+                                "_last_error": error_str,
+                            }, key=record.key, source="consumer-retry")
+                        else:
+                            # Exhausted retries or permanent error — send to DLQ
+                            error_class = "transient_exhausted" if is_transient else "permanent"
+                            log.error(
+                                f"Consumer: sending to DLQ "
+                                f"(offset={record.offset}, key={record.key}, "
+                                f"class={error_class}, retries={retry_count}): {e}"
+                            )
+                            produce_event(self._producer, "messages.dlq", "dead_letter", {
+                                "original_topic": record.topic,
+                                "original_offset": record.offset,
+                                "original_key": record.key,
+                                "original_type": record.type,
+                                "original_payload": record.payload,
+                                "error": error_str,
+                                "error_class": error_class,
+                                "retry_count": retry_count,
+                            }, key=record.key, source="consumer")
+                            # Also emit processing_failed for telemetry
+                            produce_event(self._producer, "messages", "message.processing_failed", {
+                                "chat_id": record.key,
+                                "error": error_str,
+                                "error_class": error_class,
+                                "original_offset": record.offset,
+                                "sent_to_dlq": True,
+                            }, key=record.key, source="consumer")
+                            # Clean up retry tracker
+                            self._dlq_retry_counts.pop(retry_key, None)
 
                 # ALWAYS commit after batch — never block on poison messages
                 consumer.commit()
@@ -2086,6 +2163,25 @@ class Manager:
             except Exception:
                 pass  # Best-effort cleanup
 
+    async def _periodic_wal_checkpoint(self):
+        """Run WAL checkpoint on a separate timer, outside the poll cycle.
+
+        Decoupled from get_new_messages() to avoid blocking the 100ms poll
+        when Messages.app holds write locks (observed up to 5.4s stalls).
+        Runs every 5 seconds in the executor.
+        """
+        loop = asyncio.get_event_loop()
+        while not self._shutdown_flag:
+            try:
+                await asyncio.sleep(5)
+                await loop.run_in_executor(
+                    self._chat_reader._executor, self.messages.run_wal_checkpoint
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.debug(f"WAL checkpoint error: {e}")
+
     async def _supervise_ephemeral_tasks(self):
         """Periodic supervision of ephemeral tasks: check for timeouts and completion.
 
@@ -2113,7 +2209,33 @@ class Manager:
                     session_key = info["session_key"]
                     session = self.sessions.sessions.get(session_key)
 
-                    # Check timeout (configured or hard max)
+                    # Check completion FIRST — if session already died, it completed
+                    # (or crashed). Don't let elapsed > timeout fire on a dead session
+                    # that finished legitimately before the timeout.
+                    if session is None or not session.is_alive():
+                        log.info(f"TASK_COMPLETED | task_id={task_id} | "
+                                 f"elapsed={elapsed:.0f}s | session_gone")
+
+                        produce_event(self._producer, "tasks", "task.completed",
+                            task_completed_payload(task_id, info["title"],
+                                info["requested_by"], elapsed),
+                            key=info["requested_by"], source="task-runner")
+
+                        # Clean up
+                        await self.sessions.kill_ephemeral_session(task_id)
+                        self._ephemeral_tasks.pop(task_id, None)
+
+                        if info["notify"]:
+                            _fire_and_forget(
+                                self._notify_task_event(
+                                    info["requested_by"],
+                                    f"✅ Task completed: {info['title']}"
+                                ),
+                                name=f"task-notify-done-{task_id}",
+                            )
+                        continue
+
+                    # Check timeout (configured or hard max) — only for ALIVE sessions
                     if elapsed > timeout_secs or elapsed > HARD_MAX_LIFETIME:
                         log.warning(f"TASK_TIMEOUT | task_id={task_id} | "
                                     f"elapsed={elapsed:.0f}s | timeout={timeout_secs}s")
@@ -2136,29 +2258,6 @@ class Manager:
                                 name=f"task-notify-timeout-{task_id}",
                             )
                         continue
-
-                    # Check if session died (completed or crashed)
-                    if session is None or not session.is_alive():
-                        log.info(f"TASK_COMPLETED | task_id={task_id} | "
-                                 f"elapsed={elapsed:.0f}s | session_gone")
-
-                        produce_event(self._producer, "tasks", "task.completed",
-                            task_completed_payload(task_id, info["title"],
-                                info["requested_by"], elapsed),
-                            key=info["requested_by"], source="task-runner")
-
-                        # Clean up
-                        await self.sessions.kill_ephemeral_session(task_id)
-                        self._ephemeral_tasks.pop(task_id, None)
-
-                        if info["notify"]:
-                            _fire_and_forget(
-                                self._notify_task_event(
-                                    info["requested_by"],
-                                    f"✅ Task completed: {info['title']}"
-                                ),
-                                name=f"task-notify-done-{task_id}",
-                            )
 
             except asyncio.CancelledError:
                 log.info("Task supervisor shutting down")
@@ -2621,7 +2720,7 @@ class Manager:
                                component="daemon")
 
                     # Check for untracked FD leaks
-                    warnings = self._resource_registry.check_fd_leaks(threshold=20)
+                    warnings = self._resource_registry.check_fd_leaks(threshold=40)
                     for w in warnings:
                         log.warning(f"FD_LEAK | {w}")
 
@@ -3281,12 +3380,12 @@ You have 15 minutes. Work efficiently.
                 tid = payload.get("task_id")
                 if tid:
                     task_ids.add(tid)
-            expected = {"nightly-consolidation", "nightly-skillify", "nightly-bugfinder", "nightly-latencyfinder"}
+            expected = {"nightly-consolidation", "nightly-skillify", "nightly-bugfinder", "nightly-latencyfinder", "nightly-vacation-scraper"}
             missing = expected - task_ids
             if missing:
                 log.warning(
                     f"STARTUP_CHECK | Missing nightly task reminders: {missing}. "
-                    f"Run 'uv run python scripts/setup-nightly-tasks.py' to configure."
+                    f"Run 'claude-assistant remind add --cron --event' to configure."
                 )
             else:
                 log.info("STARTUP_CHECK | Nightly task reminders verified ✓")
@@ -3552,6 +3651,11 @@ Keep the text concise - this is a nightly check-in, not a full report.
         # Start ephemeral task supervisor (async task — checks for timeouts)
         self._task_supervisor_task = asyncio.create_task(
             self._supervise_ephemeral_tasks(), name="task-supervisor"
+        )
+
+        # Start periodic WAL checkpoint (separate from poll cycle to avoid blocking)
+        self._wal_checkpoint_task = asyncio.create_task(
+            self._periodic_wal_checkpoint(), name="wal-checkpoint"
         )
 
         # Start IPC server

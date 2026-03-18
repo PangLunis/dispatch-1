@@ -432,7 +432,7 @@ Examples:
 
     # Log perf metric
     elapsed_ms = (time.perf_counter() - start_time) * 1000
-    log_perf("send_sms_ms", elapsed_ms, success=success, is_group=is_group, has_image=bool(args.image))
+    log_perf("send_sms_ms", elapsed_ms, success=success, is_group=is_group, has_image=bool(args.image), has_file=bool(args.file))
 
     sys.exit(0 if success else 1)
 

@@ -9,10 +9,10 @@ description: Debug and diagnose the Dispatch personal assistant system. Troubles
 
 ```bash
 debug status                          # System dashboard
-debug trace +16175969496 --since 1h   # End-to-end message trace
-debug session imessage/_16175969496   # Session deep-dive
+debug trace <phone> --since 1h        # End-to-end message trace
+debug session imessage/<phone>        # Session deep-dive
 debug incident --since 2h            # Auto-scan for anomalies
-debug routing +16175969496           # Contact routing info
+debug routing <phone>                # Contact routing info
 ```
 
 All commands support `--json` for machine-readable output, `--verbose` for more detail, `--quiet` for terse output.

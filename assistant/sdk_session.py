@@ -564,8 +564,14 @@ class SDKSession:
             }
         )
 
-        # Permission callback for tier-based security enforcement
-        if self.tier in ("favorite", "family"):
+        # Permission callback for tier-based security enforcement.
+        # NOTE: family tier is intentionally excluded from SDK-level blocking.
+        # Family restrictions are enforced via system prompt only (family-rules.md),
+        # which allows the admin to override via inject-prompt when needed.
+        # Do NOT add SDK-level can_use_tool blocks for family — admin explicitly
+        # rejected this ("revert", "do not do sdk level blocks"). Only favorites
+        # use hard SDK-level blocks here.
+        if self.tier == "favorite":
             opts.can_use_tool = self._permission_check
 
         # Session resume: use --resume <session_id> to continue a previous session.
@@ -617,6 +623,14 @@ class SDKSession:
                         "contact_name": self.contact_name,
                     }, source="sdk")
                     return PermissionResultDeny(message="osascript 'do shell script' blocked for favorites tier")
+                # Block JXA (JavaScript for Automation) which can bypass AppleScript restrictions
+                if re.search(r'-l\s+(JavaScript|js)\b', cmd, re.IGNORECASE):
+                    produce_session_event(self._producer, self.chat_id, "permission.denied", {
+                        "tool_name": tool_name, "tier": self.tier,
+                        "reason": "osascript JXA (-l JavaScript) blocked for favorites tier",
+                        "contact_name": self.contact_name,
+                    }, source="sdk")
+                    return PermissionResultDeny(message="osascript JXA (-l JavaScript) blocked for favorites tier")
             # Block sensitive file reads
             if tool_name == "Read":
                 path = tool_input.get("file_path", "")
@@ -806,6 +820,7 @@ class SDKSession:
                             tool_input=tool_input,
                             duration_ms=duration_ms,
                             is_error=block.is_error or False,
+                            session_type=self.session_type,
                         )
                         # Populate sdk_events for tool-level tracing
                         if self._producer and hasattr(self._producer, 'send_sdk_event'):

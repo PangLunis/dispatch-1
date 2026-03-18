@@ -1684,6 +1684,8 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         for chat_id, session in list(self.sessions.items()):
             if chat_id.endswith("-bg") or chat_id == MASTER_SESSION:
                 continue
+            if chat_id.startswith("ephemeral-"):
+                continue
             if chat_id in self._recently_healed:
                 continue
 
@@ -1796,14 +1798,18 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         from datetime import timedelta
         since = now - timedelta(minutes=5)
 
+        checked = 0
         for chat_id, session in list(self.sessions.items()):
             if chat_id.endswith("-bg") or chat_id == MASTER_SESSION:
+                continue
+            if chat_id.startswith("ephemeral-"):
                 continue
             if not session.is_alive():
                 continue
             if chat_id in skip or chat_id in self._recently_healed:
                 continue
 
+            checked += 1
             entries = get_transcript_entries_since(session.cwd, session.session_id, since)
             if not entries:
                 continue
@@ -1831,11 +1837,11 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                 restarted.append(chat_id)
 
         lifecycle_log.info(
-            f"DEEP_HEAL | SCAN | {len(self.sessions) - len(skip)} sessions checked | "
+            f"DEEP_HEAL | SCAN | {checked} sessions checked | "
             f"{len(restarted)} fatal"
         )
         produce_event(self._producer, "system", "health.deep_check_completed", {
-            "sessions_checked": len(self.sessions) - len(skip),
+            "sessions_checked": checked,
             "restarted": len(restarted),
         }, source="health")
         return restarted

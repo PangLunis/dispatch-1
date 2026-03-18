@@ -327,6 +327,7 @@ def log_tool_execution(
     tool_input: dict[str, Any],
     duration_ms: float,
     is_error: bool = False,
+    session_type: str | None = None,
 ) -> None:
     """Log tool execution timing to perf JSONL.
 
@@ -340,6 +341,10 @@ def log_tool_execution(
     parser = TOOL_PARSERS.get(tool)
     parsed_input = parser(tool_input) if parser else dict(tool_input)
 
+    extra: dict[str, Any] = {}
+    if session_type:
+        extra["session_type"] = session_type
+
     _log_metric(
         "tool_execution",
         duration_ms,
@@ -348,4 +353,5 @@ def log_tool_execution(
         tool=tool,
         is_error=is_error,
         input=parsed_input,
+        **extra,
     )

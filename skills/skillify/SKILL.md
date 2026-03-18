@@ -270,3 +270,34 @@ When the user says "build [name]" or "build the [name] skill", look up the propo
 ## Nightly Integration
 
 Called by manager.py's nightly consolidation after person-facts and chat-context. Manager.py passes "--nightly" for SMS output mode. The manager.py hook is out of scope for this skill file.
+
+## Historical Context (Required)
+
+Before generating findings, you MUST gather historical context to avoid re-reporting known issues or missing important changes:
+
+### Past Reports
+
+Query previous scan reports from the bus for what was already found, fixed, or refuted:
+
+```bash
+cd ~/dispatch && uv run python -m bus.cli reports --scanner skillify --since 7
+```
+
+This shows past findings with their verdicts (accepted/refuted). Use this to:
+- Skip ideas that were already proposed and are being tracked
+- Understand patterns in what gets refuted (calibrate your signal)
+- Build on previous proposals rather than starting from scratch
+
+### Recent Code Changes
+
+Check git history for recent changes that provide context on what was built, fixed, or refactored:
+
+```bash
+cd ~/dispatch && git log --oneline --since="7 days ago" -- assistant/ bus/
+cd ~/dispatch && git log --oneline --since="7 days ago" -- ~/.claude/skills/
+```
+
+This helps you:
+- Understand what skills were recently created or modified (don't re-propose existing work)
+- Identify automation patterns that were already landed as skills
+- See what the admin was working on (provides intent behind changes)

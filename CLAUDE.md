@@ -214,6 +214,10 @@ claude-assistant remind add "Nightly task" --cron "0 2 * * *" \
 - `~/.claude/skills/reminders/SKILL.md` — User-facing docs
 - `state/reminders.json` — Persistent state (reminders + config)
 
+### Disk Monitoring (APFS)
+
+Disk warnings use APFS container metrics (not `shutil.disk_usage`) to include purgeable space — matching what macOS shows as "Available." See `_get_apfs_container_space()` in `health.py`. This avoids false alarms where `shutil` reports low space but macOS shows much more available due to purgeable files.
+
 ### Key design: no auto-send
 
 SDK sessions do NOT auto-send text output as SMS. Claude calls `send-sms` explicitly via Bash tool when it wants to message the user — same as the old tmux setup. The SDK just manages the Claude process lifecycle.

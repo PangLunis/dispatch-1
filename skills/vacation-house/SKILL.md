@@ -441,6 +441,11 @@ Use the **bus dashboard design pattern** — the same warm papery aesthetic from
    - Score circle badge (color-coded: green 5+, blue 4, amber 3, red 1-2)
    - Verification status tag
    - Address as deep link to listing URL
+   - **Cross-reference links row** below address: small inline links to search for the property on major real estate sites. Always include Redfin, Zillow, and Google Maps. Format: `<div class="card-xref">` with pipe-separated links like `Redfin | Zillow | Google Maps`. Generate URLs by encoding the address:
+     - Redfin: `https://www.redfin.com/search#query={encoded_address}`
+     - Zillow: `https://www.zillow.com/homes/{encoded_address_with_dashes}_rb/`
+     - Google Maps: `https://www.google.com/maps/search/{encoded_address}`
+     - If the listing source IS Redfin or Zillow, use the actual listing URL for that site instead of a search URL
    - Price in JetBrains Mono + signal orange
    - Meta row: beds, baths, sqft, acres, drive time, ski distance
    - Tags: construction style, water features, acreage, vibe match

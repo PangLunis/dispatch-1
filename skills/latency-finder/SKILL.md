@@ -871,3 +871,34 @@ This enables `bus reports --scanner latency-finder` to query historical scan res
 # CI check
 "latency scan --ci"
 ```
+
+## Historical Context (Required)
+
+Before generating findings, you MUST gather historical context to avoid re-reporting known issues or missing important changes:
+
+### Past Reports
+
+Query previous scan reports from the bus for what was already found, fixed, or refuted:
+
+```bash
+cd ~/dispatch && uv run python -m bus.cli reports --scanner latency-finder --since 7
+```
+
+This shows past findings with their verdicts (accepted/refuted). Use this to:
+- Skip issues that were already reported and are being tracked
+- Understand patterns in what gets refuted (calibrate your signal)
+- Build on previous findings rather than starting from scratch
+
+### Recent Code Changes
+
+Check git history for recent changes that provide context on what was built, fixed, or refactored:
+
+```bash
+cd ~/dispatch && git log --oneline --since="7 days ago" -- assistant/ bus/
+cd ~/dispatch && git log --oneline --since="7 days ago" -- ~/.claude/skills/
+```
+
+This helps you:
+- Understand WHY metrics changed (a refactor may cause temporary regressions)
+- Identify fixes that were already landed (don't report fixed bugs)
+- See what the admin was working on (provides intent behind changes)

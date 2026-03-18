@@ -24,7 +24,8 @@ Launch **4 parallel Explore subagents** simultaneously. Each focuses on a differ
 **Scope:** The entire codebase is in scope for bugs, not just recent changes. Recent changes (last 24h) are the **primary signal** for where to focus exploration first, but explorers should also look at surrounding code, callers, integration points, and anything else that seems suspicious.
 
 **Admin transcript context:** When targeting `~/dispatch/`, Explorer 1 (Recent Code Changes) MUST also read recent admin transcripts to understand the context of changes — what was being built, what problems were being solved, and what the admin's intent was. This prevents flagging intentional changes as bugs.
-- Read: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "+16175969496" --limit 40`
+- First, look up the admin contact: run `~/.claude/skills/contacts/scripts/contacts list --tier admin` to get the admin's phone number dynamically.
+- Read: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "<admin_phone>" --limit 40` (replacing `<admin_phone>` with the number from the contacts lookup)
 - This gives the last 40 messages from the admin's 1:1 chat, which contains discussion of recent changes, bug reports, and feature requests.
 - Use this context to: (a) understand WHY code changed, (b) identify bugs the admin already knows about vs new ones, (c) find issues mentioned in conversation but not yet fixed.
 
@@ -579,3 +580,34 @@ This enables `bus reports --scanner bug-finder` to query historical scan results
 # After a big refactor
 "find bugs in the recent changes to ~/dispatch/assistant"
 ```
+
+## Historical Context (Required)
+
+Before generating findings, you MUST gather historical context to avoid re-reporting known issues or missing important changes:
+
+### Past Reports
+
+Query previous scan reports from the bus for what was already found, fixed, or refuted:
+
+```bash
+cd ~/dispatch && uv run python -m bus.cli reports --scanner bug-finder --since 7
+```
+
+This shows past findings with their verdicts (accepted/refuted). Use this to:
+- Skip issues that were already reported and are being tracked
+- Understand patterns in what gets refuted (calibrate your signal)
+- Build on previous findings rather than starting from scratch
+
+### Recent Code Changes
+
+Check git history for recent changes that provide context on what was built, fixed, or refactored:
+
+```bash
+cd ~/dispatch && git log --oneline --since="7 days ago" -- assistant/ bus/
+cd ~/dispatch && git log --oneline --since="7 days ago" -- ~/.claude/skills/
+```
+
+This helps you:
+- Understand WHY code changed (a refactor may cause temporary regressions)
+- Identify fixes that were already landed (don't report fixed bugs)
+- See what the admin was working on (provides intent behind changes)

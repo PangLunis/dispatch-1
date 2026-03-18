@@ -204,7 +204,7 @@ class ResourceRegistry:
             'fd_tracked': len(resources),
         }
 
-    def check_fd_leaks(self, threshold: int = 20) -> list[str]:
+    def check_fd_leaks(self, threshold: int = 40) -> list[str]:
         """Compare tracked count vs /dev/fd/ actual count using baseline calibration.
 
         Returns list of warning strings (empty = healthy).

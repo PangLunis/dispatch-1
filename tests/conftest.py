@@ -202,6 +202,16 @@ from assistant.common import (
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _isolate_perf_dir(tmp_path):
+    """Redirect perf metrics to tmp_path so tests don't pollute production logs."""
+    from assistant import perf
+    perf.reset_state()
+    with patch.object(perf, "PERF_DIR", tmp_path / "perf"):
+        yield
+        perf.reset_state()
+
+
 @pytest.fixture
 def registry_file(tmp_path):
     """Create a temporary session registry file."""

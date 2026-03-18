@@ -38,6 +38,7 @@ FATAL_PATTERNS: list[tuple[str, str]] = [
     (r"JSON message exceeded maximum buffer size", "buffer_overflow"),
     (r"API Error: 400.*invalid_request_error", "invalid_request_400"),
     (r"image dimensions exceed max allowed size", "image_too_large"),
+    (r"Could not process image", "image_processing_failed"),
     (r"\"authentication_\w+\"", "auth_error"),
     (r"\"billing_error\"", "billing_error"),
 ]

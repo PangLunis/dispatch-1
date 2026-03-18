@@ -435,6 +435,8 @@ class TestStartupCheck:
             {"event": {"payload": {"task_id": "nightly-consolidation"}}},
             {"event": {"payload": {"task_id": "nightly-skillify"}}},
             {"event": {"payload": {"task_id": "nightly-bugfinder"}}},
+            {"event": {"payload": {"task_id": "nightly-latencyfinder"}}},
+            {"event": {"payload": {"task_id": "nightly-vacation-scraper"}}},
         ]}
 
         with patch("assistant.reminders.load_reminders", return_value=reminders_data), \
