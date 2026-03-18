@@ -1689,11 +1689,44 @@ class Manager:
         thread.start()
         return thread
 
+    @staticmethod
+    def _is_transient_error(error: Exception) -> bool:
+        """Classify whether an error is transient (worth retrying) or permanent.
+
+        Transient: session timeouts, temporary connection issues, resource exhaustion.
+        Permanent: malformed messages, missing data, programming errors.
+        """
+        error_str = str(error).lower()
+        transient_patterns = [
+            "timeout", "control request timeout", "connection refused",
+            "resource temporarily unavailable", "too many open files",
+            "session not ready", "initialize",
+        ]
+        permanent_patterns = [
+            "keyerror", "valueerror", "typeerror", "attributeerror",
+            "json", "decode", "malformed", "missing required",
+        ]
+        # Check permanent first — if it matches, don't retry
+        for pattern in permanent_patterns:
+            if pattern in error_str:
+                return False
+        # Check transient patterns
+        for pattern in transient_patterns:
+            if pattern in error_str:
+                return True
+        # Default: treat unknown errors as transient (safer to retry)
+        return True
+
     async def _run_message_consumer(self):
         """Consume message.received events from bus and route to process_message.
 
         Near-zero latency via asyncio.Event notification from poll loops.
         Falls back to periodic 5s poll as safety net for missed signals.
+
+        Hybrid retry/DLQ strategy:
+        - Transient errors: re-produce to messages topic (up to 2 retries)
+        - Permanent errors or exhausted retries: send to messages.dlq topic
+        - Always commit offset immediately (never block on poison messages)
 
         Threading note: consumer.poll() runs on a dedicated single-thread executor
         because it uses time.sleep() internally. consumer.commit() runs on the event

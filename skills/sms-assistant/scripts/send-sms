@@ -106,17 +106,127 @@ def looks_like_filepath(message: str) -> bool:
     return False
 
 
+def resolve_imessage_handle(identifier: str) -> str:
+    """Resolve a phone number to its iMessage-capable handle.
+
+    On Mac Minis (no cellular), sending to a phone number may route via SMS
+    (which silently fails). This checks chat.db: if the phone only has an SMS
+    chat, look for an iMessage chat with the same contact (via email) and
+    return that instead.
+
+    Falls back to the original identifier if no better handle is found.
+    """
+    import sqlite3
+
+    # Only remap phone numbers, not emails or group IDs
+    if not identifier.startswith('+'):
+        return identifier
+
+    chat_db = Path.home() / "Library" / "Messages" / "chat.db"
+    if not chat_db.exists():
+        return identifier
+
+    try:
+        conn = sqlite3.connect(str(chat_db), timeout=5)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA read_uncommitted=1")
+
+        # Check if this phone number has an iMessage chat (not just SMS)
+        row = conn.execute(
+            "SELECT service_name FROM chat WHERE chat_identifier = ?",
+            (identifier,)
+        ).fetchone()
+
+        if row and row[0] == "iMessage":
+            # Phone number already routes via iMessage — no remap needed
+            conn.close()
+            return identifier
+
+        # Phone routes to SMS or doesn't exist. Look for an iMessage chat
+        # with the same contact by checking all handles for this contact
+        # in macOS Contacts, then finding which one has an iMessage chat.
+        #
+        # Strategy: find all other handles that share a chat with this phone
+        # number (via group chats), or look up contact email from Contacts.app.
+        # Simpler: check config.local.yaml for owner mapping, or use the
+        # contacts CLI to find the contact's email.
+
+        # First, check if this phone maps to a known contact with an email
+        import yaml
+        config_path = Path.home() / "dispatch" / "config.local.yaml"
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f) or {}
+            owner = config.get("owner", {})
+            owner_phone = owner.get("phone", "")
+            # If the owner's phone field is an email (iMessage handle), and
+            # the identifier matches the signal/phone config, remap
+            if owner_phone and '@' in owner_phone:
+                signal_phone = config.get("signal", {}).get("account", "")
+                if identifier == signal_phone or identifier.lstrip('+') in signal_phone:
+                    # This phone number belongs to the owner, use email handle
+                    email_chat = conn.execute(
+                        "SELECT chat_identifier, service_name FROM chat WHERE chat_identifier = ? AND service_name = 'iMessage'",
+                        (owner_phone,)
+                    ).fetchone()
+                    if email_chat:
+                        conn.close()
+                        print(f"REMAP|{identifier}|{owner_phone}|iMessage", file=sys.stderr)
+                        return owner_phone
+
+        # General fallback: look for any iMessage chat with an email handle
+        # that shares the same contact (via AddressBook)
+        # For now, try the contacts CLI to get the email
+        try:
+            contact_result = subprocess.run(
+                [str(Path.home() / ".claude" / "skills" / "contacts" / "scripts" / "contacts"),
+                 "lookup", identifier],
+                capture_output=True, text=True, timeout=5
+            )
+            if contact_result.returncode == 0:
+                # Parse output for email addresses
+                for line in contact_result.stdout.strip().split('\n'):
+                    if '@' in line:
+                        # Extract email from the output
+                        parts = line.strip().split()
+                        for part in parts:
+                            if '@' in part:
+                                email = part.strip()
+                                # Check if this email has an iMessage chat
+                                email_chat = conn.execute(
+                                    "SELECT chat_identifier FROM chat WHERE chat_identifier = ? AND service_name = 'iMessage'",
+                                    (email,)
+                                ).fetchone()
+                                if email_chat:
+                                    conn.close()
+                                    print(f"REMAP|{identifier}|{email}|iMessage", file=sys.stderr)
+                                    return email
+        except Exception:
+            pass
+
+        conn.close()
+    except Exception as e:
+        print(f"REMAP_ERROR|{identifier}|{e}", file=sys.stderr)
+
+    return identifier
+
+
 def send_text_individual(phone: str, message: str) -> bool:
     """Send a text message to an individual."""
+    # Resolve phone to iMessage handle if needed (prevents SMS routing on Mac Mini)
+    resolved = resolve_imessage_handle(phone)
+    if resolved != phone:
+        print(f"Resolved {phone} -> {resolved} (iMessage)", file=sys.stderr)
+
     # Escape for AppleScript (backslashes first, then quotes)
     escaped = message.replace('\\', '\\\\').replace('"', '\\"')
     script = f'''
     tell application "Messages"
         set targetService to 1st account whose service type = iMessage
-        set targetBuddy to buddy "{phone}" of targetService
+        set targetBuddy to buddy "{resolved}" of targetService
         send "{escaped}" to targetBuddy
     end tell
-    return "SENT|{phone}"
+    return "SENT|{resolved}"
     '''
     result = subprocess.run(
         ["osascript", "-e", script],
@@ -165,6 +275,11 @@ def send_image_individual(phone: str, image_path: str) -> bool:
     IMPORTANT: Due to a macOS bug (Monterey through Sequoia), images must be
     sent from ~/Pictures folder. This copies the image there temporarily.
     """
+    # Resolve phone to iMessage handle if needed
+    resolved = resolve_imessage_handle(phone)
+    if resolved != phone:
+        print(f"Resolved {phone} -> {resolved} (iMessage)", file=sys.stderr)
+
     # Copy to Pictures folder (macOS bug workaround)
     pictures_dir = Path.home() / "Pictures"
     filename = Path(image_path).name
@@ -177,10 +292,10 @@ def send_image_individual(phone: str, image_path: str) -> bool:
         set theFile to POSIX file "{temp_path}"
         tell application "Messages"
             set targetService to 1st account whose service type = iMessage
-            set targetBuddy to buddy "{phone}" of targetService
+            set targetBuddy to buddy "{resolved}" of targetService
             send file theFile to targetBuddy
         end tell
-        return "SENT_IMAGE|{phone}|{filename}"
+        return "SENT_IMAGE|{resolved}|{filename}"
         '''
         result = subprocess.run(
             ["osascript", "-e", script],
@@ -255,6 +370,11 @@ def send_file_individual(phone: str, file_path: str) -> bool:
     IMPORTANT: Due to a macOS bug (Monterey through Sequoia), files must be
     sent from ~/Pictures folder. This copies the file there temporarily.
     """
+    # Resolve phone to iMessage handle if needed
+    resolved = resolve_imessage_handle(phone)
+    if resolved != phone:
+        print(f"Resolved {phone} -> {resolved} (iMessage)", file=sys.stderr)
+
     # Copy to Pictures folder (macOS bug workaround)
     pictures_dir = Path.home() / "Pictures"
     filename = Path(file_path).name
@@ -267,10 +387,10 @@ def send_file_individual(phone: str, file_path: str) -> bool:
         set theFile to POSIX file "{temp_path}"
         tell application "Messages"
             set targetService to 1st account whose service type = iMessage
-            set targetBuddy to buddy "{phone}" of targetService
+            set targetBuddy to buddy "{resolved}" of targetService
             send file theFile to targetBuddy
         end tell
-        return "SENT_FILE|{phone}|{filename}"
+        return "SENT_FILE|{resolved}|{filename}"
         '''
         result = subprocess.run(
             ["osascript", "-e", script],

@@ -10,6 +10,7 @@ Topic/type taxonomy (v6):
                 message.ignored,
                 message.queued, message.delivered, message.replay_failed,
                 reaction.received, reaction.ignored (keyed by chat_id)
+    messages.dlq — message.dead_lettered (keyed by chat_id, includes original payload + error)
     sessions  — session.created/restarted/killed/compacted/crashed/injected,
                 session.idle_killed, session.prewarmed, session.tier_mismatch,
                 session.prompt_built, session.receive_error,

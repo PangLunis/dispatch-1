@@ -509,10 +509,12 @@ Explorers: 4 | Candidates: {N} | Accepted: {A} | Refuted: {R} | Needs Investigat
 
 **Interactive mode** (default): Print the report to the conversation.
 
-**Nightly mode** (prompt contains "--nightly"): Send the full report via SMS to admin. Do NOT truncate or summarize — the admin needs full details to triage when they see it. Use the reply CLI or send-sms:
+**Nightly mode** (prompt contains "--nightly"): Send the full report via SMS to admin. Do NOT truncate or summarize — the admin needs full details to triage when they see it. Look up the admin's chat ID dynamically:
 
 ```bash
-~/.claude/skills/sms-assistant/scripts/send-sms "{ADMIN_PHONE}" "{FULL_REPORT}"
+# Get admin chat ID (phone or email)
+ADMIN_CHAT_ID=$(~/.claude/skills/contacts/scripts/contacts list --tier admin | head -1 | awk '{print $NF}')
+~/.claude/skills/sms-assistant/scripts/send-sms "$ADMIN_CHAT_ID" "{FULL_REPORT}"
 ```
 
 Only send if there are ACCEPT or REFINE verdicts. If everything was refuted, skip the SMS and log "bug-finder nightly: clean scan, no bugs found."

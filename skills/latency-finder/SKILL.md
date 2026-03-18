@@ -49,7 +49,8 @@ Launch **4 parallel Explore subagents** simultaneously. Each focuses on a differ
 **IMPORTANT: All subagents (both discovery and refinement) MUST use `model: "opus"`.** Never use sonnet or haiku.
 
 **Admin transcript context:** When scanning `~/dispatch/`, Explorer 1 (Perf Metrics) MUST also read recent admin transcripts to understand the context of changes — what was being built, what problems were being solved, and what the admin's intent was. This prevents flagging intentional changes as regressions.
-- Read: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "+16175969496" --limit 40`
+- First, look up the admin's chat ID dynamically: `~/.claude/skills/contacts/scripts/contacts list --tier admin` (use the phone/email from the first result)
+- Read: `~/.claude/skills/sms-assistant/scripts/read-sms --chat "{ADMIN_CHAT_ID}" --limit 40`
 - This gives the last 40 messages from the admin's 1:1 chat, which contains discussion of recent changes, performance complaints, and optimization intent.
 - Use this context to: (a) understand WHY metrics changed, (b) identify latency issues the admin already knows about vs new ones, (c) find performance complaints mentioned in conversation but not yet fixed.
 
