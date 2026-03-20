@@ -93,6 +93,7 @@ _SEND_SCRIPT_PATTERNS = (
     "/scripts/send-signal",
     "/scripts/send-signal-group",
     "/scripts/reply",
+    "/scripts/reply-sven",
 )
 
 def _is_send_command(cmd: str) -> bool:
@@ -843,7 +844,7 @@ class SDKSession:
                                         "command": cmd,
                                         "tool_use_id": tool_use_id,
                                         "duration_ms": duration_ms,
-                                    }, key=self.chat_id, source="sdk_session")
+                                    }, key=f"{self.source}:{self.chat_id}", source="sdk_session")
                     else:
                         self._log.warning(f"TOOL_RESULT_ORPHAN | tool_use_id={tool_use_id}")
 

@@ -29,7 +29,7 @@ When the healing session deleted `/tmp/claude-501/.../` contents, the files were
 
 - `~/.cache/uv/environments-v2/`: 70GB (430 cached virtual environments from uv shebang scripts)
 - `~/.cache/huggingface/hub/`: 83GB (downloaded model weights)
-- `~/.cache/memory-search/index.sqlite`: 51GB (FTS search index — may need VACUUM)
+- `~/.cache/memory-search/index.sqlite`: 61GB (legacy FTS search index — RETIRED, replaced by bus FTS5)
 - `~/Library/Messages/Attachments/`: 50GB (iMessage media)
 
 ### Fixes Applied
@@ -46,7 +46,7 @@ When the healing session deleted `/tmp/claude-501/.../` contents, the files were
 
 3. **Memory-mapped model files are deceptively large.** A 270MB model file can map to 67-165GB of virtual memory. Multiple instances compound this.
 
-4. **Cache directories grow unbounded without maintenance.** uv, huggingface, and memory-search caches all grew to 50-100GB each without any cleanup policy. Consider periodic `uv cache prune` and huggingface cache management.
+4. **Cache directories grow unbounded without maintenance.** uv and huggingface caches grew to 50-100GB each without any cleanup policy. Consider periodic `uv cache prune` and huggingface cache management. The 61GB memory-search cache has been retired (replaced by bus FTS5).
 
 5. **The disk monitor would have caught this.** At 90% threshold, we would have been alerted ~100GB before the system became unusable, giving time to investigate and clean up.
 
@@ -55,5 +55,5 @@ When the healing session deleted `/tmp/claude-501/.../` contents, the files were
 - [x] Add disk space monitoring to health checks
 - [ ] Add `lsof +L1` check to HEALME/healing skill to detect deleted-but-held files
 - [ ] Add orphaned child process detection to session cleanup (kill spawned processes when session dies)
-- [ ] Investigate memory-search 51GB sqlite — likely needs VACUUM or index rebuild
+- [x] ~~Investigate memory-search 51GB sqlite~~ — RETIRED: memory-search daemon replaced by bus FTS5. Delete `~/.cache/memory-search/` to reclaim 61GB.
 - [ ] Consider adding zombie process detection to health checks (processes from dead sessions)

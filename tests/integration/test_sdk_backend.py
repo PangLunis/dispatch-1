@@ -383,12 +383,3 @@ class TestGroupSessions:
         assert hasattr(sdk_backend, 'inject_group_message')
 
 
-@pytest.mark.asyncio
-class TestBackgroundSessions:
-    """Test background session support (for memory consolidation)."""
-
-    async def test_background_session_methods_exist(self, sdk_backend):
-        """Test that background session methods exist."""
-        # Background sessions are complex - just verify methods exist
-        assert hasattr(sdk_backend, 'create_background_session')
-        assert hasattr(sdk_backend, 'inject_consolidation')

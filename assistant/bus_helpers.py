@@ -10,7 +10,7 @@ Topic/type taxonomy (v6):
                 message.ignored,
                 message.queued, message.delivered, message.replay_failed,
                 reaction.received, reaction.ignored (keyed by chat_id)
-    messages.dlq — message.dead_lettered (keyed by chat_id, includes original payload + error)
+    messages.dlq — dead_letter (keyed by chat_id, includes original payload + error)
     sessions  — session.created/restarted/killed/compacted/crashed/injected,
                 session.idle_killed, session.prewarmed, session.tier_mismatch,
                 session.prompt_built, session.receive_error,
@@ -36,6 +36,7 @@ Topic/type taxonomy (v6):
     reminders — reminder.due (keyed by chat_id)
     tasks     — task.requested, task.started, task.completed, task.failed,
                 task.timeout, task.skipped (keyed by requested_by chat_id)
+    facts     — fact.created, fact.updated, fact.expired (keyed by contact chat_id)
 
 Source column semantics per topic:
     messages:   transport layer — "imessage", "signal", "test"
@@ -44,11 +45,27 @@ Source column semantics per topic:
                 "consumer", "reminder", "healme", "vision", "compaction", "sdk", "signal"
     reminders:  "reminder-poller"
     tasks:      "task-runner", "reminder-scheduler"
+    facts:      "fact-cli", "consolidation"
 """
 import json
 import logging
+import re
 
 log = logging.getLogger(__name__)
+
+# Phone number pattern: +1XXXXXXXXXX or similar international formats
+_PHONE_RE = re.compile(r'\+\d{10,15}')
+# Email pattern
+_EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+
+
+def redact_pii(text: str) -> str:
+    """Redact PII (phone numbers, emails) from text for safe bus storage."""
+    if not text:
+        return text
+    text = _PHONE_RE.sub('[REDACTED_PHONE]', text)
+    text = _EMAIL_RE.sub('[REDACTED_EMAIL]', text)
+    return text
 
 
 def _ensure_json_safe(payload: dict) -> dict:
@@ -321,7 +338,7 @@ def sanitize_msg_for_bus(msg: dict) -> dict:
     DIRECT_FIELDS = {
         "rowid", "phone", "text", "is_group", "group_name",
         "chat_identifier", "is_audio_message", "audio_transcription",
-        "thread_originator_guid", "source",
+        "thread_originator_guid", "source", "sender_name",
     }
 
     for k, v in msg.items():
@@ -515,6 +532,32 @@ def scan_failed_payload(scanner: str, run_id: str, error: str,
     }
     payload.update(extra)
     return payload
+
+
+def fact_event_payload(fact_id: int, contact: str, fact_type: str,
+                       summary: str, details: dict | None = None,
+                       confidence: str = "high",
+                       starts_at: str | None = None,
+                       ends_at: str | None = None, **extra) -> dict:
+    """Build a fact.created/updated/expired payload."""
+    payload = {
+        "fact_id": fact_id,
+        "contact": contact,
+        "fact_type": fact_type,
+        "summary": summary,
+        "details": details,
+        "confidence": confidence,
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+    }
+    payload.update(extra)
+    return payload
+
+
+def produce_fact_event(producer, contact: str, event_type: str, payload: dict):
+    """Convenience wrapper for fact events on the facts topic."""
+    produce_event(producer, "facts", event_type, payload,
+                  key=contact, source="consolidation")
 
 
 def produce_scan_event(producer, scanner: str, event_type: str, payload: dict):

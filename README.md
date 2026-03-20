@@ -218,7 +218,6 @@ hue:
 │   ├── watchdog         # Auto-recovery daemon
 │   └── watchdog-*       # Watchdog management
 ├── services/            # Supporting services
-│   ├── memory-search/   # TypeScript FTS daemon
 │   └── sven-api/        # iOS app backend
 ├── tests/               # Test suite (920+ tests)
 ├── state/               # Runtime state

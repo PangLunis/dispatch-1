@@ -676,7 +676,6 @@ def cmd_inject_prompt(args):
         "sms": args.sms,
         "admin": args.admin,
         "sven_app": getattr(args, 'sven_app', False),
-        "bg": args.bg,
         "contact_name": contact_name,
         "tier": tier,
         "source": source,
@@ -1067,7 +1066,6 @@ def main():
     inject_parser = subparsers.add_parser("inject-prompt", help="Inject prompt into a session")
     inject_parser.add_argument("chat_id", help="Session name (imessage/_15555550100), chat_id, or contact name")
     inject_parser.add_argument("prompt", nargs="?", default="", help="Prompt text")
-    inject_parser.add_argument("--bg", action="store_true", help="Target background session")
     inject_parser.add_argument("--sms", action="store_true", help="Wrap in SMS format")
     inject_parser.add_argument("--admin", action="store_true", help="Wrap in ADMIN OVERRIDE tags")
     inject_parser.add_argument("--sven-app", action="store_true", help="Message from Sven iOS app (adds 🎤 prefix and echo instruction)")
@@ -1087,8 +1085,8 @@ def main():
     remind_add.add_argument("--at", dest="at_time", help="Fire at time (e.g., 3pm, 15:00)")
     remind_add.add_argument("--cron", help="Cron pattern (e.g., '0 9 * * *' for 9am daily)")
     remind_add.add_argument("--tz", help="Timezone override (e.g., America/Los_Angeles)")
-    remind_add.add_argument("--target", "-t", choices=["fg", "bg", "spawn"], default="fg",
-                           help="Target: fg (foreground session), bg (background), spawn (new agent)")
+    remind_add.add_argument("--target", "-t", choices=["fg", "spawn"], default="fg",
+                           help="Target: fg (foreground session), spawn (new agent)")
     remind_add.add_argument("--event", dest="event_json", help="Event template JSON (generalized mode, no --contact needed)")
 
     # remind list

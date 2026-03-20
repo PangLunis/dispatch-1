@@ -1,0 +1,604 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "scrapling>=0.2.0",
+#     "beautifulsoup4",
+#     "curl_cffi",
+#     "playwright",
+#     "browserforge",
+#     "lxml",
+# ]
+# ///
+"""Midjourney CLI — Generate images via scrapling + Midjourney API."""
+
+import argparse
+import json
+import logging
+import subprocess
+import sys
+import time
+from io import BytesIO
+from pathlib import Path
+
+from scrapling import Fetcher
+
+log = logging.getLogger(__name__)
+
+CHROME_CLI = Path.home() / ".claude/skills/chrome-control/scripts/chrome"
+DEFAULT_OUTPUT = Path.home() / "Pictures/midjourney"
+MJ_API = "https://www.midjourney.com/api"
+MJ_CDN = "https://cdn.midjourney.com"
+USER_ID = "15ac3a42-3b8f-4709-8a10-8a0a744be539"
+CHANNEL_ID = f"singleplayer_{USER_ID}"
+MAX_WAIT = 300
+
+
+def get_cookies() -> dict[str, str]:
+    try:
+        result = subprocess.run(
+            [str(CHROME_CLI), "cookies", "midjourney.com"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            log.error(f"Failed to get cookies: {result.stderr}")
+            return {}
+        cookies_list = json.loads(result.stdout)
+        return {c["name"]: c["value"] for c in cookies_list}
+    except Exception as e:
+        log.error(f"Cookie extraction failed: {e}")
+        return {}
+
+
+def make_cookie_header(cookies: dict[str, str]) -> str:
+    return "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+
+def api_request(fetcher, endpoint, cookies, method="GET", json_body=None):
+    url = f"{MJ_API}/{endpoint}"
+    headers = {
+        "Cookie": make_cookie_header(cookies),
+        "x-csrf-protection": "1",
+        "Content-Type": "application/json",
+        "Referer": "https://www.midjourney.com/imagine",
+        "Origin": "https://www.midjourney.com",
+    }
+    try:
+        if method == "POST" and json_body:
+            response = fetcher.post(url, headers=headers, json=json_body, timeout=30)
+        else:
+            response = fetcher.get(url, headers=headers, timeout=30)
+        if response.status >= 400:
+            body_text = ""
+            if response.body:
+                try:
+                    body_text = response.body.decode("utf-8", errors="replace")
+                except Exception:
+                    body_text = str(response.body[:500])
+            log.error(f"API {response.status}: {body_text[:500]}")
+            return None
+        try:
+            return response.json()
+        except Exception:
+            try:
+                return json.loads(response.body.decode("utf-8", errors="replace"))
+            except Exception:
+                log.error(f"Non-JSON response")
+                return None
+    except Exception as e:
+        log.error(f"Request failed: {e}")
+        return None
+
+
+def upload_image(cookies: dict[str, str], image_path: Path) -> str | None:
+    """Upload an image to Midjourney's storage and return the s.mj.run URL.
+
+    Uses curl_cffi low-level API with CurlMime for multipart upload
+    with TLS fingerprinting (required to bypass Cloudflare).
+    """
+    from curl_cffi import Curl, CurlMime, CurlOpt, CurlInfo
+
+    cookie_header = make_cookie_header(cookies)
+    img_data = image_path.read_bytes()
+    suffix = image_path.suffix.lstrip(".")
+    content_type = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "webp": "image/webp", "gif": "image/gif"}.get(suffix, "image/png")
+
+    c = Curl()
+    c.impersonate("chrome")
+    buffer = BytesIO()
+
+    mime = CurlMime()
+    mime.addpart(name="file", filename=image_path.name, content_type=content_type, data=img_data)
+    mime.attach(c)
+
+    c.setopt(CurlOpt.URL, b"https://www.midjourney.com/api/storage-upload-file")
+    c.setopt(CurlOpt.HTTPHEADER, [
+        f"Cookie: {cookie_header}".encode(),
+        b"x-csrf-protection: 1",
+        b"Referer: https://www.midjourney.com/imagine",
+        b"Origin: https://www.midjourney.com",
+    ])
+    c.setopt(CurlOpt.WRITEDATA, buffer)
+
+    try:
+        c.perform()
+        status = c.getinfo(CurlInfo.RESPONSE_CODE)
+        body = buffer.getvalue().decode("utf-8", errors="replace")
+        c.close()
+
+        if status != 200:
+            log.error(f"Upload failed ({status}): {body[:500]}")
+            return None
+
+        data = json.loads(body)
+        short_url = data.get("shortUrl")
+        if short_url:
+            return short_url
+        log.error(f"No shortUrl in response: {body[:500]}")
+        return None
+    except Exception as e:
+        log.error(f"Upload error: {e}")
+        try:
+            c.close()
+        except Exception:
+            pass
+        return None
+
+
+def submit_imagine(fetcher, cookies, prompt, image_prompts=None, style_refs=None, omni_refs=None):
+    body = {
+        "f": {"mode": "fast", "private": False},
+        "channelId": CHANNEL_ID,
+        "metadata": {
+            "imagePrompts": image_prompts or [],
+            "imageReferences": [],
+            "characterReferences": omni_refs or [],
+            "styleReferences": style_refs or [],
+        },
+        "t": "imagine",
+        "prompt": prompt,
+    }
+    return api_request(fetcher, "submit-jobs", cookies, method="POST", json_body=body)
+
+
+def extract_job_id(result):
+    """Extract job_id from submit-jobs response.
+
+    Known response format:
+    {"success": [{"job_id": "uuid", "prompt": "...", ...}], "failure": []}
+    """
+    if not result or not isinstance(result, dict):
+        return None
+
+    # Primary: success array with job_id
+    success = result.get("success", [])
+    if isinstance(success, list) and success:
+        job_id = success[0].get("job_id") or success[0].get("id")
+        if job_id:
+            return job_id
+
+    # Fallback: direct id field
+    job_id = result.get("id") or result.get("job_id") or result.get("jobId")
+    if job_id:
+        return job_id
+
+    # Fallback: jobs array
+    if "jobs" in result:
+        jobs = result["jobs"]
+        if isinstance(jobs, list) and jobs:
+            return jobs[0].get("id")
+
+    # Last resort: scan for UUID-shaped string
+    for key in result:
+        val = result[key]
+        if isinstance(val, str) and len(val) == 36 and "-" in val:
+            return val
+
+    return None
+
+
+def poll_job(fetcher, cookies, job_id, max_wait=MAX_WAIT):
+    """Poll for job completion using /api/imagine endpoint.
+
+    The /api/imagine endpoint only returns completed jobs. If a job
+    appears in the results, it's done. We poll until the job shows up.
+    """
+    start = time.time()
+    poll_interval = 5
+    while time.time() - start < max_wait:
+        time.sleep(poll_interval)
+        elapsed = int(time.time() - start)
+        data = api_request(fetcher, f"imagine?user_id={USER_ID}&page_size=20", cookies)
+        if data and isinstance(data, dict):
+            jobs = data.get("data", [])
+            for job in jobs:
+                if job.get("id") == job_id:
+                    # Job appeared in results — it's complete
+                    print()
+                    return job
+        sys.stdout.write(f"\r  Waiting... {elapsed}s  ")
+        sys.stdout.flush()
+        # Increase interval after initial fast polls
+        if elapsed > 30:
+            poll_interval = 10
+    print()
+    log.warning(f"Timed out after {max_wait}s")
+    return None
+
+
+def download_image(fetcher, cookies, job_id, index=0, output_dir=DEFAULT_OUTPUT):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for ext, url_pattern in [
+        ("jpeg", f"{MJ_CDN}/{job_id}/0_{index}.jpeg"),
+        ("webp", f"{MJ_CDN}/{job_id}/0_{index}_640_N.webp?method=shortest"),
+    ]:
+        headers = {"Cookie": make_cookie_header(cookies), "Referer": "https://www.midjourney.com/"}
+        try:
+            response = fetcher.get(url_pattern, headers=headers, timeout=60)
+            if response.status == 200 and response.body and len(response.body) > 1000:
+                fname = f"{job_id}_{index}.{ext}"
+                out_path = output_dir / fname
+                out_path.write_bytes(response.body)
+                return out_path
+        except Exception as e:
+            log.debug(f"Download attempt failed ({ext}): {e}")
+            continue
+    log.info("Direct download failed, falling back to Chrome download...")
+    return download_via_chrome(job_id, index, output_dir)
+
+
+def download_via_chrome(job_id, index, output_dir):
+    try:
+        img_url = f"https://www.midjourney.com/jobs/{job_id}"
+        subprocess.run([str(CHROME_CLI), "open", img_url], capture_output=True, text=True, timeout=10)
+        time.sleep(2)
+        result = subprocess.run([str(CHROME_CLI), "tabs"], capture_output=True, text=True, timeout=5)
+        tab_id = None
+        for line in result.stdout.strip().split("\n"):
+            if job_id in line and line.strip()[0:1].isdigit():
+                tab_id = line.split()[0]
+                break
+        if not tab_id:
+            return None
+        before_files = set(Path.home().joinpath("Downloads").glob("*.png"))
+        js_code = (
+            "const btn = Array.from(document.querySelectorAll('button'))"
+            ".find(b => b.getAttribute('title') === 'Download Image');"
+            "if (btn) { btn.click(); 'ok' } else 'no btn'"
+        )
+        subprocess.run([str(CHROME_CLI), "js", tab_id, js_code], capture_output=True, text=True, timeout=10)
+        for _ in range(15):
+            time.sleep(1)
+            after_files = set(Path.home().joinpath("Downloads").glob("*.png"))
+            new_files = after_files - before_files
+            if new_files:
+                dl_file = new_files.pop()
+                dest = output_dir / dl_file.name
+                dl_file.rename(dest)
+                subprocess.run([str(CHROME_CLI), "close", tab_id], capture_output=True, text=True, timeout=5)
+                return dest
+        return None
+    except Exception as e:
+        log.error(f"Chrome download fallback failed: {e}")
+        return None
+
+
+def resolve_image_urls(cookies, image_paths):
+    """Upload local images and return s.mj.run URLs. Passes through URLs as-is."""
+    urls = []
+    for img in image_paths:
+        if img.startswith("http://") or img.startswith("https://"):
+            urls.append(img)
+        else:
+            path = Path(img).expanduser()
+            if not path.exists():
+                log.error(f"Image not found: {path}")
+                sys.exit(1)
+            print(f"  Uploading {path.name}...")
+            url = upload_image(cookies, path)
+            if not url:
+                log.error(f"Failed to upload {path}")
+                sys.exit(1)
+            print(f"  Uploaded: {url}")
+            urls.append(url)
+    return urls
+
+
+MJ_CDN_VIDEO = "https://cdn.midjourney.com/video"
+
+
+def submit_video(fetcher, cookies, parent_job_id, image_num=0, prompt="", motion="auto", resolution="480"):
+    """Submit a video generation job from an existing image job."""
+    video_type = f"vid_1.1_i2v_{resolution}"
+    body = {
+        "f": {"mode": "fast", "private": False},
+        "channelId": CHANNEL_ID,
+        "metadata": {
+            "isMobile": None,
+            "imagePrompts": None,
+            "imageReferences": None,
+            "characterReferences": None,
+            "depthReferences": None,
+            "lightboxOpen": None,
+        },
+        "t": "video",
+        "videoType": video_type,
+        "newPrompt": f"{prompt} --motion {motion} --video 1" if prompt else f"--motion {motion} --video 1",
+        "parentJob": {"job_id": parent_job_id, "image_num": image_num},
+        "animateMode": "auto",
+    }
+    return api_request(fetcher, "submit-jobs", cookies, method="POST", json_body=body)
+
+
+def poll_video_job(fetcher, cookies, job_id, max_wait=MAX_WAIT):
+    """Poll for video job completion. Videos appear in /api/imagine with event_type=video_diffusion."""
+    start = time.time()
+    poll_interval = 10  # Videos take longer
+    while time.time() - start < max_wait:
+        time.sleep(poll_interval)
+        elapsed = int(time.time() - start)
+        data = api_request(fetcher, f"imagine?user_id={USER_ID}&page_size=50", cookies)
+        if data and isinstance(data, dict):
+            for job in data.get("data", []):
+                if job.get("id") == job_id:
+                    if job.get("video_segments"):
+                        print()
+                        return job
+        sys.stdout.write(f"\r  Waiting... {elapsed}s  ")
+        sys.stdout.flush()
+        if elapsed > 60:
+            poll_interval = 15
+    print()
+    log.warning(f"Timed out after {max_wait}s")
+    return None
+
+
+def download_video(fetcher, cookies, job_id, index=0, output_dir=DEFAULT_OUTPUT):
+    """Download a video from the CDN. Videos use /video/ path prefix."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    url = f"{MJ_CDN_VIDEO}/{job_id}/{index}.mp4"
+    headers = {"Cookie": make_cookie_header(cookies), "Referer": "https://www.midjourney.com/"}
+    try:
+        response = fetcher.get(url, headers=headers, timeout=120)
+        if response.status == 200 and response.body and len(response.body) > 1000:
+            fname = f"{job_id}_{index}.mp4"
+            out_path = output_dir / fname
+            out_path.write_bytes(response.body)
+            return out_path
+    except Exception as e:
+        log.error(f"Video download failed: {e}")
+    return None
+
+
+def cmd_imagine(args):
+    cookies = get_cookies()
+    if not cookies:
+        print("ERROR: No Midjourney cookies. Log in to midjourney.com in Chrome.", file=sys.stderr)
+        sys.exit(1)
+    fetcher = Fetcher()
+    output_dir = Path(args.output).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Handle image uploads
+    image_prompt_urls = []
+    style_ref_urls = []
+    prompt = args.prompt
+
+    if args.image:
+        print("Uploading image prompts...")
+        image_prompt_urls = resolve_image_urls(cookies, args.image)
+        # Prepend image URLs to prompt (Midjourney convention)
+        url_prefix = " ".join(image_prompt_urls)
+        prompt = f"{url_prefix} {prompt}"
+
+    if args.sref:
+        print("Uploading style references...")
+        style_ref_urls = resolve_image_urls(cookies, args.sref)
+
+    omni_ref_urls = []
+    if args.oref:
+        print("Uploading omni references (face/character)...")
+        omni_ref_urls = resolve_image_urls(cookies, args.oref)
+        # Add --oref URLs to prompt
+        oref_suffix = " ".join(f"--oref {u}" for u in omni_ref_urls)
+        prompt = f"{prompt} {oref_suffix}"
+        if args.ow is not None:
+            prompt = f"{prompt} --ow {int(args.ow)}"
+
+    print(f"Submitting: {prompt}")
+    result = submit_imagine(fetcher, cookies, prompt,
+                           image_prompts=image_prompt_urls,
+                           style_refs=style_ref_urls,
+                           omni_refs=omni_ref_urls)
+    if not result:
+        print("ERROR: Failed to submit job", file=sys.stderr)
+        sys.exit(1)
+    job_id = extract_job_id(result)
+    if not job_id:
+        print(f"WARNING: Could not extract job ID: {json.dumps(result)[:500]}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Job ID: {job_id}")
+    print("Waiting for generation...")
+    job_data = poll_job(fetcher, cookies, job_id, max_wait=args.wait)
+    if job_data:
+        dims = f"{job_data.get('width', '?')}x{job_data.get('height', '?')}"
+        print(f"Generation complete! ({dims})")
+    else:
+        print("WARNING: Polling timed out, attempting download anyway...")
+    # Download all 4 variations
+    downloaded = []
+    for i in range(4):
+        dl_path = download_image(fetcher, cookies, job_id, index=i, output_dir=output_dir)
+        if dl_path:
+            downloaded.append(dl_path)
+    if downloaded:
+        print(f"\nDownloaded {len(downloaded)} images:")
+        for p in downloaded:
+            print(f"  {p}")
+    else:
+        print("Note: Could not auto-download.")
+    print()
+    print("CDN URLs:")
+    for i in range(4):
+        print(f"  [{i}] {MJ_CDN}/{job_id}/0_{i}.jpeg")
+
+
+def cmd_video(args):
+    """Animate an existing image job into a video."""
+    cookies = get_cookies()
+    if not cookies:
+        print("ERROR: No Midjourney cookies.", file=sys.stderr)
+        sys.exit(1)
+    fetcher = Fetcher()
+    output_dir = Path(args.output).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get the prompt from the parent job, stripping any image URLs
+    prompt = ""
+    data = api_request(fetcher, f"imagine?user_id={USER_ID}&page_size=50", cookies)
+    if data and isinstance(data, dict):
+        for job in data.get("data", []):
+            if job.get("id") == args.job_id:
+                prompt = job.get("full_command", "")
+                # Strip image URLs (s.mj.run, cdn.midjourney.com, etc.) from prompt
+                import re
+                prompt = re.sub(r'https?://\S+\s*', '', prompt).strip()
+                break
+
+    resolution = "720" if args.hd else "480"
+    print(f"Animating job {args.job_id} image #{args.image_num} ({resolution}p, motion={args.motion})")
+    result = submit_video(fetcher, cookies, args.job_id, image_num=args.image_num,
+                         prompt=prompt, motion=args.motion, resolution=resolution)
+    if not result:
+        print("ERROR: Failed to submit video job", file=sys.stderr)
+        sys.exit(1)
+    vid_job_id = extract_job_id(result)
+    if not vid_job_id:
+        print(f"WARNING: Could not extract video job ID: {json.dumps(result)[:500]}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Video Job ID: {vid_job_id}")
+    print("Waiting for video generation (this takes 1-3 minutes)...")
+    job_data = poll_video_job(fetcher, cookies, vid_job_id, max_wait=args.wait)
+    if job_data:
+        dims = f"{job_data.get('width', '?')}x{job_data.get('height', '?')}"
+        segments = job_data.get('video_segments', [])
+        print(f"Video complete! ({dims}, {segments[0] if segments else '?'} frames)")
+    else:
+        print("WARNING: Polling timed out, attempting download anyway...")
+    # Download all 4 video variations
+    downloaded = []
+    batch_size = job_data.get("batch_size", 4) if job_data else 4
+    for i in range(batch_size):
+        dl_path = download_video(fetcher, cookies, vid_job_id, index=i, output_dir=output_dir)
+        if dl_path:
+            downloaded.append(dl_path)
+    if downloaded:
+        print(f"\nDownloaded {len(downloaded)} videos:")
+        for p in downloaded:
+            print(f"  {p}")
+    else:
+        print("Note: Could not auto-download.")
+
+
+
+def cmd_upload(args):
+    """Upload an image and print the s.mj.run URL."""
+    cookies = get_cookies()
+    if not cookies:
+        print("ERROR: No cookies.", file=sys.stderr)
+        sys.exit(1)
+    path = Path(args.file).expanduser()
+    if not path.exists():
+        print(f"ERROR: File not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Uploading {path.name}...")
+    url = upload_image(cookies, path)
+    if url:
+        print(f"URL: {url}")
+    else:
+        print("ERROR: Upload failed.", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_download(args):
+    cookies = get_cookies()
+    if not cookies:
+        print("ERROR: No cookies.", file=sys.stderr)
+        sys.exit(1)
+    fetcher = Fetcher()
+    dl_path = download_image(fetcher, cookies, args.job_id, index=args.index, output_dir=Path(args.output).expanduser())
+    if dl_path:
+        print(f"Downloaded: {dl_path}")
+    else:
+        print("ERROR: Download failed.", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_recent(args):
+    cookies = get_cookies()
+    if not cookies:
+        print("ERROR: No cookies.", file=sys.stderr)
+        sys.exit(1)
+    fetcher = Fetcher()
+    data = api_request(fetcher, f"imagine?user_id={USER_ID}&page_size={args.limit}", cookies)
+    if not data:
+        print("No recent jobs found or API error.")
+        return
+    jobs = data.get("data", []) if isinstance(data, dict) else data
+    if not jobs:
+        print("No recent jobs found.")
+        return
+    for job in jobs:
+        job_id = job.get("id", "?")
+        prompt = job.get("full_command", job.get("prompt", "?"))
+        job_type = job.get("job_type", "?")
+        enqueue_time = job.get("enqueue_time", "")
+        dims = f"{job.get('width', '?')}x{job.get('height', '?')}"
+        print(f"  {job_id}  [{job_type}]  {dims}  {prompt}")
+        if enqueue_time:
+            print(f"    enqueued: {enqueue_time}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Midjourney CLI — Generate images via scrapling")
+    sub = parser.add_subparsers(dest="command")
+
+    p = sub.add_parser("imagine", help="Generate images from a prompt")
+    p.add_argument("prompt", help="The image prompt (include --v, --ar, etc. in the string)")
+    p.add_argument("--image", action="append", help="Image prompt: local file path or URL (can repeat)")
+    p.add_argument("--sref", action="append", help="Style reference: local file path or URL (can repeat)")
+    p.add_argument("--oref", action="append", help="Omni reference (face/character consistency): local file or URL (can repeat)")
+    p.add_argument("--ow", type=float, default=None, help="Omni reference weight (0-1000, default 100)")
+    p.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output directory")
+    p.add_argument("--wait", type=int, default=MAX_WAIT, help="Max wait seconds")
+
+    p = sub.add_parser("video", help="Animate an image into a 5-second video")
+    p.add_argument("job_id", help="Parent image job ID to animate")
+    p.add_argument("--image-num", type=int, default=0, help="Which image from the grid (0-3)")
+    p.add_argument("--motion", default="auto", choices=["auto", "low", "high"], help="Motion intensity")
+    p.add_argument("--hd", action="store_true", help="720p HD (default 480p SD, uses more GPU)")
+    p.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output directory")
+    p.add_argument("--wait", type=int, default=MAX_WAIT, help="Max wait seconds")
+
+    p = sub.add_parser("upload", help="Upload an image and get its s.mj.run URL")
+    p.add_argument("file", help="Local image file path")
+
+    p = sub.add_parser("download", help="Download image by job ID")
+    p.add_argument("job_id", help="Midjourney job ID (UUID)")
+    p.add_argument("--index", type=int, default=0, help="Image index 0-3")
+    p.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output directory")
+
+    p = sub.add_parser("recent", help="List recent generations")
+    p.add_argument("--limit", type=int, default=10, help="Number of recent jobs")
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    {"imagine": cmd_imagine, "video": cmd_video, "upload": cmd_upload, "download": cmd_download, "recent": cmd_recent}[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

@@ -116,10 +116,6 @@ lutron:
           <td><code>DISABLE_SIGNAL</code></td>
           <td>Set to disable Signal integration</td>
         </tr>
-        <tr>
-          <td><code>DISABLE_SEARCH_DAEMON</code></td>
-          <td>Set to disable memory search service</td>
-        </tr>
       </tbody>
     </table>
   </section>

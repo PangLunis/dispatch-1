@@ -84,13 +84,7 @@ class TestIdleSessionThresholds:
 
 @pytest.mark.asyncio
 class TestSpecialSessionExemptions:
-    """Test that BG and master sessions are exempt from idle killing."""
-
-    async def test_bg_session_exempt(self, sdk_backend):
-        await sdk_backend.create_session("User", "test:+15555550006-bg", "admin", source="test")
-        sdk_backend.sessions["test:+15555550006-bg"].last_activity = datetime.now() - timedelta(hours=10)
-        killed = await sdk_backend.check_idle_sessions(2.0)
-        assert len(killed) == 0
+    """Test that master sessions are exempt from idle killing."""
 
     async def test_master_session_exempt(self, sdk_backend):
         """Master session should never be idle-killed."""
@@ -467,13 +461,6 @@ class TestFastHealthCheck:
 
         assert "test:+15555550006" in result
         assert "test:+15555550006" in sdk_backend._recently_healed
-
-    async def test_skips_bg_sessions(self, sdk_backend):
-        await sdk_backend.create_session("User", "test:+15555550006-bg", "admin", source="test")
-
-        with patch("assistant.sdk_backend.get_transcript_entries_since") as mock:
-            await sdk_backend.fast_health_check()
-            mock.assert_not_called()
 
     async def test_skips_recently_healed(self, sdk_backend):
         await sdk_backend.create_session("User", "test:+15555550006", "admin", source="test")

@@ -42,9 +42,24 @@ def init_db():
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             audio_path TEXT,
+            chat_id TEXT NOT NULL DEFAULT 'voice',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migration: add chat_id if table already exists without it
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "chat_id" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN chat_id TEXT NOT NULL DEFAULT 'voice'")
+    # Ensure chats table exists (shared with server.py)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT 'New Chat',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("INSERT OR IGNORE INTO chats (id, title) VALUES ('voice', 'General')")
     conn.commit()
     conn.close()
 
@@ -75,12 +90,16 @@ def generate_tts(text: str, output_path: Path) -> bool:
         return False
 
 
-def store_message(message_id: str, role: str, content: str, audio_path: str | None):
+def store_message(message_id: str, role: str, content: str, audio_path: str | None, chat_id: str = "voice"):
     """Store message in SQLite database."""
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT INTO messages (id, role, content, audio_path) VALUES (?, ?, ?, ?)",
-        (message_id, role, content, audio_path)
+        "INSERT INTO messages (id, role, content, audio_path, chat_id) VALUES (?, ?, ?, ?, ?)",
+        (message_id, role, content, audio_path, chat_id)
+    )
+    conn.execute(
+        "UPDATE chats SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (chat_id,)
     )
     conn.commit()
     conn.close()
@@ -114,7 +133,7 @@ def main():
     audio_path_str = str(audio_path) if tts_success else None
 
     # Store message
-    store_message(message_id, "assistant", message, audio_path_str)
+    store_message(message_id, "assistant", message, audio_path_str, args.chat_id)
 
     print(f"Message stored: {message_id}")
     if tts_success:
@@ -128,7 +147,7 @@ def main():
             # Truncate for preview
             preview = message[:100] + "..." if len(message) > 100 else message
             result = subprocess.run(
-                [str(PUSH_SCRIPT), message_id, preview],
+                [str(PUSH_SCRIPT), message_id, preview, "--chat-id", args.chat_id],
                 capture_output=True,
                 text=True,
                 timeout=30

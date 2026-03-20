@@ -123,11 +123,6 @@ def phase1_system_tools():
     check("Claude CLI", cmd_exists("claude"),
           fix_hint="Run: curl -fsSL https://code.claude.com/cli/install | bash")
 
-    # bun (for search daemon)
-    check("bun (JavaScript runtime)", cmd_exists("bun"),
-          fix_hint="Run: curl -fsSL https://bun.sh/install | bash",
-          required=False)
-
     # signal-cli (optional)
     check("signal-cli", cmd_exists("signal-cli"),
           fix_hint="Run: brew install signal-cli",
@@ -380,12 +375,6 @@ def phase7_databases():
           fix_hint="Create ~/.claude/SOUL.md with personality definition",
           required=False)
 
-    # Search daemon index
-    search_index = Path.home() / ".cache" / "dispatch-search" / "index.sqlite"
-    check("Search daemon index",
-          search_index.exists(),
-          fix_hint="Run: uv run ~/code/dispatch-search/search.py reindex",
-          required=False)
 
 
 # ─── PHASE 8: Code Repositories ──────────────────────────────────────────
@@ -399,7 +388,6 @@ def phase8_repos():
         "contacts-cli": "Contact lookup + tier management",
         "chrome-control": "Chrome browser automation",
         "nano-banana": "Image generation (Gemini)",
-        "dispatch-search": "Hybrid search daemon",
         "chat-viewer": "Web UI for transcripts",
     }
 

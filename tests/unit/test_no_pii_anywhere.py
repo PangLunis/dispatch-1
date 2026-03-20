@@ -30,7 +30,7 @@ SKIP_DIRS = {
     "docs",  # blog posts and documentation use example names
     "prototypes",  # old prototype code with example data
     "research",  # research scripts with example data
-    "services",  # memory-search service with development data
+    "services",  # service daemons with development data
     "apps",  # chat-viewer with development data
 }
 

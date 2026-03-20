@@ -643,7 +643,7 @@ Verify each quote exists and fact is accurate."""
     if dry_run:
         # Don't actually commit in dry run
         print(f"\n{'='*60}")
-        print(f"DRY RUN - Would commit these facts for {contact_name}:")
+        print(f"DRY RUN - Would commit these facts:")
         print(f"{'='*60}")
         for fact in final_facts:
             print(f"  - {fact}")
@@ -736,7 +736,7 @@ def main():
 
         results = []
         for i, contact in enumerate(contacts):
-            print(f"\n[{i+1}/{len(contacts)}] {contact['name']} ({contact['tier']})")
+            print(f"\n[{i+1}/{len(contacts)}] contact ({contact['tier']})")
             result = consolidate_contact(
                 contact["name"],
                 contact["phone"],
@@ -790,14 +790,14 @@ def main():
                     break
 
         if not contact_info:
-            print(f"Contact not found: {args.contact}")
+            print(f"Contact not found (redacted)")
             sys.exit(1)
 
         if contact_info["phone"] == "(no phone)":
-            print(f"Contact has no phone number: {contact_info['name']}")
+            print(f"Contact has no phone number")
             sys.exit(1)
 
-        print(f"Consolidating: {contact_info['name']} ({contact_info['tier']}) [3-pass mode]")
+        print(f"Consolidating: contact ({contact_info['tier']}) [3-pass mode]")
         result = consolidate_contact(
             contact_info["name"],
             contact_info["phone"],

@@ -303,7 +303,7 @@ def create_reminder(
         schedule_type: 'once' or 'cron'
         schedule_value: ISO datetime for 'once', cron pattern for 'cron'
         tz_name: Timezone override (uses default if None)
-        target: Target session - 'fg', 'bg', or 'spawn' (legacy mode)
+        target: Target session - 'fg' or 'spawn' (legacy mode)
         event: Bus event template to produce on fire (generalized mode)
 
     Returns:
@@ -333,8 +333,8 @@ def create_reminder(
         reminder["event"] = event
     else:
         # Legacy mode: validate target and store contact
-        if target not in ("fg", "bg", "spawn"):
-            raise ValueError(f"Invalid target: {target}. Must be 'fg', 'bg', or 'spawn'")
+        if target not in ("fg", "spawn"):
+            raise ValueError(f"Invalid target: {target}. Must be 'fg' or 'spawn'")
         if not contact:
             raise ValueError("Legacy reminders must have a contact")
         reminder["contact"] = contact

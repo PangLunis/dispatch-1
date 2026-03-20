@@ -768,15 +768,6 @@ class TestGroupSessionCreatedEvent:
         assert "session.created" in source
         assert "produce_session_event" in source
 
-    def test_create_background_session_emits_event(self):
-        """create_background_session() should emit session.created."""
-        import inspect
-        from assistant.sdk_backend import SDKBackend
-
-        source = inspect.getsource(SDKBackend.create_background_session)
-        assert "session.created" in source
-        assert "produce_session_event" in source
-
     def test_create_master_session_emits_event(self):
         """create_master_session() should emit session.created."""
         import inspect
@@ -875,14 +866,6 @@ class TestHealmeEvents:
 class TestServiceSpawnedEvents:
     """Verify daemon spawns emit health.service_spawned."""
 
-    def test_spawn_search_daemon_emits_event(self):
-        import inspect
-        from assistant.manager import Manager
-
-        source = inspect.getsource(Manager._spawn_search_daemon)
-        assert "health.service_spawned" in source
-        assert "service_spawned_payload" in source
-
     def test_spawn_sven_api_daemon_emits_event(self):
         import inspect
         from assistant.manager import Manager
@@ -961,13 +944,6 @@ class TestSessionBusProducerPropagation:
         from assistant.sdk_backend import SDKBackend
 
         source = inspect.getsource(SDKBackend._create_group_session_unlocked)
-        assert "_producer" in source
-
-    def test_bus_producer_set_in_create_background_session(self):
-        import inspect
-        from assistant.sdk_backend import SDKBackend
-
-        source = inspect.getsource(SDKBackend.create_background_session)
         assert "_producer" in source
 
     def test_bus_producer_set_in_create_master_session(self):

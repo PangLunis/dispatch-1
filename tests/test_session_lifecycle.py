@@ -336,14 +336,6 @@ class TestIdleSessionReaping:
         killed = await sdk_backend.check_idle_sessions(2.0)
         assert len(killed) == 0
 
-    async def test_bg_session_not_killed(self, sdk_backend):
-        """Background sessions should never be idle-killed."""
-        await sdk_backend.create_session("User", "test:+15555550006-bg", "admin", source="test")
-        session = sdk_backend.sessions["test:+15555550006-bg"]
-        session.last_activity = datetime.now() - timedelta(hours=5)
-        killed = await sdk_backend.check_idle_sessions(2.0)
-        assert len(killed) == 0
-
 
 @pytest.mark.asyncio
 class TestZombieSessionCleanup:
@@ -438,35 +430,6 @@ class TestZombieSessionCleanup:
 
         # Create new group session - should clean up zombie
         s2 = await sdk_backend.create_group_session(chat_id, "Test Group", source="test")
-
-        assert kill_called, "Zombie subprocess should have been killed"
-        assert s2.is_alive()
-        assert s2 is not s1
-
-    async def test_zombie_cleanup_on_create_background_session(self, sdk_backend):
-        """Background session creation should clean up zombie first."""
-        # Create and zombify a background session
-        s1 = await sdk_backend.create_background_session(
-            "Test User", "test:+15555551234", "admin", source="test"
-        )
-        bg_id = "test:+15555551234-bg"
-        assert bg_id in sdk_backend.sessions
-        s1.running = False
-
-        kill_called = False
-        original_kill = s1._kill_subprocess
-
-        async def track_kill():
-            nonlocal kill_called
-            kill_called = True
-            await original_kill()
-
-        s1._kill_subprocess = track_kill
-
-        # Create new bg session - should clean up zombie
-        s2 = await sdk_backend.create_background_session(
-            "Test User", "test:+15555551234", "admin", source="test"
-        )
 
         assert kill_called, "Zombie subprocess should have been killed"
         assert s2.is_alive()

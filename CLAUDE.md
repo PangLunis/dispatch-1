@@ -176,7 +176,7 @@ claude-assistant remind add "Check something" --in 10m \
 - `assistant/manager.py` — `_run_task_consumer()`, `_handle_task_requested()`, `_run_script_task()`, `_supervise_ephemeral_tasks()`
 - `assistant/sdk_backend.py` — `create_ephemeral_session()`, `kill_ephemeral_session()`
 - `assistant/reminders.py` — `create_reminder()` with event templates, `validate_event_template()`
-- `scripts/setup-nightly-tasks.py` — DEPRECATED: use `claude-assistant remind add --event` instead
+- ~~`scripts/setup-nightly-tasks.py`~~ — DEPRECATED: use `claude-assistant remind add --event` instead
 - `scripts/nightly-consolidation.sh` — wrapper for consolidation scripts
 - `plans/ephemeral-tasks-and-scheduler.md` — full design doc
 
@@ -335,15 +335,35 @@ rm -f /tmp/dispatch-watchdog-crashes.txt
 **ALL scheduled/recurring tasks MUST use the reminder system** (`~/dispatch/state/reminders.json`). The daemon's poll loop fires reminders at their scheduled times — no separate processes needed.
 
 ```bash
-# Add a nightly task at 2am ET (see setup-nightly-tasks.py for examples)
+# Add a nightly task at 2am ET
 # Use mode "script" for shell commands, "agent" for Claude sessions
-~/dispatch/scripts/setup-nightly-tasks.py
+claude-assistant remind add "Task name" --cron "0 2 * * *" \
+  --event '{"topic":"tasks","type":"task.requested","key":"...","payload":{...}}'
 
 # List existing reminders
 claude-assistant remind list
 ```
 
-Current nightly tasks (all 2am ET): memory consolidation, skillify, bug finder, vacation house scraper.
+Current nightly tasks (all 2am ET): memory consolidation (incl. fact extraction), skillify, bug finder, vacation house scraper.
+
+## Structured Facts
+
+Queryable facts about contacts (travel, events, preferences) stored in `bus.db`.
+
+```bash
+# CLI at ~/dispatch/scripts/fact
+fact list --contact "+1..." --active          # List active facts
+fact search "california"                      # Search by summary
+fact upcoming --days 14                       # Upcoming temporal facts
+fact save --contact "+1..." --type travel \   # Manual save
+  --summary "Flying to SF" --details '{"destination": "San Francisco"}'
+fact context --contact "+1..."                # Formatted for CLAUDE.md
+fact inject --contact "+1..."                 # Write to CLAUDE.md
+fact expire                                   # Expire past-due facts
+```
+
+Schema in migration `003_add_facts`. Plan at `~/dispatch/docs/plan-structured-facts.md`.
+Bus events: `fact.created`, `fact.updated`, `fact.expired` on `facts` topic.
 
 ## Transcript Directories
 
@@ -499,3 +519,11 @@ extra-paths = [
     # ... paths for dynamically imported modules
 ]
 ```
+
+## Related Repos
+
+### browser-automation-benchmark
+**Repo:** https://github.com/svenflow/browser-automation-benchmark
+**Local:** `~/code/browser-automation-benchmark/`
+
+Public benchmark suite comparing browser automation tools (chrome-control, browser-use, Playwright, Selenium). **When you make changes to chrome-control that affect its interface or performance, update the chrome-control driver in the benchmark repo too** (`~/code/browser-automation-benchmark/drivers/chrome_control_driver.py`) and push the changes.

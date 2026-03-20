@@ -12,7 +12,7 @@
     <h2>Overview</h2>
     <p>
       Dispatch maintains persistent memory about contacts, preferences, and context.
-      Memory is stored in macOS Contacts.app notes and a TypeScript FTS search daemon.
+      Memory is stored in macOS Contacts.app notes, CLAUDE.md per-contact files, and searchable via bus FTS5.
       Sessions auto-populate memories from conversations rather than requiring manual entry.
     </p>
   </section>
@@ -78,14 +78,15 @@ What I know about them:
   <section>
     <h2>Full-Text Search</h2>
     <p>
-      A TypeScript FTS daemon at <code>~/dispatch/services/memory-search/</code> provides
-      fast full-text search across all transcript content.
+      Bus FTS5 provides full-text search across all bus events (messages, sessions, system events).
+      Integrated directly into <code>bus.db</code> via SQLAlchemy/Alembic migrations.
     </p>
     <ul>
-      <li>SQLite with FTS5 index for sub-millisecond search</li>
-      <li>Indexes all transcript content across every contact</li>
-      <li>Sessions can search across all conversations to find prior context</li>
+      <li>SQLite FTS5 with Porter stemming for fast full-text search</li>
+      <li>Indexes records, records_archive, sdk_events, and sdk_events_archive</li>
+      <li>Triggers keep FTS in sync automatically on INSERT/DELETE</li>
       <li>Supports phrase queries, prefix matching, and boolean operators</li>
+      <li>CLI: <code>cd ~/dispatch && uv run -m bus.cli search "query"</code></li>
     </ul>
   </section>
 

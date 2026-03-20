@@ -43,3 +43,9 @@ skills.bak/
 # ── LaunchD (system-specific) ──────────────────────────────────
 launchd/*.plist
 skills/tts/models/
+skills/seedbox/
+skills/passthepopcorn/
+skills/broadcasthenet/
+skills/sven-pages/.api-key
+skills/sven-pages/worker/.wrangler/
+skills/chrome-control/closed_tabs.log

@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -91,7 +92,7 @@ HARD_REQUIREMENTS = """Hard requirements:
 - 3+ full bathrooms minimum (2 is acceptable ONLY if the property is exceptional)
 - 10+ acres minimum
 - Pond or lake frontage is a huge bonus
-- Vermont, New Hampshire, or Maine
+- Vermont ONLY
 - Max 45 min drive to a ski mountain
 - Rural setting, dark skies (no main streets)"""
 
@@ -483,6 +484,22 @@ def enrich_listing(listing: dict) -> dict:
     # Cache scraped text for verification (avoid re-scraping)
     listing["_scraped_text"] = scraped_text
 
+    # Step 1b: Extract photo URLs from scraped text
+    photo_urls = []
+    # Redfin bigphoto URLs
+    photo_urls += re.findall(r'https://ssl\.cdn-redfin\.com/photo/.*/bigphoto/[^"\x27\s]+', scraped_text)
+    # Zillow photo URLs
+    photo_urls += re.findall(r'https://photos\.zillowstatic\.com/fp/[^"\x27\s]+', scraped_text)
+    # Generic listing photos (jpg, jpeg, webp, png) — filter out tiny icons
+    generic = re.findall(r'https?://[^"\x27\s]+\.(?:jpg|jpeg|webp|png)', scraped_text)
+    icon_patterns = ['logo', 'icon', 'avatar', 'agent', 'favicon', 'sprite', 'badge']
+    for u in generic:
+        if not any(p in u.lower() for p in icon_patterns):
+            photo_urls.append(u)
+    photo_urls = list(set(photo_urls))
+    listing["photo_urls"] = photo_urls
+    log(f"ENRICH: Found {len(photo_urls)} photo URLs for {address}")
+
     # Step 2: Parse the scraped text with claude (opus call, no web search needed)
     # Truncate to avoid token limits — listing details are usually in the first ~4000 chars
     text_for_parsing = scraped_text[:6000]
@@ -721,7 +738,7 @@ NEARBY POINTS OF INTEREST:
 {nearby_items}
 """
 
-    prompt = f"""You are evaluating a Vermont/NH/ME vacation property listing for Nikhil & Caroline.
+    prompt = f"""You are evaluating a Vermont vacation property listing for Nikhil & Caroline.
 
 PROPERTY:
 - Address: {address}
@@ -753,24 +770,14 @@ IMPORTANT: Without seeing photos, you can only judge on specs. Be honest about w
 Respond in this exact JSON format ONLY (no markdown, no code blocks, no extra text):
 {{"score": 7, "summary": "One sentence summary of the property", "vibe_match": "low|medium|high|unknown", "flags": ["any concerns"], "good_to_know": ["Fire station 200m away", "Near Class 4 road", etc.], "why": "2-3 sentences on why this score"}}"""
 
-    fallback = {
-        "address": address, "price": price, "beds": beds, "baths": baths,
-        "sqft": listing.get("sqft"), "acres": acres, "url": url, "image_url": image_url,
+    fallback = {**listing}  # Copy ALL original fields
+    fallback.update({
         "score": 5, "summary": "Could not evaluate", "vibe_match": "unknown",
         "flags": ["AI evaluation failed"], "good_to_know": good_to_know,
         "why": "Scoring failed, manual review needed",
-        "ski_driving": ski_info, "drive_from_home": drive_home,
-        "construction_style": construction_style, "water_features": water_features,
-        "description_summary": description_summary,
-        "year_built": year_built, "heating": listing.get("heating"),
-        "lat": listing.get("lat"), "lon": listing.get("lon") or listing.get("lng"),
-    }
-    # Carry VCGI parcel data into fallback too
-    for vcgi_key in ["vcgi_span", "vcgi_owner", "vcgi_acres", "vcgi_land_value",
-                     "vcgi_improvement_value", "vcgi_total_value", "vcgi_town",
-                     "vcgi_property_type", "vcgi_geometry"]:
-        if listing.get(vcgi_key) is not None:
-            fallback[vcgi_key] = listing[vcgi_key]
+    })
+    # Remove large cached text blob
+    fallback.pop("_scraped_text", None)
 
     try:
         result = subprocess.run(
@@ -790,37 +797,19 @@ Respond in this exact JSON format ONLY (no markdown, no code blocks, no extra te
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
         scored = json.loads(text)
-        scored["address"] = address
-        scored["price"] = price
-        scored["beds"] = beds
-        scored["baths"] = baths
-        scored["sqft"] = listing.get("sqft")
-        scored["acres"] = acres
-        scored["url"] = url
-        scored["image_url"] = image_url
-        scored["ski_driving"] = ski_info
-        scored["drive_from_home"] = drive_home
-        scored["construction_style"] = construction_style
-        scored["water_features"] = water_features
-        scored["description_summary"] = description_summary
-        scored["year_built"] = year_built
-        scored["heating"] = listing.get("heating")
-        scored["lat"] = listing.get("lat")
-        scored["lon"] = listing.get("lon") or listing.get("lng")
-        # Carry over VCGI parcel data
-        for vcgi_key in ["vcgi_span", "vcgi_owner", "vcgi_acres", "vcgi_land_value",
-                         "vcgi_improvement_value", "vcgi_total_value", "vcgi_town",
-                         "vcgi_property_type", "vcgi_geometry"]:
-            if listing.get(vcgi_key) is not None:
-                scored[vcgi_key] = listing[vcgi_key]
-        # Merge good_to_know from enrichment and AI response
+        # Start with full original listing, overlay AI scoring fields
+        scored_result = {**listing}  # Copy ALL original fields
+        scored_result.update(scored)  # Overlay AI response fields
+        # Merge good_to_know (combine enrichment + AI)
         ai_gtk = scored.get("good_to_know", [])
         if isinstance(ai_gtk, list) and good_to_know:
-            scored["good_to_know"] = list(set(good_to_know + ai_gtk))
+            scored_result["good_to_know"] = list(set(good_to_know + ai_gtk))
         elif good_to_know:
-            scored["good_to_know"] = good_to_know
-        log(f"REFINE: {address} → score {scored['score']}/10 (vibe: {scored.get('vibe_match', '?')})")
-        return scored
+            scored_result["good_to_know"] = good_to_know
+        # Remove large cached text blob
+        scored_result.pop("_scraped_text", None)
+        log(f"REFINE: {address} → score {scored_result['score']}/10 (vibe: {scored_result.get('vibe_match', '?')})")
+        return scored_result
     except json.JSONDecodeError as e:
         log(f"REFINE: Failed to parse AI response for {address}: {e}")
         return fallback
@@ -1140,7 +1129,7 @@ def format_sms(results: list[dict], min_score: int) -> str:
 
     lines = [f"🏡 NIGHTLY SCRAPER: {len(top)} new listing{'s' if len(top) != 1 else ''} matching your criteria!\n"]
 
-    for r in top[:5]:  # Cap at 5 in SMS
+    for r in top[:10]:  # Cap at 10 in SMS
         price = r.get("price", "?")
         price_str = f"${price:,}" if isinstance(price, (int, float)) else str(price)
 
@@ -1177,10 +1166,7 @@ def format_sms(results: list[dict], min_score: int) -> str:
             lines.append(f"   ⚠️ Good to Know: {gtk_text}")
         lines.append("")
 
-    if len(results) > 5:
-        remaining = len([r for r in results[5:] if r.get("score", 0) >= min_score])
-        if remaining:
-            lines.append(f"+ {remaining} more — check ~/Documents/vacation-houses/{date.today().isoformat()}/ for full results")
+
 
     return "\n".join(lines)
 
@@ -1223,30 +1209,31 @@ def main():
             print(json.dumps({"new": 0, "results": []}))
         return
 
-    # Step 2: Dedupe — filter out already-seen listings
+    # Step 2: Dedupe — TAG listings as new vs seen (don't filter them out)
     if args.dry_run:
-        new_listings = all_listings
-        log("DRY RUN: Skipping D1 dedupe")
+        for l in all_listings:
+            l["is_new"] = True
+        log("DRY RUN: Skipping D1 dedupe, marking all as new")
     else:
         existing = get_existing_addresses()
-        new_listings = filter_new_listings(all_listings, existing)
+        new_count = 0
+        for l in all_listings:
+            addr = normalize_address(l.get("address", ""))
+            if addr and addr not in existing:
+                l["is_new"] = True
+                new_count += 1
+            else:
+                l["is_new"] = False
+        log(f"DEDUPE: {new_count} new listings, {len(all_listings) - new_count} previously seen (showing ALL)")
 
         # Sync ALL listings to D1 (updates last_seen for existing, creates new)
         sync_to_d1(all_listings)
 
-    if not new_listings:
-        log("No new listings. Nothing to refine.")
-        save_archive([], all_listings)
-        if args.json:
-            print(json.dumps({"new": 0, "results": []}))
-        if args.notify:
-            send_sms(f"🏡 Nightly scraper ran — scanned {len(all_listings)} listings, 0 new. All previously seen.")
-            log("NOTIFY: Sent summary SMS (no new listings)")
-        return
+    new_count = sum(1 for l in all_listings if l.get("is_new"))
 
     # Step 2.5: Pre-filter by hard requirements (skip obviously wrong listings before expensive enrichment)
     pre_filtered = []
-    for l in new_listings:
+    for l in all_listings:
         baths = l.get("baths", 0) or 0
         beds = l.get("beds", 0) or 0
         addr = l.get("address", "?")
@@ -1270,7 +1257,7 @@ def main():
             log(f"PRE-FILTER: Skipping {addr} — only {beds} beds")
             continue
         pre_filtered.append(l)
-    log(f"PRE-FILTER: {len(pre_filtered)} listings pass (from {len(new_listings)} new)")
+    log(f"PRE-FILTER: {len(pre_filtered)} listings pass (from {len(all_listings)} total)")
 
     # Step 3: Enrichment — web search for details + Google Places nearby
     enriched = enrich_listings(pre_filtered)
@@ -1294,10 +1281,11 @@ def main():
 
     # Step 7: Output
     top_matches = [r for r in verified if r.get("score", 0) >= args.min_score]
-    log(f"RESULTS: {len(top_matches)} listings scored {args.min_score}+/10 (out of {len(verified)} new)")
+    new_in_results = sum(1 for r in verified if r.get("is_new"))
+    log(f"RESULTS: {len(top_matches)} listings scored {args.min_score}+/10 (out of {len(verified)} total, {new_in_results} new)")
 
     if args.json:
-        print(json.dumps({"new": len(new_listings), "results": verified}, indent=2))
+        print(json.dumps({"new": new_count, "total": len(verified), "results": verified}, indent=2))
     else:
         for r in verified:
             score = r.get("score", "?")
@@ -1310,10 +1298,11 @@ def main():
         send_sms(message)
     elif args.notify:
         # Always send a summary so they know the pipeline ran
-        total_new = len(verified)
+        total = len(verified)
+        new_in_results = sum(1 for r in verified if r.get("is_new"))
         top_score = max((r.get("score", 0) for r in verified), default=0) if verified else 0
         maint_skipped = sum(1 for r in verified if any("maintenance" in (n or "").lower() for n in (r.get("verification_notes") or [])))
-        summary_parts = [f"🏡 Nightly scraper ran — {total_new} new listing{'s' if total_new != 1 else ''}, none scored {args.min_score}+/10 (top score: {top_score})."]
+        summary_parts = [f"🏡 Nightly scraper ran — {new_in_results} new listing{'s' if new_in_results != 1 else ''}, {total} total, none scored {args.min_score}+/10 (top score: {top_score})."]
         if maint_skipped:
             summary_parts.append(f"⚠️ {maint_skipped} listing{'s' if maint_skipped != 1 else ''} had verification skipped due to site maintenance.")
         send_sms("\n".join(summary_parts))

@@ -125,10 +125,10 @@ These areas are most likely to cause production issues:
 - **Acceptable risk**: Only `last_message_time` is debounced; session creation/deletion writes immediately
 - **Test**: `test_performance.py::TestRegistryWritePerformance`
 
-### 4. System Prompt Build (subprocess for memory)
-- **What**: `_get_memory_summary()` calls `uv run memory.py summary` with 10s timeout
-- **Danger**: Blocks session creation if slow. Now runs outside the lock.
-- **Test**: Smoke test 4 (SDK lifecycle) covers this implicitly
+### 4. System Prompt Build (memory context)
+- **What**: Memory context comes from CLAUDE.md (auto-loaded) + Contacts.app notes (nightly consolidation)
+- **No subprocess**: Old memory-search daemon retired; no blocking calls during session creation
+- **Conversation search**: Bus FTS5 (`uv run -m bus.cli search "query"`) replaces old daemon
 
 ### 5. Health Checks (`check_idle_sessions`, `health_check_all`)
 - **Interval**: Every 5 minutes

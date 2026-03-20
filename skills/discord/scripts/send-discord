@@ -1,0 +1,100 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx"]
+# ///
+"""
+send-discord - Send a message to a Discord channel
+
+Usage:
+    send-discord <channel_id> <message>
+"""
+import sys
+import os
+import subprocess
+import httpx
+
+DISCORD_API = "https://discord.com/api/v10"
+
+def get_token() -> str:
+    """Get Discord bot token from keychain (primary), then env var, then secrets file."""
+    # Try keychain first (macOS-idiomatic secure storage)
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", "discord_bot_token", "-w"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    # Try env var
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if token:
+        return token
+
+    # Try secrets file
+    secrets_path = os.path.expanduser("~/.claude/secrets.env")
+    if os.path.exists(secrets_path):
+        for line in open(secrets_path):
+            if line.startswith("DISCORD_BOT_TOKEN="):
+                return line.strip().split("=", 1)[1].strip('"').strip("'")
+
+    print("Error: DISCORD_BOT_TOKEN not found in keychain, env, or secrets", file=sys.stderr)
+    sys.exit(1)
+
+def split_message(message: str, limit: int = 2000) -> list[str]:
+    """Split message into chunks respecting Discord's 2000 char limit."""
+    chunks = []
+    while message:
+        if len(message) <= limit:
+            chunks.append(message)
+            break
+        split_at = message.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = message.rfind(" ", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        chunks.append(message[:split_at])
+        message = message[split_at:].lstrip()
+    return chunks
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: send-discord <channel_id> <message>", file=sys.stderr)
+        sys.exit(1)
+
+    channel_id = sys.argv[1]
+    message = sys.argv[2]
+    message = message.replace("\\!", "!")  # Same pattern as send-signal
+
+    token = get_token()
+    headers = {
+        "Authorization": f"Bot {token}",
+        "Content-Type": "application/json",
+    }
+
+    for chunk in split_message(message):
+        resp = httpx.post(
+            f"{DISCORD_API}/channels/{channel_id}/messages",
+            headers=headers,
+            json={"content": chunk},
+        )
+        if resp.status_code == 429:
+            import time
+            retry_after = resp.json().get("retry_after", 1)
+            time.sleep(retry_after)
+            resp = httpx.post(
+                f"{DISCORD_API}/channels/{channel_id}/messages",
+                headers=headers,
+                json={"content": chunk},
+            )
+        if resp.status_code not in (200, 201):
+            print(f"Error: {resp.status_code} {resp.text}", file=sys.stderr)
+            sys.exit(1)
+
+    print("OK")
+
+if __name__ == "__main__":
+    main()

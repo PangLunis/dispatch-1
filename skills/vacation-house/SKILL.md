@@ -52,7 +52,7 @@ These are the gold standard - match this energy:
    - Views of Adirondacks, Green Mtns, Lake Champlain
    - Only 2 baths (below minimum) but perfect vibe
 
-## Best Search Websites
+## Best Search Websites (VT-only — some sites cover broader regions but scraper filters to VT)
 
 ### Regional Specialists
 - **[Coldwell Banker Lifestyles](https://www.thecblife.com)** - Covers VT/NH/ME ski + waterfront
@@ -396,7 +396,7 @@ Runs as a **2am ET reminder** via the dispatch daemon's reminder system (NOT a L
 
 ### Pipeline Steps
 1. **DISCOVERY**: `unified-search` across 6 VT sources: Redfin, Zillow, Hickok & Boardman, Coldwell Banker, **Ski Country Real Estate** (Killington specialist), **LandSearch VT** (houses with acreage). Houses only — Redfin uses `property-type=house`, Zillow filters out land/manufactured, Ski Country filters by beds/baths, LandSearch uses `type=house`.
-2. **DEDUPE**: Compares against Cloudflare D1 database — skips already-seen listings
+2. **DEDUPE (tag, not filter)**: Compares against Cloudflare D1 database — tags each listing as `is_new: true/false` but keeps ALL listings in the pipeline. New listings get a "NEW" badge in the HTML report. This ensures the report always shows the full picture of what's currently for sale.
 3. **ENRICHMENT**: Scrapling (webfetch) scrapes each listing page for detailed property info (acres, construction style, water features, year built, heating). Google Places API checks nearby POIs (fire stations, airports). **Use scrapling for all scraping — never claude CLI web search.**
 3b. **PARCEL ENRICHMENT**: For each listing with lat/lon, fetch VCGI parcel data from `vcgi-cache-proxy.nicklaudethorat.workers.dev/parcel?lat=X&lng=Y`. Stores parcel geometry (GeoJSON polygon), assessed values (land + improvement), official acreage, SPAN, owner, town. Used for map overlays in the HTML report.
 4. **REFINEMENT**: Each new listing scored 1-10 by Claude Opus (via `claude -p --model opus`) against:
@@ -406,6 +406,41 @@ Runs as a **2am ET reminder** via the dispatch daemon's reminder system (NOT a L
    - Similarity to the 2 favorite properties
 5. **VERIFICATION**: Re-scrapes listing URL and cross-checks enriched data against source text to catch hallucinations. Downgrades score by 2 if verification fails.
 6. **ARCHIVE**: All results saved to `~/Documents/vacation-houses/{date}/nightly-scraper-results.md`
+
+### Post-Scraper Agent Checklist
+After `nightly-scraper` completes, the agent MUST:
+1. Parse the scraper's JSON output (printed to stdout)
+2. Generate HTML report following the design spec below
+3. Self-grade report against the Report Quality Rubric (Step 7)
+4. If any dimension scores below 3/5, fix and regenerate
+5. Publish to sven-pages: `~/.claude/skills/sven-pages/scripts/publish ./folder --name vacation-scraper-YYYY-MM-DD --public`
+6. Send SMS summary with report link to chat ID
+
+7. **REPORT GRADING** (final quality gate): After the HTML report is generated but BEFORE publishing, self-grade the report against the rubric below. If any dimension scores below 3/5, fix the issue and re-generate. Log the grade in the archive.
+
+### Report Quality Rubric (Step 7: Grading)
+
+After generating the HTML report, grade it on each dimension below (1-5 scale). Fix anything scoring below 3 before publishing.
+
+**Per-Listing Card Quality:**
+- **Photo richness** (1-5): Are there multiple photos per card with a working carousel? Target: ALL listing photos, not just 1. Show count (e.g. "3/20"). Lazy-loaded. Swipeable on mobile.
+- **Ski data completeness** (1-5): 0% of listings showing "unknown" or "unavailable"? Killington always listed first?
+- **Cross-reference links** (1-5): Redfin | Zillow | Google Maps present on every card? Actual listing URL used when source matches?
+- **Data completeness** (1-5): sqft, acres, water features, beds/baths, drive times, year built all populated? Missing fields should say "not listed" not be silently omitted.
+- **Map rendering** (1-5): Satellite + parcel overlay AND terrain map loading for listings with coordinates? Using static tiles (not WebGL)?
+- **Good to Know quality** (1-5): Relevant, location-accurate, max 3 items? No noise (airports 100+ mi away, fire stations in wrong state)?
+- **Description quality** (1-5): Reads like a human wrote it? Highlights what matters for THIS buyer (vibe, water, land, ski access)?
+- **Score calibration** (1-5): Does a log cabin on 80+ acres with water actually score 7+? Scores shouldn't be systematically low.
+
+**Overall Report Quality:**
+- **Executive summary** (1-5): Leads with "did we find a house?" insight, not pipeline metrics?
+- **Mobile rendering** (1-5): Works on iPhone? Maps stack vertically? Text readable? Carousel works with touch?
+- **Coverage** (1-5): ALL listings have full cards? No "and X more" truncation?
+- **Design fidelity** (1-5): Matches bus dashboard aesthetic? Space Grotesk + JetBrains Mono, warm papery palette, signal orange accents, fadeSlideUp animations?
+- **Link quality** (1-5): Every listing has a clickable source URL prominently displayed?
+- **VT-only compliance** (1-5): No out-of-state listings leaking through?
+
+**Minimum passing grade: 3/5 on every dimension.** If any dimension is below 3, fix it before publishing. Include the grade summary in a hidden HTML comment at the bottom of the report for debugging.
 
 ### "Good to Know" Enrichment
 
@@ -433,12 +468,13 @@ Use the **bus dashboard design pattern** — the same warm papery aesthetic from
 
 **Report must include:**
 1. Header with title + date window (JetBrains Mono)
-2. **Executive summary** — lead with what matters: "No unicorns today" or "1 amazing find." Write 2-3 sentences about the best listings in plain language, not pipeline metrics. Do NOT show verification counts, enrichment rates, or pipeline internals at the top. The reader wants to know: "did we find a house?"
+2. **Executive summary** — lead with what matters: "No unicorns today" or "1 amazing find." Write 2-3 sentences about the best listings in plain language, not pipeline metrics. Mention how many are NEW vs previously seen. Do NOT show verification counts, enrichment rates, or pipeline internals at the top. The reader wants to know: "did we find a house?"
 3. Stats strip — user-facing metrics only: Must-See count, Worth a Look count, Interesting count, Total Scanned, States
 4. **Best find callout** — highlight the single best listing with a link to jump to its card
 5. **Featured listing cards** for enriched properties, each with:
-   - **Photo carousel** (10 photos from Redfin `bigphoto` URLs, swipeable with touch support)
+   - **Photo carousel** — download AS MANY photos as possible (aim for ALL listing photos, not just 10). Scrape photo URLs from the listing page via webfetch. For Redfin, extract `bigphoto` URLs; for Zillow, extract `webp` or `jpg` URLs from the gallery; for other sources, extract all `<img>` URLs that look like property photos. Carousel must be swipeable with touch support, show photo count (e.g. "3/20"), and lazy-load images for performance.
    - Score circle badge (color-coded: green 5+, blue 4, amber 3, red 1-2)
+   - **"NEW" badge** on listings where `is_new: true` — small pill/tag in accent color next to the score circle
    - Verification status tag
    - Address as deep link to listing URL
    - **Cross-reference links row** below address: small inline links to search for the property on major real estate sites. Always include Redfin, Zillow, and Google Maps. Format: `<div class="card-xref">` with pipe-separated links like `Redfin | Zillow | Google Maps`. Generate URLs by encoding the address:
@@ -465,7 +501,11 @@ Use the **bus dashboard design pattern** — the same warm papery aesthetic from
 6. Score distribution bar chart
 7. Footer with source info
 
-**Photo scraping**: Fetch Redfin listing HTML via webfetch, extract `bigphoto` URLs with `grep -oE 'https://ssl\.cdn-redfin\.com/photo/.*/bigphoto/[^"]+' | sort -u | head -20`
+**Photo scraping**: Download ALL available photos during ENRICHMENT — not just 10 or 20. Store all URLs in `photo_urls: [...]` array on each listing:
+- **Redfin**: Extract `bigphoto` URLs with `grep -oE 'https://ssl\.cdn-redfin\.com/photo/.*/bigphoto/[^"]+' | sort -u` (NO head limit — get them all)
+- **Zillow**: Extract gallery image URLs from JSON-LD or `<img>` tags with property photo patterns
+- **Other sources**: Extract all `<img src>` URLs that look like property photos (filter out logos, icons, agent headshots by size/path patterns)
+- HTML carousel must show ALL photos with counter (e.g. "3/20"), lazy-load for performance, swipeable on mobile
 
 **Parcel + Terrain Maps** (via MapLibre GL JS):
 - Include MapLibre GL JS v4 (`unpkg.com/maplibre-gl@4.1.2`) in HTML `<head>`
@@ -475,11 +515,11 @@ Use the **bus dashboard design pattern** — the same warm papery aesthetic from
 - Add parcel boundary as GeoJSON source with fill (#3b82f6, opacity 0.2) and line (#3b82f6, width 2)
 - Auto-fit bounds to parcel geometry with padding
 - Show VCGI info below maps: assessed value, official acreage, SPAN
-4. Publish to sven-pages:
+6. Publish to sven-pages:
    ```bash
    ~/.claude/skills/sven-pages/scripts/publish ./report-folder --name vacation-scraper-YYYY-MM-DD --public
    ```
-4. SMS just sends a short summary + link:
+7. SMS just sends a short summary + link:
    ```
    🏡 3 new listings today (top score: 8/10)
    ⭐ 187 East Hill Rd, Woodbury VT — $1.25M — 8/10

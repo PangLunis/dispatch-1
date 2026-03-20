@@ -44,7 +44,6 @@ class FakeBackend:
         self._lock = asyncio.Lock()
         self.registry = MagicMock()
         self.create_session = AsyncMock()
-        self.create_background_session = AsyncMock()
         self.create_ephemeral_session = AsyncMock(return_value=FakeSession())
         self.kill_ephemeral_session = AsyncMock(return_value=True)
 
@@ -800,7 +799,6 @@ class TestTopicCreation:
              patch('assistant.manager.ReminderPoller'), \
              patch('assistant.manager.IPCServer'), \
              patch('assistant.manager.Manager._load_state', return_value=0), \
-             patch('assistant.manager.SEARCH_DAEMON_ENABLED', False), \
              patch('assistant.manager.Manager._spawn_sven_api_daemon', return_value=None):
 
             mock_bus = MagicMock()

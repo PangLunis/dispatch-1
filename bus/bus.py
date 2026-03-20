@@ -108,8 +108,30 @@ class Bus:
         self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = self._connect()
+        self._run_migrations()
         self._init_schema()
         self._produce_count = 0
+
+    def _run_migrations(self):
+        """Run pending Alembic migrations. Called on every daemon start."""
+        try:
+            from alembic.config import Config
+            from alembic import command
+            from sqlalchemy import create_engine
+
+            alembic_cfg = Config(str(Path(__file__).parent / "alembic.ini"))
+            engine = create_engine(
+                f"sqlite:///{self.db_path}",
+                connect_args={"timeout": 5},
+            )
+
+            # Pass the engine connection to env.py (avoids creating a second connection)
+            with engine.connect() as conn:
+                alembic_cfg.attributes["connection"] = conn
+                command.upgrade(alembic_cfg, "head")
+
+        except Exception as e:
+            logger.error(f"Migration failed (non-fatal, continuing without FTS): {e}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
@@ -578,6 +600,14 @@ class Bus:
             logger.info("Pruned %d record(s) (incl. %d sdk_events), archived %d, checkpointed WAL",
                         total_deleted, sdk_deleted, total_archived + sdk_archived)
 
+        # Optimize FTS indexes (merge b-tree segments for query performance)
+        # Runs every prune cycle (~every 1000 produces). Fast: <100ms for our data volume.
+        try:
+            self._conn.execute("INSERT INTO records_fts(records_fts) VALUES('optimize')")
+            self._conn.execute("INSERT INTO sdk_events_fts(sdk_events_fts) VALUES('optimize')")
+        except Exception:
+            pass  # FTS not available yet (pre-migration)
+
         return total_deleted
 
     def query_sdk_events(
@@ -639,6 +669,75 @@ class Bus:
             }
             for row in cursor.fetchall()
         ]
+
+    def search(self, query: str, **kwargs) -> list:
+        """Full-text search across bus records (hot + archive).
+        Delegates to search.search_records(). See that function for kwargs."""
+        from bus.search import search_records
+        return search_records(self._conn, query, **kwargs)
+
+    def search_sdk(self, query: str, **kwargs) -> list:
+        """Full-text search across SDK events (hot + archive).
+        Delegates to search.search_sdk_events(). See that function for kwargs."""
+        from bus.search import search_sdk_events
+        return search_sdk_events(self._conn, query, **kwargs)
+
+    def fts_status(self) -> dict:
+        """Compare FTS row counts against source tables to detect drift."""
+        records_hot = self._conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+        records_archive = self._conn.execute("SELECT COUNT(*) FROM records_archive").fetchone()[0]
+        records_fts = self._conn.execute("SELECT COUNT(*) FROM records_fts").fetchone()[0]
+
+        sdk_hot = self._conn.execute("SELECT COUNT(*) FROM sdk_events").fetchone()[0]
+        sdk_archive = self._conn.execute("SELECT COUNT(*) FROM sdk_events_archive").fetchone()[0]
+        sdk_fts = self._conn.execute("SELECT COUNT(*) FROM sdk_events_fts").fetchone()[0]
+
+        return {
+            "records": {
+                "hot": records_hot, "archive": records_archive, "fts": records_fts,
+                "expected": records_hot + records_archive,
+                "drift": records_fts - (records_hot + records_archive),
+                "healthy": records_fts == records_hot + records_archive,
+            },
+            "sdk_events": {
+                "hot": sdk_hot, "archive": sdk_archive, "fts": sdk_fts,
+                "expected": sdk_hot + sdk_archive,
+                "drift": sdk_fts - (sdk_hot + sdk_archive),
+                "healthy": sdk_fts == sdk_hot + sdk_archive,
+            },
+        }
+
+    def fts_rebuild(self):
+        """Drop and recreate FTS indexes from scratch.
+        Uses the same logic as migration 002 for table creation + backfill.
+
+        IMPORTANT: Must be run with daemon stopped, or acquires exclusive lock
+        to prevent concurrent writes from creating duplicates during backfill.
+        """
+        import importlib
+        migration_002 = importlib.import_module("bus.migrations.versions.002_add_fts5")
+
+        # Drop existing triggers and tables first (outside transaction since
+        # executescript auto-commits). These are safe to drop without a transaction.
+        for trigger in ["records_fts_ai", "records_fts_ad", "records_archive_fts_ai",
+                        "records_archive_fts_ad", "sdk_events_fts_ai", "sdk_events_fts_ad",
+                        "sdk_events_archive_fts_ai", "sdk_events_archive_fts_ad"]:
+            self._conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        self._conn.execute("DROP TABLE IF EXISTS records_fts")
+        self._conn.execute("DROP TABLE IF EXISTS sdk_events_fts")
+
+        # Recreate tables and triggers (uses executescript which auto-commits)
+        migration_002._create_fts_tables_and_triggers(self._conn)
+
+        # Backfill within an exclusive transaction to prevent concurrent writes
+        # from creating duplicates during the backfill window.
+        self._conn.execute("BEGIN EXCLUSIVE")
+        try:
+            migration_002._backfill_fts(self._conn)
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     def close(self):
         """Close the database connection."""
@@ -833,6 +932,13 @@ class Producer:
                     prune_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                     logger.info("Auto-prune: deleted %d record(s), archived %d",
                                 total_deleted, total_archived)
+
+                # Optimize FTS indexes after prune (merge b-tree segments)
+                try:
+                    prune_conn.execute("INSERT INTO records_fts(records_fts) VALUES('optimize')")
+                    prune_conn.execute("INSERT INTO sdk_events_fts(sdk_events_fts) VALUES('optimize')")
+                except Exception:
+                    pass  # FTS not available yet (pre-migration)
             finally:
                 prune_conn.close()
         except Exception as e:

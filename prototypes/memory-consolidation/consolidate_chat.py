@@ -492,8 +492,8 @@ def consolidate_chat(chat_id: str, dry_run: bool = False, verbose: bool = False)
     log(f"Starting context consolidation for {contact_name} ({chat_id})")
 
     if verbose:
-        print(f"  Chat: {contact_name} ({'group' if is_group else 'individual'})")
-        print(f"  Transcript dir: {transcript_dir}")
+        print(f"  Chat: ({'group' if is_group else 'individual'})")
+        print(f"  Transcript dir: (redacted)")
 
     # Get existing context
     existing_content = get_existing_context(transcript_dir)
@@ -614,7 +614,7 @@ Verify quotes and merge with existing context."""
 
     if dry_run:
         print(f"\n{'='*60}")
-        print(f"DRY RUN - Would write CONTEXT.md for {contact_name}:")
+        print(f"DRY RUN - Would write CONTEXT.md:")
         print(f"{'='*60}")
         print(context_content)
         print(f"{'='*60}\n")
@@ -714,7 +714,7 @@ def main():
 
         results = []
         for i, chat_id in enumerate(chat_ids):
-            print(f"\n[{i+1}/{len(chat_ids)}] {chat_id}")
+            print(f"\n[{i+1}/{len(chat_ids)}] chat")
             result = consolidate_chat(chat_id, dry_run=args.dry_run, verbose=args.verbose)
             results.append(result)
             print(f"  Status: {result['status']}")
@@ -734,7 +734,7 @@ def main():
             print(f"  {status}: {count}")
 
     elif args.chat_id:
-        print(f"Consolidating context for: {args.chat_id}")
+        print(f"Consolidating context for: (redacted)")
         result = consolidate_chat(args.chat_id, dry_run=args.dry_run, verbose=args.verbose)
         print(f"\nStatus: {result['status']}")
         print(f"  Ongoing: {result['ongoing']}")

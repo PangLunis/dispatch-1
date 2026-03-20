@@ -5,12 +5,46 @@ description: Search and purchase DJ tracks from Bandcamp, Beatport, and Amazon M
 
 # DJ Buyer
 
-Search for and purchase DJ tracks across Bandcamp, Beatport, and Amazon Music. Search uses `scrapling.Fetcher` (HTTP with TLS fingerprinting). Purchase uses `scrapling.StealthyFetcher` (headless Playwright browser via patchright) for full checkout automation.
+Search for and purchase DJ tracks across Bandcamp, Beatport, and Amazon Music.
 
 **Project**: `~/code/dj-buyer/`
 **Run all commands with**: `cd ~/code/dj-buyer && uv run dj-buyer <command>`
 
 ## Search Workflow
+
+### Pre-search: Check if already purchased
+
+**ALWAYS check the purchases database before searching or buying a track.** This avoids duplicate purchases.
+
+```bash
+cd ~/code/dj-buyer && sqlite3 state.db "
+SELECT t.artist, t.title, p.platform, p.price, p.purchased_at, p.download_path
+FROM purchases p JOIN tracks t ON p.track_id = t.id
+WHERE lower(t.artist) LIKE lower('%ARTIST%') AND lower(t.title) LIKE lower('%TITLE%');
+"
+```
+
+Also check if the track file already exists in the library:
+```bash
+ls ~/Music/dj-buyer/*ARTIST*TITLE* 2>/dev/null
+```
+
+If the track is already purchased, skip searching and buying — just report that it's already owned.
+
+### Reporting results
+
+**ALWAYS show the source platform for every track result.** When presenting search results or cost estimates, include the platform name (Bandcamp, Beatport, or Amazon) next to each price. Example format:
+
+```
+✅ Artist - Title: $1.49 (Beatport)
+✅ Artist - Title: $1.29 (Amazon)
+✅ Artist - Title: $0.00 (Bandcamp, name-your-price)
+❌ Artist - Title: NOT FOUND
+```
+
+This helps the user understand where each track will be purchased from and compare options.
+
+### Search all platforms
 
 **Always search ALL 3 platforms, then rerank by price and similarity to find the best deal.**
 
@@ -36,85 +70,453 @@ After collecting results from all 3 platforms:
 
 See `search/bandcamp.md`, `search/beatport.md`, `search/amazon.md` for platform-specific matching guidance.
 
-## Purchase Workflow
+### Fallback: Web search for NOT FOUND tracks
 
-**Purchase from ONE platform** — whichever had the best match at the best price.
+**If a track returns NOT FOUND from all 3 platform scrapers, do a web search before giving up.** The scrapers sometimes miss tracks that exist — Amazon's digital music search in particular often returns irrelevant products (supplements, books) instead of music results.
 
-```bash
-cd ~/code/dj-buyer && uv run dj-buyer purchase-bandcamp <url> --email "email@example.com" [--price 1.00] [--dry-run]
-cd ~/code/dj-buyer && uv run dj-buyer purchase-beatport <url> [--format mp3|wav] [--email "email"] [--dry-run]
-cd ~/code/dj-buyer && uv run dj-buyer purchase-amazon <url> [--dry-run]
+Fallback steps:
+1. **Web search**: `WebSearch` for `"Artist" "Title" buy MP3 download`
+2. **Check results for known platforms**:
+   - `music.amazon.com/tracks/BXXXXXXXXX` → Amazon ASIN exists, purchasable at ~$1.29
+   - `beatport.com/track/...` → Beatport link, $1.49
+   - `bandcamp.com` links → Bandcamp, check price on page
+   - `music.apple.com` → Apple Music/iTunes, note as alternative
+3. **Direct Amazon Music lookup**: If web search finds an Amazon Music ASIN (e.g. `B0D5L6L2XH`), navigate directly to `https://www.amazon.com/dp/ASIN` — the scraper's keyword search often fails but the product page exists
+4. **Beatport low-similarity matches**: If Beatport returns the right artist + right title but low similarity (e.g. 0.6) because of suffixes like "(Extended Mix)" or "(Original Mix)", it's likely the correct track. Verify manually and accept it.
+
+**Never report a track as NOT FOUND without trying the web search fallback first.**
+
+## Bandcamp Purchase — Step-by-Step Chrome Commands
+
+**No CLI command for this.** Drive Chrome directly using the chrome-control skill. The UI changes frequently so adapt as needed — take screenshots and read page text to understand what you're looking at.
+
+**Payment**: PayPal account ($(security find-generic-password -s "assistant" -a "email" -w)) linked to Privacy.com Mastercard. Direct card payment does NOT work (Spreedly rejects Privacy.com BINs).
+
+**Billing address**: 02135 (Brighton, MA)
+
+### CSP Warning
+
+Bandcamp and PayPal both have strict CSP. Normal `chrome js`, `chrome click`, `chrome read`, `chrome find` all fail. You MUST use these CSP-bypass commands:
+
+| Command | Use for | Notes |
+|---------|---------|-------|
+| `chrome iframe-click <tab> <selector>` | Click elements via CSS selector or `text:XXX` | Returns `{'success': True}` or `{}` if not found |
+| `chrome insert-text <tab> <text>` | Type into focused input | Must click/focus first |
+| `chrome click-by-name <tab> <name>` | Click by accessible name | Uses accessibility API, best for buttons |
+| `chrome text <tab>` | Read page text | Works despite CSP |
+| `chrome html <tab>` | Get full page HTML | Works despite CSP |
+| `chrome screenshot <tab>` | Take screenshot | For debugging |
+| `chrome key <tab> <key>` | Send keypress (Tab, Return, etc) | Works despite CSP |
+
+For native `<select>` dropdowns (like city selector), none of the above work. Use `debugger-eval` via direct socket:
+
+```python
+import json, socket, glob
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect(glob.glob("/tmp/chrome_control_*.sock")[0])
+sock.settimeout(30)
+code = """
+var sel = document.querySelector('select[name="city"]');
+sel.value = sel.options[1].value;
+sel.dispatchEvent(new Event('change', {bubbles: true}));
+'done'
+"""
+sock.sendall(json.dumps({"command": "debugger_eval", "params": {"tabId": TAB_ID, "code": code}}).encode())
+data = b""
+while b"\n" not in data:
+    data += sock.recv(65536)
+sock.close()
 ```
 
-**Always `--dry-run` first** to verify pricing before committing.
+### Step 1: Open track page
 
-### Bandcamp Purchase Flow (Fully Automated)
+```bash
+chrome open "<bandcamp_url>"
+# Returns tab ID, e.g. "Opened tab 1234567: https://..."
+```
 
-Uses `StealthyFetcher` (headless browser) for end-to-end checkout:
+Wait 5-6 seconds for page load. Dismiss cookie banner if present:
+```bash
+chrome iframe-click <tab> "text:Accept all"
+```
 
-1. Opens track page, removes `<page-footer>` overlay that blocks clicks
-2. Clicks "Buy Digital Track" button (`button.buy-link`)
-3. Sets price in `#userPrice` input
-4. Clicks "Check out now" button
-5. Selects credit card payment (`#pick-credit-card`)
-6. Clicks "Proceed to payment" (`button.proceed`)
-7. Navigates to `bandcamp.com/cart/checkout` page
-8. Fills card number in **Spreedly** iframe (`iframe[id^='spreedly-number-frame']`)
-9. Sets expiry month/year dropdowns (`#Ecom_Payment_Card_ExpDate_Month/Year`)
-10. Fills CVV in Spreedly iframe (`iframe[id^='spreedly-cvv-frame']`)
-11. Fills billing info (name, email, country, ZIP)
-12. Clicks "Complete purchase" (`button.button-blue`)
+### Step 2: Click "Buy Digital Track"
 
-**Card details**: Retrieved from macOS Keychain (`privacy-card-number`, `privacy-card-exp`, `privacy-card-cvv`)
+```bash
+chrome iframe-click <tab> "text:Buy Digital Track"
+```
 
-**Key selectors**:
-- Buy button: `button.buy-link` with text "Buy Digital Track"
-- Page-footer overlay: MUST remove `document.querySelector("page-footer").remove()` or clicks timeout
-- Spreedly iframes: Use `page.frame_locator()` to access card inputs inside iframes
-- Checkout form IDs: `Ecom_BillTo_Postal_Name_First/Last`, `Ecom_ReceiptTo_Online_Email`, `Ecom_BillTo_Postal_PostalCode`
+If it returns `{}`, retry after 2 seconds. May also try `chrome click-by-name <tab> "Buy Digital Track"`.
 
-**Note**: Bandcamp uses Spreedly (not Stripe) for payment processing. The Stripe iframe present on page is only for metrics, not payment.
+This opens a purchase dialog/modal/sidebar (UI varies).
 
-### Beatport Purchase Flow (Requires Login)
+### Step 3: Set price (optional, for name-your-price)
 
-Uses `StealthyFetcher` for browser automation:
+If the track is name-your-price and you want to set a custom amount:
+```bash
+chrome iframe-click <tab> "#userPrice"      # or input[name='userPrice']
+chrome key <tab> "a" "meta"                 # Select all
+chrome insert-text <tab> "1.00"             # Type price
+chrome key <tab> "Tab"                      # Tab out to update
+```
 
-1. Opens track page, clicks `$X.XX` price button (`AddToCart-style__PriceButton`)
-2. Login modal appears → clicks "Log In" → fills email/password → submits
-3. Re-adds to cart after login
-4. Navigates to cart page → checkout
+### Step 4: Navigate to checkout
+
+Look for "Check out" or "Check out now" button. Use `chrome text` or `chrome screenshot` to see what's on screen.
+
+```bash
+chrome iframe-click <tab> "#sidecartCheckout"           # Cart sidebar link
+# OR
+chrome iframe-click <tab> "text:Check out now"          # Modal button
+# OR
+chrome iframe-click <tab> "text:Check out with PayPal"  # Direct PayPal option
+```
+
+**WARNING**: `click-by-name "Check out"` often hits a StaticText node instead of the actual link/button. Prefer `iframe-click` with CSS selectors or `text:` selectors.
+
+### Step 5: Fill billing info
+
+On the checkout/billing page, fill ZIP code and select city:
+
+```bash
+chrome iframe-click <tab> "input[id*='zip']"    # Focus ZIP input
+chrome key <tab> "a" "meta"                      # Select all
+chrome insert-text <tab> "02135"                 # Type ZIP
+chrome key <tab> "Tab"                           # Tab out
+```
+
+Wait 2-3 seconds for the city dropdown to populate, then set city via debugger_eval (see socket code above). Look for a `<select>` with city options containing "Boston".
+
+### Step 6: Proceed to PayPal
+
+```bash
+chrome iframe-click <tab> "text:Proceed to PayPal"
+# OR
+chrome click-by-name <tab> "Proceed to PayPal"
+```
+
+Wait 8-10 seconds for PayPal redirect.
+
+### Step 7: PayPal login (if needed)
+
+Check `chrome text <tab>` — if PayPal shows "Complete Purchase" or "Pay Now", you're already logged in (skip to Step 8).
+
+If PayPal asks for login:
+1. Enter email: `chrome iframe-click <tab> "input[type='email']"` → `chrome insert-text <tab> "$(security find-generic-password -s "assistant" -a "email" -w)"` → click Next
+2. PayPal will send OTP via SMS to shortcode `70924`. Read it from Messages.app:
+   ```sql
+   sqlite3 "file:$HOME/Library/Messages/chat.db?mode=ro" \
+     "SELECT text FROM message WHERE handle_id IN (SELECT ROWID FROM handle WHERE id LIKE '%70924%') ORDER BY date DESC LIMIT 1;"
+   ```
+3. Enter OTP code and submit
+
+### Step 8: Complete purchase
+
+```bash
+chrome click-by-name <tab> "Complete Purchase"
+# OR try: "Pay Now", "Agree & Pay", "Continue"
+```
+
+Wait 10-15 seconds for redirect back to Bandcamp.
+
+### Step 9: Download MP3 V0
+
+After purchase, get the download URL from the Bandcamp confirmation email:
+
+```bash
+# Search for latest Bandcamp receipt email
+~/.local/bin/gws gmail users messages list --params '{"q": "from:bandcamp subject:Thank", "maxResults": 1, "userId": "me"}'
+
+# Get the message body (extract text/plain part, base64 decode)
+~/.local/bin/gws gmail users messages get --params '{"userId": "me", "id": "<MSG_ID>", "format": "full"}'
+```
+
+The email body contains a download URL like:
+```
+https://bandcamp.com/download?from=receipt&payment_id=XXXXX&sig=XXXXX
+```
+
+Open it in Chrome, get the HTML, and extract the direct download link:
+
+```bash
+chrome open "<download_url>"
+# Wait 5 seconds
+chrome html <tab>
+# Parse HTML for: https://p*.bcbits.com/download/track/*/mp3-v0/*
+```
+
+The `<select id="format-type">` has options. MP3 V0 (`value="mp3-v0"`) is the first/default option.
+
+Download via curl:
+```bash
+mkdir -p ~/Music/dj-buyer
+curl -L -o ~/Music/dj-buyer/"Artist - Title.mp3" "<direct_bcbits_url>"
+```
+
+**Always download MP3 V0** — highest quality VBR MP3.
+
+Verify the file:
+```bash
+file ~/Music/dj-buyer/"Artist - Title.mp3"
+# Should show: Audio file with ID3 version 2.3.0, contains: MPEG ADTS, layer III
+```
+
+Close the Chrome tabs when done.
+
+## Beatport Purchase — Step-by-Step Chrome Commands
+
+**No CLI command for this.** Drive Chrome directly using the chrome-control skill. Beatport has NO CSP issues — `chrome js` works fine.
+
+**Payment**: PayPal (selected by default at checkout). Privacy.com card also works directly with Beatport.
 
 **Credentials**: Stored in macOS Keychain:
 ```bash
-security add-generic-password -a "sven" -s "beatport-email" -w "EMAIL" -U
-security add-generic-password -a "sven" -s "beatport-password" -w "PASS" -U
+security find-generic-password -a "sven" -s "beatport-email" -w
+security find-generic-password -a "sven" -s "beatport-password" -w
 ```
 
-### Amazon Purchase Flow
+### Step 1: Open track page
 
-Uses Chrome extension CLI for browser automation (user must be logged into Amazon in Chrome).
+```bash
+chrome open "<beatport_url>"
+# Returns tab ID, e.g. "Opened tab 1234567: https://..."
+```
+
+Wait 3-4 seconds for page load.
+
+### Step 2: Add to cart
+
+The price button's accessible name includes the price and track info. Use `click-by-name` with just the price:
+
+```bash
+chrome click-by-name <tab> "$1.49"
+# OR for WAV: chrome click-by-name <tab> "$2.49"
+```
+
+If there are multiple format options, click the one you want (MP3 is default/cheaper).
+
+### Step 3: Go to cart
+
+```bash
+chrome navigate <tab> "https://www.beatport.com/cart"
+```
+
+Wait 2-3 seconds for cart page load.
+
+### Step 4: Checkout
+
+```bash
+chrome iframe-click <tab> "text:Checkout"
+```
+
+**NOTE**: `click-by-name "Checkout"` may hit the cell/container instead of the actual button. Use `iframe-click` with `text:Checkout` for reliability.
+
+PayPal is selected by default. Wait 8-10 seconds for PayPal to load.
+
+### Step 5: PayPal (usually auto-logged in)
+
+Check `chrome text <tab>` to see the PayPal state:
+
+- If it shows "Review Order" or "Complete Purchase" → already logged in
+- If it asks for login → follow the PayPal login steps from the Bandcamp section above
+
+```bash
+chrome click-by-name <tab> "Review Order"
+# Wait 3-5 seconds
+chrome click-by-name <tab> "Complete Purchase"
+# OR: "Pay Now", "Agree & Pay"
+```
+
+Wait 10-15 seconds for redirect back to Beatport "Thank You" page.
+
+### Step 6: Download MP3
+
+Navigate to the downloads library:
+
+```bash
+chrome navigate <tab> "https://www.beatport.com/library/downloads"
+```
+
+Wait 3-4 seconds for page load. Then trigger the download via JS (Beatport has no CSP):
+
+```bash
+chrome js <tab> "document.querySelectorAll('.download-actions')[1].querySelector('button').click()"
+```
+
+**Why `[1]`?** Index `[0]` is the "Download All" header row. Index `[1]` is the first actual track. For multiple tracks, increment the index.
+
+The file downloads to `~/Downloads/`. Move it to the music directory:
+
+```bash
+mkdir -p ~/Music/dj-buyer
+mv ~/Downloads/"Artist - Title.mp3" ~/Music/dj-buyer/
+```
+
+Beatport downloads are **320kbps CBR MP3** (their standard format, not VBR like Bandcamp's V0).
+
+Verify the file:
+```bash
+file ~/Music/dj-buyer/"Artist - Title.mp3"
+# Should show: Audio file with ID3 version 2.3.0, contains: MPEG ADTS, layer III
+```
+
+Close the Chrome tabs when done.
+
+## Amazon Purchase — Step-by-Step
+
+**Only use Amazon as a fallback** when the track isn't available on Bandcamp or Beatport. Amazon is $1.29/track, 256kbps VBR MP3.
+
+**Credentials**: Stored in macOS Keychain:
+```bash
+# Email: $(security find-generic-password -s "assistant" -a "email" -w)
+security find-generic-password -s "amazon-password" -w
+```
+
+**Payment**: Privacy.com Mastercard (ending 8061, exp 02/2032). Billing address: 1 Eastburn St, Brighton MA 02135.
+
+### Pre-flight checks
+
+1. **Clear the Amazon cart first** — navigate to `https://www.amazon.com/gp/cart/view.html` and delete any items. Stale cart items can hijack the MP3 purchase flow into standard checkout, causing card declines and account holds.
+2. **Price guardrail** — any purchase over $10 should STOP and ask for confirmation. Single tracks are $1-2. Anything higher means something is wrong (cart contamination, wrong product, etc).
+
+### Step 1: Search and open track
+
+Search Amazon Digital Music for the track:
+```bash
+chrome navigate <tab> "https://www.amazon.com/s?k=ARTIST+TITLE&i=digital-music"
+```
+
+Find the product link via JS:
+```bash
+chrome js <tab> "document.querySelector('a[href*=\"/dp/B\"]')?.href"
+```
+
+Navigate to the product page (Amazon Music player view):
+```bash
+chrome navigate <tab> "https://www.amazon.com/dp/<ASIN>"
+```
+
+### Step 2: Sign in (if needed)
+
+If header shows "Hello, sign in":
+
+```bash
+# Click account on sign-in page, then enter password
+chrome read <tab>  # Find password textbox ref
+chrome type <tab> <ref> "<password_from_keychain>"
+chrome click <tab> <sign_in_button_ref>
+```
+
+**NOTE**: `click-by-name "Sign in"` may hit the heading text, not the submit button. Use `chrome js` with `document.querySelector('#signInSubmit').click()` as fallback.
+
+Amazon may ask for phone number ("Keep hackers out") — click "Not now" to skip.
+
+### Step 3: Purchase via Purchase Options menu
+
+```bash
+chrome click-by-name <tab> "Purchase Options"
+# Wait 1 second for dropdown
+chrome click-by-name <tab> "MP3 Music"
+# Wait 3 seconds — redirects to "Review MP3 purchase" page
+```
+
+This shows: track name, artist, **Order total: $1.29**, and two buy buttons:
+- "Buy MP3 Album - Pay Now" (album-level)
+- "BUY MP3 SONG - PAY NOW" (song-level)
+
+### Step 4: Confirm purchase
+
+```bash
+chrome click-by-name <tab> "Buy MP3 Album - Pay Now"
+# or for single song:
+chrome click-by-name <tab> "Buy MP3 Song - Pay Now"
+```
+
+If the billing address error appears ("There was a problem with this order"):
+```bash
+chrome click-by-name <tab> "Continue"
+```
+This usually processes the payment on the second attempt.
+
+Wait 5 seconds. Success page shows: **"Thank you for shopping with us"** with **"Download"** button.
+
+### Step 5: Download MP3
+
+Click the Download button on the confirmation page:
+```bash
+chrome click-by-name <tab> "Download"
+```
+
+Or navigate to purchase history:
+```bash
+chrome navigate <tab> "https://www.amazon.com/gp/dmusic/purchases"
+```
+
+Amazon provides 256kbps VBR MP3 files. Downloaded to `~/Downloads/`.
+
+```bash
+mv ~/Downloads/"*.mp3" ~/Music/dj-buyer/"Artist - Title.mp3"
+```
+
+### Payment method management
+
+The Privacy.com card may get removed during account holds. To re-add:
+
+1. Navigate to wallet: `https://www.amazon.com/cpe/yourpayments/wallet`
+2. Click "Add a payment method" → "Add a credit or debit card"
+3. **Card form is in a cross-origin secure iframe** — cannot be filled via `chrome js` or `chrome type`
+4. **Use `axctl` to fill the form fields**:
+```bash
+CARD_NUM=$(security find-generic-password -s "privacy-card-number" -w)
+CARD_CVV=$(security find-generic-password -s "privacy-card-cvv" -w)
+
+# Fill text fields
+axctl type "Google Chrome" --title "Card number" "$CARD_NUM"
+axctl type "Google Chrome" --title "Name on card" "Sven Thorat"
+axctl type "Google Chrome" --role AXTextField --index 4 "$CARD_CVV"  # CVV (unnamed field)
+```
+5. **Expiration dropdowns require precise coordinate clicking**:
+```bash
+# Get dropdown positions via axctl
+axctl get "Google Chrome" --title "Expiration date" AXPosition  # Month dropdown
+axctl get "Google Chrome" --role AXPopUpButton --index 6 AXPosition  # Year dropdown
+
+# Click to open dropdown, then find and click the right menu item
+cliclick c:<center_x>,<center_y>  # Open dropdown
+axctl search "Google Chrome" --role AXMenuItem  # Find items with positions
+axctl get "Google Chrome" --role AXMenuItem --index <N> AXPosition  # Get exact position
+cliclick c:<item_center_x>,<item_center_y>  # Click the menu item
+```
+6. Click "Add your card" button (use `axctl get` for position, `cliclick` to click)
+7. **Set billing address**: Edit card → "Choose or add a billing address" → use 1 Eastburn St address → Save
+
+### Amazon account hold recovery
+
+If the account goes on hold ("Account on hold temporarily"):
+1. Go to `https://account-status.amazon.com/`
+2. Submit verification — upload Privacy.com statement screenshot showing the card
+3. Wait ~5 hours for review (they say 24hrs but it's usually faster)
+4. **Root cause**: Privacy.com virtual cards trigger Amazon's fraud detection, especially for digital purchases. Failed transactions re-trigger holds.
+5. After hold is lifted, you must re-add the payment card and billing address (they get wiped)
 
 ## Scrapling Architecture
 
 - **`Fetcher`**: HTTP-only with TLS fingerprinting. Used for search. Access HTML via `response.html_content` (NOT `.text`).
-- **`StealthyFetcher`**: Headless browser via patchright (Playwright fork). Used for purchases.
-  - `page_action` parameter takes a **sync** function (NOT async) that receives the Playwright `page` object
-  - Supports `page.frame_locator()` for interacting with iframes (Spreedly, Stripe)
-  - `force=True` on clicks bypasses actionability checks (useful for overlaid elements)
-  - Deps: `patchright`, `msgspec` (auto-installed via uv)
 
 **CRITICAL: Use `response.html_content` not `response.text`.** Scrapling's `Fetcher` returns empty string for `.text` but the actual HTML is in `.html_content` (decoded from `.body` bytes).
 
-## Payment Card Details
+## Payment
 
-Stored in macOS Keychain (Privacy.com virtual card):
+**Primary**: PayPal account ($(security find-generic-password -s "assistant" -a "email" -w)) linked to Privacy.com Mastercard. Used for Bandcamp.
+
+**Backup**: Privacy.com virtual card details in macOS Keychain:
 ```bash
 security find-generic-password -a "sven" -s "privacy-card-number" -w
 security find-generic-password -a "sven" -s "privacy-card-exp" -w    # MM/YY format
 security find-generic-password -a "sven" -s "privacy-card-cvv" -w
 ```
 
-**Note**: Privacy.com card may need Bandcamp/Beatport added as approved merchants, or spending limits adjusted, for transactions to succeed.
+**Note**: Privacy.com card works directly with Beatport/Amazon but NOT with Bandcamp's Spreedly processor (BIN rejection).
 
 ## Spotify Integration
 
@@ -127,6 +529,118 @@ cd ~/code/dj-buyer && uv run dj-buyer auth   # Re-auth if token expired
 ```
 
 Current playlist: `162TAg29u887r6VksnVf5d` (configured in `config.toml`)
+
+Current playlist: `162TAg29u887r6VksnVf5d` — "pmtest2" (configured in `config.toml`)
+
+### Spotify Track Metadata
+
+All metadata available via Spotify API for a track. Use `sp.track(track_id)` to get:
+
+**Track-level fields:**
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| `name` | string | "Breaker" | Track title |
+| `id` | string | "4scsWxtNAeT4kW52xOJdCg" | Spotify track ID |
+| `uri` | string | "spotify:track:..." | Spotify URI |
+| `duration_ms` | int | 168857 | Duration in milliseconds |
+| `popularity` | int | 32 | 0-100, based on recent plays |
+| `explicit` | bool | false | Explicit content flag |
+| `disc_number` | int | 1 | Disc number |
+| `track_number` | int | 5 | Track number on album |
+| `is_local` | bool | false | Local file flag |
+| `preview_url` | string/null | null | 30s preview MP3 (often null now) |
+| `external_ids.isrc` | string | "QZTGW2407468" | ISRC code (international standard recording code) |
+| `external_urls.spotify` | string | "https://open.spotify.com/track/..." | Spotify web URL |
+
+**Artist fields** (via `sp.artist(artist_id)`):
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| `name` | string | "LYNY" | Artist name |
+| `id` | string | "7xqIp1044Z2vd9v9ZphjLa" | Spotify artist ID |
+| `genres` | list[str] | ["bass music"] | Genre tags (can be empty) |
+| `popularity` | int | 56 | 0-100 |
+| `followers.total` | int | 38007 | Follower count |
+| `images` | list | [{url, width, height}] | 640px, 320px, 160px |
+
+**Album fields** (via `sp.album(album_id)`):
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| `name` | string | "Noise To Dance To" | Album title |
+| `album_type` | string | "album" | "album", "single", "compilation" |
+| `release_date` | string | "2025-10-17" | Release date |
+| `release_date_precision` | string | "day" | "year", "month", or "day" |
+| `total_tracks` | int | 12 | Number of tracks |
+| `label` | string | "Noxious Recordings" | Record label |
+| `popularity` | int | 43 | 0-100 |
+| `external_ids.upc` | string | "663918559468" | UPC barcode |
+| `copyrights` | list | [{text, type}] | C = copyright, P = phonogram |
+| `images` | list | [{url, width, height}] | 640px, 300px, 64px album art |
+| `genres` | list[str] | [] | Album genres (usually empty, use artist genres) |
+
+### Working Spotify API Endpoints
+
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `sp.track(id)` | GET track | Full track metadata |
+| `sp.tracks([ids])` | GET tracks (batch) | Up to 50 track IDs at once |
+| `sp.artist(id)` | GET artist | Artist metadata + genres + followers |
+| `sp.artist_top_tracks(id)` | GET top tracks | Top 10 tracks by popularity |
+| `sp.artist_albums(id)` | GET discography | All albums/singles/compilations |
+| `sp.album(id)` | GET album | Full album metadata + copyrights + label |
+| `sp.album_tracks(id)` | GET album tracks | Track listing for an album |
+| `sp.search(q, type)` | Search | Types: track, artist, album, playlist |
+| `sp.playlist(id)` | GET playlist | Playlist name, tracks, owner |
+| `sp.current_user_saved_tracks()` | Library | User's liked songs |
+| `sp.me()` | Current user | User profile (premium status, country) |
+
+### Deprecated/Blocked Spotify Endpoints (403/404)
+
+These endpoints are no longer available for most apps:
+
+| Endpoint | Status | Notes |
+|----------|--------|-------|
+| `sp.audio_features(ids)` | **403** | BPM, key, energy, danceability — deprecated Nov 2024 |
+| `sp.audio_analysis(id)` | **403** | Detailed beat/bar/section analysis — deprecated Nov 2024 |
+| `sp.recommendations(seed_tracks)` | **404** | Track recommendations — removed |
+| `sp.artist_related_artists(id)` | **404** | Similar artists — removed |
+| `sp.current_user_recently_played()` | **403** | Needs `user-read-recently-played` scope (not in our auth) |
+| `sp.current_user_top_tracks()` | **403** | Needs `user-top-read` scope (not in our auth) |
+
+
+### Recco Beats API (BPM, Key, Energy — Spotify Replacement)
+
+Free API at `api.reccobeats.com` — no auth needed. Accepts Spotify track IDs and returns the audio features Spotify deprecated.
+
+**Track metadata:**
+```bash
+curl -s "https://api.reccobeats.com/v1/track?ids=SPOTIFY_ID1,SPOTIFY_ID2"
+```
+Returns: trackTitle, artists, durationMs, ISRC, EAN, UPC, popularity, availableCountries
+
+**Audio features (BPM, key, energy, etc.):**
+```bash
+curl -s "https://api.reccobeats.com/v1/audio-features?ids=SPOTIFY_ID1,SPOTIFY_ID2"
+```
+
+Returns per track:
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| `tempo` | float | 139.986 | BPM |
+| `key` | int | 1 | Pitch class (0=C, 1=C#/Db, 2=D, ..., 11=B) |
+| `mode` | int | 1 | 0=minor, 1=major |
+| `energy` | float | 0.967 | 0.0-1.0, intensity/activity |
+| `danceability` | float | 0.706 | 0.0-1.0, how danceable |
+| `valence` | float | 0.939 | 0.0-1.0, musical positiveness |
+| `acousticness` | float | 0.567 | 0.0-1.0, acoustic confidence |
+| `instrumentalness` | float | 0.00983 | 0.0-1.0, no vocals confidence |
+| `liveness` | float | 0.204 | 0.0-1.0, live audience presence |
+| `loudness` | float | -3.888 | dB, overall loudness |
+| `speechiness` | float | 0.214 | 0.0-1.0, spoken words presence |
+
+**Batch limit**: 50 IDs per request. No API key needed. Results in `content` array.
+
+**Key mapping**: 0=C, 1=C#/Db, 2=D, 3=D#/Eb, 4=E, 5=F, 6=F#/Gb, 7=G, 8=G#/Ab, 9=A, 10=A#/Bb, 11=B. Combine with `mode` for full key (e.g. key=1, mode=1 → C# major).
+
 
 ### Spotify Token Management
 
@@ -176,14 +690,30 @@ When the refresh token is revoked and you need fresh auth:
 
 **Important**: The refresh token doesn't expire on its own — only if the user revokes access or the app credentials change. Once you have it, auto-refresh handles everything.
 
-## Known Bugs (Fixed)
+## Price Safety Guardrail
 
-- **DB path bug**: `db.py` had `Path(__file__).parent.parent.parent.parent` (4 parents → `~/code/`) instead of `.parent.parent.parent` (3 parents → `~/code/dj-buyer/`). This caused it to read/write a stale `~/code/state.db` instead of the correct `~/code/dj-buyer/state.db`.
-- **Redirect URI mismatch**: The Spotify app has `http://127.0.0.1:5432/api/spotify_callback` registered (from playlist-manager). The dj-buyer auth code originally used `http://localhost:5432/callback` which caused "INVALID_CLIENT: Invalid redirect URI" errors.
-- **Bandcamp /cart/add 404**: Bandcamp's old cart API `/cart/add` returns 404. The real endpoint is `/cart/cb` with form-encoded data including `req=add`, `client_id`, `item_type` (short: `t`/`a`/`p`), `item_id`, `unit_price`, `band_id`.
-- **Bandcamp page-footer intercepts clicks**: The `<page-footer>` web component covers buy buttons and intercepts pointer events. Must remove via JS before clicking.
-- **Beatport internal API**: `api-internal.beatportprod.com` blocks external HTTP requests. Must use browser automation instead.
-- **StealthyFetcher page_action sync**: The `page_action` callback must be a **sync** function, not async. Async functions silently fail.
+**CRITICAL: Before completing ANY purchase, verify the total is under $10.** Single DJ tracks cost $0-$2.49 typically. If the checkout total exceeds $10, STOP immediately and ask the admin for confirmation before proceeding. This catches:
+- Cart items from other sessions leaking into the purchase flow
+- Wrong product selected (album instead of track, physical instead of digital)
+- Currency/pricing errors
+- Accidental duplicate purchases
+
+**Never auto-confirm a purchase over $10.** Even if the user asked you to buy a specific track, if the checkout shows >$10, something is wrong.
+
+## Known Issues
+
+- **Bandcamp UI changes frequently** — the purchase flow (modal vs sidebar, button labels, etc.) changes without notice. Always use `chrome text`/`chrome screenshot` to see what's on screen and adapt.
+- **`click-by-name` sometimes hits StaticText nodes** — if a button click doesn't trigger navigation, try `iframe-click` with CSS selector or `text:` selector instead.
+- **`iframe-click` is timing-sensitive** — if it returns `{}`, wait 2 seconds and retry.
+- **Privacy.com BIN rejection** — direct card payment on Bandcamp doesn't work. Must use PayPal.
+- **PayPal hCaptcha** — headless browsers (StealthyFetcher/Playwright) trigger bot detection. Must use real Chrome.
+- **Native `<select>` dropdowns** — can't be set via CDP keyboard or iframe-click. Must use debugger_eval socket.
+- **Beatport download button** — `click-by-name "Download All"` clicks the container, not the button. Must use `chrome js` to target `.download-actions` button directly.
+- **Amazon cross-origin card form** — the "Add a credit or debit card" modal uses a cross-origin secure iframe. Cannot fill via `chrome js`, `chrome type`, or `chrome key`. Must use `axctl` (macOS accessibility API) to set text field values and `cliclick` with precise `axctl`-derived coordinates for dropdown menus.
+- **Amazon `#signInSubmit` button** — `click-by-name "Sign in"` hits the heading text, not the submit button. Use `chrome js` with `document.querySelector('#signInSubmit').click()`.
+- **Amazon account holds** — Privacy.com virtual cards trigger Amazon's fraud detection. Failed transactions re-trigger holds. See "Amazon account hold recovery" section for resolution steps.
+- **Amazon cart contamination** — existing items in the Amazon cart can redirect the Amazon Music "Buy MP3" flow to standard checkout with inflated totals. Always clear the cart before purchasing music (see pre-flight checks).
+- **Amazon billing address** — after re-adding the Privacy.com card, you must also set the billing address via Edit card → "Choose or add a billing address". Without it, purchases fail with "billing address must match your country of purchase".
 
 ## Config
 

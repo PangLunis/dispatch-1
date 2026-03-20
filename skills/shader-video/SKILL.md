@@ -107,6 +107,9 @@ When researching new shader ideas or looking for creative inspiration:
 - **r/proceduralgeneration** - Overlaps with shader techniques
 - **r/twotriangles** - Specifically for shadertoy-style fragment shaders (name references fullscreen quad rendering)
 
+### 11. Radiant Shaders (radiant-shaders.com)
+Curated gallery of 80+ beautiful GLSL shaders, each inspired by a celebrity/artist. Organized by effect type with full source code. Great for studying specific techniques: flow fields, reaction-diffusion, raymarching, physics simulations, bioluminescence, volumetric lighting. Browse the full gallery at radiant-shaders.com/gallery/all — click any shader to see the GLSL source and a live preview.
+
 ### Other Communities
 - **pouet.net** - Demoscene community where shader wizards hang out
 - **fxhash.xyz** - NFT generative art platform with shader-heavy work

@@ -32,8 +32,6 @@
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>/Users/USERNAME</string>
-        <key>DISABLE_SEARCH_DAEMON</key>
-        <string>1</string>
     </dict>
 </dict>
 </plist>

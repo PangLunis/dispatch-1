@@ -84,6 +84,7 @@ def send_notification(
     image_url: str = None,
     audio_url: str = None,
     report_url: str = None,
+    chat_id: str = "voice",
 ) -> bool:
     """Send push notification via APNs."""
     host = APNS_HOST_SANDBOX if sandbox else APNS_HOST_PROD
@@ -112,7 +113,8 @@ def send_notification(
             "category": category,
             "mutable-content": 1  # Required for notification service extension
         },
-        "message_id": message_id
+        "message_id": message_id,
+        "chat_id": chat_id
     }
 
     # Add media URLs for service extension to process
@@ -158,6 +160,7 @@ def main():
     parser.add_argument("--audio", help="Audio URL to attach")
     parser.add_argument("--report", help="Report/PDF URL to attach")
     parser.add_argument("--sandbox", action="store_true", help="Use sandbox APNs")
+    parser.add_argument("--chat-id", default="voice", help="Chat ID for routing push to correct conversation")
     parser.add_argument("--test", action="store_true", help="Send test notification")
     parser.add_argument("--test-image", action="store_true", help="Send test notification with image")
     parser.add_argument("--test-audio", action="store_true", help="Send test notification with audio")
@@ -238,6 +241,7 @@ def main():
             image_url=image_url,
             audio_url=audio_url,
             report_url=report_url,
+            chat_id=args.chat_id,
         ):
             success_count += 1
 

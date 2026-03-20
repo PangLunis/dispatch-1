@@ -144,7 +144,6 @@ def get_sdk_sessions():
         for chat_id, info in registry.get("sessions", {}).items():
             sessions.append({
                 "name": info.get("session_name", chat_id),
-                "is_bg": info.get("session_type") == "background",
                 "tier": info.get("tier", "unknown"),
                 "status": info.get("status", "unknown")
             })
@@ -296,12 +295,9 @@ def print_dashboard(data):
 
     # SDK sessions
     print("SDK SESSIONS")
-    fg_sessions = [s for s in sdk if not s["is_bg"]]
-    bg_sessions = [s for s in sdk if s["is_bg"]]
-    print(f"  Active:     {len(fg_sessions):>8}")
-    print(f"  Background: {len(bg_sessions):>8}")
-    if fg_sessions:
-        print(f"  Sessions:   {', '.join(s['name'] for s in fg_sessions[:5])}")
+    print(f"  Active:     {len(sdk):>8}")
+    if sdk:
+        print(f"  Sessions:   {', '.join(s['name'] for s in sdk[:5])}")
     print()
 
     # Chrome

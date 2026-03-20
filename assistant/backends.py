@@ -58,6 +58,16 @@ BACKENDS: dict[str, BackendConfig] = {
         history_cmd='~/dispatch/tools/test-read --chat "{chat_id}" --limit {limit}',
         supports_image_context=False,
     ),
+    "discord": BackendConfig(
+        name="discord",
+        label="DISCORD",
+        session_suffix="-discord",
+        registry_prefix="discord:",
+        send_cmd='~/.claude/skills/discord/scripts/send-discord "{chat_id}"',
+        send_group_cmd='~/.claude/skills/discord/scripts/send-discord "{chat_id}"',
+        history_cmd="",  # No history CLI yet (could add later via Discord REST API)
+        supports_image_context=False,  # Discord CDN URLs, not local files
+    ),
     "sven-app": BackendConfig(
         name="sven-app",
         label="SVEN_APP",

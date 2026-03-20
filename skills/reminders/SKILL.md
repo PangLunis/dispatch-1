@@ -39,15 +39,13 @@ claude-assistant remind add "Weekly review" --contact "John Smith" --cron "0 10 
 # With timezone override
 claude-assistant remind add "Call Tokyo" --contact "John Smith" --at "9am" --tz "Asia/Tokyo"
 
-# With target (fg=foreground, bg=background, spawn=new agent)
-claude-assistant remind add "Memory consolidation" --contact "John Smith" --cron "0 2 * * *" --target bg
+# With target (fg=foreground, spawn=new agent)
 claude-assistant remind add "Long analysis task" --contact "John Smith" --in 1h --target spawn
 ```
 
 ### Target Types
 
 - **fg** (default): Inject into the contact's foreground session. Session texts the user when starting/finishing.
-- **bg**: Inject into the contact's background session. Silent execution, no user notification.
 - **spawn**: Create a fresh agent SDK session for this task. Good for isolated, long-running tasks.
 
 ## Add a Reminder (Event Mode)

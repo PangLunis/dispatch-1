@@ -19,6 +19,9 @@ CLIs are testable, reusable, handle edge cases, and are debuggable. One-off expl
 ### 3. Skill Self-Healing
 **When a skill is confusing or a task fails, UPDATE THE SKILL.** Immediately update the skill's SKILL.md with the generalizable fix so the system gets smarter over time.
 
+### 3.5. Always Verify Builds Before PRs
+**ALWAYS run the project's build command before creating or updating a PR.** For TypeScript/JS projects with `package.json`, run `npm run build` (or `yarn build` / `bun run build`). If the build fails, fix the errors before pushing. This catches missing imports, type errors, and other issues early.
+
 ### 4. Never Truncate Output
 **NEVER truncate data in CLIs, scripts, or when reading/displaying content.** No slicing (`[:50]`), no "truncate long messages" logic. Filter fields if needed, but show full values. Use `--limit` flags for record counts.
 
@@ -41,7 +44,6 @@ claude-assistant restart-sessions         # Restart all sessions
 claude-assistant inject-prompt <session> "prompt"        # Basic
 claude-assistant inject-prompt <session> --sms "msg"     # SMS format
 claude-assistant inject-prompt <session> --admin "cmd"   # Admin override
-claude-assistant inject-prompt <session> --bg "prompt"   # Background session
 ```
 `<session>` accepts any of: session_name (`imessage/_15555550100`), chat_id (`2df6be1ed7534cd797e5fdb2c4bd6bd8`), or contact name (`Jane Doe`).
 Why: **auto-creates sessions for unknown contacts**, lazy session creation, locking (no race conditions), registry sync, consistent tag wrapping, security (admin-only).
@@ -193,6 +195,7 @@ description: What this skill does. Include trigger words.
 - **NEVER hardcode absolute paths** — use `~` or relative paths
 - **NEVER hardcode individual contacts** — use contact lookup CLI or `!`identity`` dynamic prompts
 - **ALWAYS use `uv` for Python** — never `python3` or `pip` directly
+- **NEVER glob-scan broad directories** — avoid patterns like `Glob("~/**/*.py")` which scan the entire home directory. Always target specific subdirectories (e.g., `~/dispatch/`, `~/.claude/skills/`) to avoid slow scans over large trees
 
 ### How Skills Get Embedded into Sessions
 

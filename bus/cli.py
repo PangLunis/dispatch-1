@@ -24,6 +24,7 @@ Usage:
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -122,6 +123,8 @@ def cmd_produce(args):
             source=args.source,
             headers=headers,
         )
+        # Drain the background writer queue before CLI exits
+        producer.close()
         print(f"Produced to {args.topic} (key={args.key}, type={args.type})")
 
 
@@ -479,6 +482,115 @@ def cmd_reports(args):
                 print(f"{ts_str:<12} {source:<18} {accepted:>8} {refuted:>8} {investigate:>12} {dur_str:>10}")
 
 
+def cmd_search(args):
+    """Full-text search across bus records."""
+    from bus.search import search_records
+
+    with Bus(args.db) as bus:
+        since_ms = None
+        if args.since:
+            since_ms = _now_ms() - (args.since * 24 * 60 * 60 * 1000)
+
+        try:
+            results = search_records(
+                bus._conn, args.query,
+                topic=args.topic, type=args.type, key=args.key, source=args.source,
+                since_ms=since_ms, limit=args.limit,
+            )
+        except sqlite3.OperationalError as e:
+            if "fts5" in str(e).lower() or "syntax" in str(e).lower() or "no such table" in str(e).lower():
+                print(f"Search error: {e}", file=sys.stderr)
+                print("Tip: Use quotes for phrases (\"exact match\"), OR for alternatives", file=sys.stderr)
+                sys.exit(1)
+            raise
+
+        if not results:
+            print("No results found")
+            return
+
+        for r in results:
+            ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r.timestamp / 1000))
+            key_str = r.key or "(null)"
+            type_str = f" type={r.type}" if r.type else ""
+            source_str = f" source={r.source}" if r.source else ""
+            text = r.payload_text or ""
+            print(f"[{r.topic}:{r.partition}@{r.offset}] {ts_str} key={key_str}{type_str}{source_str}")
+            print(f"  {text}")
+            print()
+
+        print(f"--- {len(results)} result(s) ---")
+
+
+def cmd_search_sdk(args):
+    """Full-text search across SDK events."""
+    from bus.search import search_sdk_events
+
+    with Bus(args.db) as bus:
+        since_ms = None
+        if args.since:
+            since_ms = _now_ms() - (args.since * 24 * 60 * 60 * 1000)
+
+        try:
+            results = search_sdk_events(
+                bus._conn, args.query,
+                session_name=args.session, event_type=args.event_type,
+                tool_name=args.tool, chat_id=args.chat_id,
+                since_ms=since_ms, limit=args.limit,
+            )
+        except sqlite3.OperationalError as e:
+            if "fts5" in str(e).lower() or "syntax" in str(e).lower() or "no such table" in str(e).lower():
+                print(f"Search error: {e}", file=sys.stderr)
+                print("Tip: Use quotes for phrases (\"exact match\"), OR for alternatives", file=sys.stderr)
+                sys.exit(1)
+            raise
+
+        if not results:
+            print("No results found")
+            return
+
+        for r in results:
+            ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r.timestamp / 1000))
+            tool_str = f" tool={r.tool_name}" if r.tool_name else ""
+            chat_str = f" chat={r.chat_id}" if r.chat_id else ""
+            text = r.payload_text or ""
+            print(f"[{r.session_name}] {ts_str} {r.event_type}{tool_str}{chat_str}")
+            print(f"  {text}")
+            print()
+
+        print(f"--- {len(results)} result(s) ---")
+
+
+def cmd_fts_status(args):
+    """Check FTS index health."""
+    with Bus(args.db) as bus:
+        try:
+            status = bus.fts_status()
+        except sqlite3.OperationalError as e:
+            print(f"FTS not available: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        for name, info in status.items():
+            healthy = "ok" if info["healthy"] else "DRIFT"
+            print(f"{name}: hot={info['hot']} archive={info['archive']} "
+                  f"fts={info['fts']} drift={info['drift']} {healthy}")
+
+
+def cmd_fts_rebuild(args):
+    """Rebuild FTS indexes from scratch."""
+    with Bus(args.db) as bus:
+        print("Rebuilding FTS indexes...")
+        try:
+            bus.fts_rebuild()
+            status = bus.fts_status()
+            for name, info in status.items():
+                healthy = "ok" if info["healthy"] else "DRIFT"
+                print(f"  {name}: {info['fts']} rows indexed {healthy}")
+            print("Done")
+        except Exception as e:
+            print(f"Rebuild failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+
 def _severity_at_or_above(level: str) -> set:
     """Return set of severity levels at or above the given level."""
     levels = ["low", "medium", "high", "critical"]
@@ -600,6 +712,32 @@ def main():
     p.add_argument("--severity", help="Minimum severity (low, medium, high, critical)")
     p.add_argument("--limit", type=int, help="Max reports to show")
 
+    # search
+    p = subparsers.add_parser("search", help="Full-text search across bus records")
+    p.add_argument("query", help="Search query (FTS5 syntax: AND, OR, NOT, \"phrases\")")
+    p.add_argument("--topic", help="Filter by topic")
+    p.add_argument("--type", help="Filter by event type")
+    p.add_argument("--key", help="Filter by key (chat_id)")
+    p.add_argument("--source", help="Filter by source")
+    p.add_argument("--since", type=int, help="Only results from last N days")
+    p.add_argument("--limit", type=int, default=20, help="Max results")
+
+    # search-sdk
+    p = subparsers.add_parser("search-sdk", help="Full-text search across SDK events")
+    p.add_argument("query", help="Search query")
+    p.add_argument("--session", help="Filter by session name")
+    p.add_argument("--event-type", help="Filter by event type")
+    p.add_argument("--tool", help="Filter by tool name")
+    p.add_argument("--chat-id", help="Filter by chat ID")
+    p.add_argument("--since", type=int, help="Only results from last N days")
+    p.add_argument("--limit", type=int, default=20, help="Max results")
+
+    # fts-status
+    subparsers.add_parser("fts-status", help="Check FTS index health and row count drift")
+
+    # fts-rebuild
+    subparsers.add_parser("fts-rebuild", help="Drop and rebuild FTS indexes from all data")
+
     args = parser.parse_args()
 
     commands = {
@@ -617,6 +755,10 @@ def main():
         "prune": cmd_prune,
         "stats": cmd_stats,
         "reports": cmd_reports,
+        "search": cmd_search,
+        "search-sdk": cmd_search_sdk,
+        "fts-status": cmd_fts_status,
+        "fts-rebuild": cmd_fts_rebuild,
     }
     commands[args.command](args)
 

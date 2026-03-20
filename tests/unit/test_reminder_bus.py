@@ -33,7 +33,6 @@ class FakeBackend:
         self.sessions = {}
         self._producer = MagicMock()
         self.create_session = AsyncMock()
-        self.create_background_session = AsyncMock()
 
 
 def make_poller(contacts=None, sessions=None):

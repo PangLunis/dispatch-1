@@ -407,6 +407,15 @@ class SDKBackend:
                 # Replay undelivered messages from bus WAL
                 await self._replay_undelivered(chat_id, stored_session_id)
 
+                # Nudge session to continue any in-progress work
+                session = self.sessions.get(chat_id)
+                if session:
+                    await session.inject(
+                        "[SYSTEM] Session resumed after daemon restart. "
+                        "If you were in the middle of a task, continue where you left off. "
+                        "If you were idle/waiting for user input, ignore this message and wait silently."
+                    )
+
             except Exception as e:
                 log.error(f"STARTUP | Failed to recreate {session_name}: {e}")
 
@@ -543,8 +552,10 @@ class SDKBackend:
             )
 
             # Resolve model: check registry for explicit override, else default to opus
+            # Discord sessions use sonnet by default (higher volume, cost management)
             existing_entry = self.registry.get(chat_id)
-            model = existing_entry.get("model", "opus") if existing_entry else "opus"
+            default_model = "sonnet" if source == "discord" else "opus"
+            model = existing_entry.get("model", default_model) if existing_entry else default_model
 
             session = SDKSession(
                 chat_id=chat_id,
@@ -626,8 +637,10 @@ class SDKBackend:
         )
 
         # Resolve model: check registry for explicit override, else default to opus
+        # Discord sessions use sonnet by default (higher volume, cost management)
         existing_entry = self.registry.get(chat_id)
-        model = existing_entry.get("model", "opus") if existing_entry else "opus"
+        default_model = "sonnet" if source == "discord" else "opus"
+        model = existing_entry.get("model", default_model) if existing_entry else default_model
 
         session = SDKSession(
             chat_id=chat_id,
@@ -1214,116 +1227,6 @@ Execute the task now. Be thorough but efficient."""
         return session is not None
 
     # ──────────────────────────────────────────────────────────────
-    # Background sessions (for nightly consolidation)
-    # ──────────────────────────────────────────────────────────────
-
-    async def create_background_session(
-        self,
-        contact_name: str,
-        chat_id: str,
-        tier: str,
-        source: str = "imessage",
-    ) -> SDKSession:
-        """Create a background session for nightly consolidation."""
-        bg_id = f"{chat_id}-bg"
-
-        async with self._lock:
-            if bg_id in self.sessions and self.sessions[bg_id].is_alive():
-                return self.sessions[bg_id]
-
-            # Kill zombie session: if session exists but is not alive, its subprocess
-            # may still be running (buffer overflow crash leaves orphan PIDs).
-            if bg_id in self.sessions:
-                old_session = self.sessions.pop(bg_id)
-                lifecycle_log.info(
-                    f"ZOMBIE_CLEANUP | {bg_id} | Killing orphan subprocess before recreate"
-                )
-                await old_session._kill_subprocess()
-
-            fg_session_name = get_session_name(chat_id, source=source)
-            transcript_dir = ensure_transcript_dir(fg_session_name)
-
-            session = SDKSession(
-                chat_id=bg_id,
-                contact_name=f"{contact_name} (BG)",
-                tier=tier,
-                cwd=str(transcript_dir),
-                session_type="background",
-                source=source,
-                producer=self._producer,
-            )
-            await session.start()
-            self.sessions[bg_id] = session
-
-            # Inject BG-specific prompt - general purpose task runner
-            bg_prompt = f"""BACKGROUND SESSION - Task runner for {contact_name}.
-
-This is a headless background session for executing scheduled tasks (reminders, cron jobs, etc).
-You receive task injections and execute them, then wait for the next task.
-
-When you receive a task:
-1. Execute it immediately
-2. If it involves sending a message, use the appropriate send command
-3. Report completion if requested
-4. Wait for next task
-
-Session: {fg_session_name}
-Ready for tasks...
-"""
-            await session.inject(bg_prompt)
-
-            lifecycle_log.info(f"CREATE | {fg_session_name}-bg | SUCCESS | background for {contact_name}")
-            produce_session_event(self._producer, bg_id, "session.created", {
-                "contact_name": f"{contact_name} (BG)", "tier": tier,
-                "session_type": "background", "source": source,
-            }, source="daemon")
-            return session
-
-    async def inject_consolidation(self, contact_name: str, chat_id: str):
-        """Trigger nightly consolidation for a contact."""
-        bg_id = f"{chat_id}-bg"
-        reg = self.registry.get(chat_id)
-        source = reg.get("source", "imessage") if reg else "imessage"
-        fg_session_name = get_session_name(chat_id, source=source)
-
-        # Ensure BG session exists
-        if bg_id not in self.sessions or not self.sessions[bg_id].is_alive():
-            reg = self.registry.get(chat_id)
-            tier = reg.get("tier", "admin") if reg else "admin"
-            await self.create_background_session(contact_name, chat_id, tier)
-
-        session = self.sessions.get(bg_id)
-        if not session:
-            log.error(f"Could not create BG session for {contact_name}")
-            return
-
-        consolidation_prompt = f"""
---- NIGHTLY MEMORY CONSOLIDATION ---
-Time to consolidate memories for {contact_name}.
-
-Run this command to see today's conversations:
-uv run ~/.claude/skills/memory/scripts/memory.py consolidate "{fg_session_name}"
-
-Review the output and save any important memories:
-- Facts about the person
-- Preferences they expressed
-- Projects you worked on together
-- Lessons learned
-
-For each memory, run:
-uv run ~/.claude/skills/memory/scripts/memory.py save "{fg_session_name}" "memory text" --type TYPE
-
-Types: fact, preference, project, lesson, relationship, context
-
-When done, sync the CLAUDE.md:
-uv run ~/.claude/skills/memory/scripts/memory.py sync "{fg_session_name}"
-
-Start now!
-"""
-        await session.inject(consolidation_prompt)
-        log.info(f"Injected consolidation prompt for {contact_name}")
-
-    # ──────────────────────────────────────────────────────────────
     # Master session
     # ──────────────────────────────────────────────────────────────
 
@@ -1394,10 +1297,9 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
     # ──────────────────────────────────────────────────────────────
 
     async def kill_session(self, chat_id: str) -> bool:
-        """Kill a session (FG + BG)."""
+        """Kill a session."""
         async with self._lock:
             session = self.sessions.pop(chat_id, None)
-            bg_session = self.sessions.pop(f"{chat_id}-bg", None)
 
         if session:
             # Save session_id before stopping
@@ -1410,10 +1312,8 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
                 "error_count": session._error_count,
             }, source="daemon")
             await session.stop()
-        if bg_session:
-            await bg_session.stop()
 
-        lifecycle_log.info(f"KILL | {chat_id} | fg={'yes' if session else 'no'} bg={'yes' if bg_session else 'no'}")
+        lifecycle_log.info(f"KILL | {chat_id} | killed={'yes' if session else 'no'}")
         return session is not None
 
     async def kill_all_sessions(self) -> int:
@@ -1682,7 +1582,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         }
 
         for chat_id, session in list(self.sessions.items()):
-            if chat_id.endswith("-bg") or chat_id == MASTER_SESSION:
+            if chat_id == MASTER_SESSION:
                 continue
             if chat_id.startswith("ephemeral-"):
                 continue
@@ -1800,7 +1700,7 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
 
         checked = 0
         for chat_id, session in list(self.sessions.items()):
-            if chat_id.endswith("-bg") or chat_id == MASTER_SESSION:
+            if chat_id == MASTER_SESSION:
                 continue
             if chat_id.startswith("ephemeral-"):
                 continue
@@ -1854,8 +1754,8 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
         async with self._lock:
             sessions_snapshot = list(self.sessions.items())
         for chat_id, session in sessions_snapshot:
-            if chat_id.endswith("-bg") or chat_id == MASTER_SESSION:
-                continue  # Don't idle-kill BG or master sessions
+            if chat_id == MASTER_SESSION:
+                continue  # Don't idle-kill master session
             idle_seconds = (now - session.last_activity).total_seconds()
             if idle_seconds > timeout_hours * 3600:
                 idle_hours = idle_seconds / 3600
@@ -2253,6 +2153,11 @@ Full guidelines: ~/.claude/skills/sms-assistant/SKILL.md
 
 All other system documentation applies normally (see ~/.claude/CLAUDE.md via symlink).
 """
+
+        # Substitute {chat_id} placeholder with actual chat ID from transcript dir name
+        # e.g., for sven-app backend, transcript_dir = ~/transcripts/sven-app/{chat_id}
+        actual_chat_id = str(transcript_dir.name)
+        content = content.replace('"{chat_id}"', f'"{actual_chat_id}"')
 
         claude_md_path.write_text(content)
         log.info(f"Created {backend.label}-specific CLAUDE.md at {claude_md_path}")

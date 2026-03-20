@@ -22,17 +22,18 @@ REGISTRY_PATH = Path.home() / "dispatch/state/sessions.json"
 SEND_SMS = Path.home() / ".claude/skills/sms-assistant/scripts/send-sms"
 SEND_SIGNAL = Path.home() / ".claude/skills/signal/scripts/send-signal"
 SEND_SIGNAL_GROUP = Path.home() / ".claude/skills/signal/scripts/send-signal-group"
+SEND_DISCORD = Path.home() / ".claude/skills/discord/scripts/send-discord"
 
 def is_group_chat_id(chat_id: str) -> bool:
     bare = chat_id
-    for prefix in ["signal:", "test:"]:
+    for prefix in ["signal:", "test:", "discord:"]:
         if chat_id.startswith(prefix):
             bare = chat_id[len(prefix):]
             break
     return not bare.startswith("+")
 
 def strip_registry_prefix(chat_id: str) -> str:
-    for prefix in ["signal:", "test:"]:
+    for prefix in ["signal:", "test:", "discord:"]:
         if chat_id.startswith(prefix):
             return chat_id[len(prefix):]
     return chat_id
@@ -70,9 +71,11 @@ def main():
         sys.exit(1)
 
     chat_id = None
+    entry_type = None
     for entry in registry.values():
         if entry.get("transcript_dir") == expected_transcript_dir:
             chat_id = entry["chat_id"]
+            entry_type = entry.get("type")
             break
 
     if not chat_id:
@@ -81,8 +84,12 @@ def main():
 
     bare_chat_id = strip_registry_prefix(chat_id)
 
+    # Determine if group: prefer registry type field, fall back to heuristic
+    # (heuristic can fail — some Signal group base64 IDs start with '+')
+    is_group = entry_type == "group" if entry_type else is_group_chat_id(chat_id)
+
     if backend == "signal":
-        if is_group_chat_id(chat_id):
+        if is_group:
             cmd = [str(SEND_SIGNAL_GROUP), bare_chat_id]
         else:
             cmd = [str(SEND_SIGNAL), bare_chat_id]
@@ -90,6 +97,10 @@ def main():
         if args.message:
             cmd.append(args.message)
         # Note: Signal image/file support would need to be added to signal CLIs
+    elif backend == "discord":
+        cmd = [str(SEND_DISCORD), bare_chat_id]
+        if args.message:
+            cmd.append(args.message)
     else:
         cmd = [str(SEND_SMS), bare_chat_id]
         if args.message:

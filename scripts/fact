@@ -1,0 +1,1033 @@
+#!/usr/bin/env -S uv run --script
+"""
+Structured facts CLI for the dispatch system.
+
+Manages structured facts (travel, events, preferences) per contact.
+Facts are stored in bus.db and surfaced to sessions via CLAUDE.md injection.
+
+Usage:
+    fact save --contact "+1..." --type travel --summary "..." [options]
+    fact update <id> [--summary "..."] [--details '{"key": "val"}']
+    fact list [--contact "+1..."] [--type travel] [--active] [--limit N] [--json]
+    fact search "query"
+    fact upcoming [--days 7]
+    fact deactivate <id> [--all]
+    fact context --contact "+1..."
+    fact inject --contact "+1..."
+    fact expire
+    fact stale
+    fact audit
+    fact rebuild --since "2026-01-01"
+    fact import --from-log "2026-03-19T02:00:00Z"
+    fact gc
+"""
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path.home() / "dispatch"))
+
+DB_PATH = Path.home() / "dispatch" / "state" / "bus.db"
+LOG_DIR = Path.home() / "dispatch" / "logs"
+
+# Feature flag — when disabled, nightly extraction is skipped but CLI still works
+FACTS_ENABLED = os.environ.get("FACTS_ENABLED", "1") == "1"
+
+# Phase 1 fact types and their required detail keys
+FACT_TYPES = {
+    "travel": {"required": {"destination"}, "optional": {"depart", "return", "airline", "flight", "hotel", "purpose"}},
+    "event": {"required": set(), "optional": {"location", "attendees", "description", "starts_at_local", "local_time", "inferred_tz"}},
+    "preference": {"required": {"domain"}, "optional": {"context"}},
+}
+
+# Staleness thresholds (days) per fact type
+STALENESS_THRESHOLDS = {
+    "preference": 180,
+    "relationship": 365,
+    "project": 90,
+    "travel": 30,
+    "event": 30,
+}
+
+# Emoji per fact type for CLAUDE.md injection
+TYPE_EMOJI = {
+    "travel": "🛫",
+    "event": "🎂",
+    "preference": "💻",
+    "deadline": "⏰",
+    "relationship": "👥",
+    "project": "🔧",
+}
+
+# Confidence ranking for max-merge
+CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+# CLAUDE.md injection markers
+FACTS_MARKER_START = "<!-- facts-start -->"
+FACTS_MARKER_END = "<!-- facts-end -->"
+
+
+def utcnow() -> str:
+    """ISO 8601 UTC datetime string."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _resolve_contact(contact: str) -> dict:
+    """Resolve a contact identifier to both phone and display name.
+
+    Returns {"phone": str|None, "name": str|None, "canonical": str}.
+    canonical is the phone number if available, otherwise the original input.
+    """
+    result = {"phone": None, "name": None, "canonical": contact}
+
+    try:
+        sys.path.insert(0, str(Path.home() / "dispatch" / "skills" / "contacts" / "scripts"))
+        from contacts_core import lookup_phone_sqlite, list_contacts_sqlite
+    except ImportError:
+        print("Warning: contacts_core not available, skipping contact resolution", file=sys.stderr)
+        return result
+
+    # Check if it looks like a phone number
+    is_phone = contact.startswith("+") or contact.replace("-", "").replace(" ", "").isdigit()
+
+    if is_phone:
+        result["phone"] = contact
+        info = lookup_phone_sqlite(contact)
+        if info and info.get("name"):
+            result["name"] = info["name"]
+            result["canonical"] = contact
+    else:
+        # It's a display name — try to resolve to phone
+        result["name"] = contact
+        contacts = list_contacts_sqlite()
+        contact_lower = contact.lower()
+        for c in contacts:
+            if c["name"].lower() == contact_lower and c.get("phone"):
+                result["phone"] = c["phone"]
+                result["canonical"] = c["phone"]
+                break
+
+    return result
+
+
+def _contact_alternatives(contact: str) -> list[str]:
+    """Get all known identifiers for a contact (phone + display name).
+
+    Returns a list of identifiers to use in OR queries.
+    Always includes the original contact. May also include the alternate form.
+    """
+    resolved = _resolve_contact(contact)
+    alternatives = {contact}
+    if resolved["phone"]:
+        alternatives.add(resolved["phone"])
+    if resolved["name"]:
+        alternatives.add(resolved["name"])
+    return list(alternatives)
+
+
+def get_conn(readonly: bool = False) -> sqlite3.Connection:
+    """Get a SQLite connection to bus.db."""
+    if readonly:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    else:
+        conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def validate_details(fact_type: str, details: dict | None) -> tuple[bool, str]:
+    """Validate details JSON against the schema for this fact_type.
+
+    Returns (ok, error_message). Unknown keys are allowed (logged but not rejected).
+    Type mismatches on known keys are coerced where possible.
+    """
+    if details is None:
+        details = {}
+
+    type_schema = FACT_TYPES.get(fact_type)
+    if not type_schema:
+        # Unknown type — no validation, accept as-is
+        return True, ""
+
+    required = type_schema["required"]
+    missing = required - set(details.keys())
+    if missing:
+        return False, f"Missing required keys for {fact_type}: {missing}"
+
+    # Type coercion for known keys
+    all_known = type_schema["required"] | type_schema["optional"]
+    for key in all_known & set(details.keys()):
+        val = details[key]
+        # Coerce list fields
+        if key in ("attendees", "tech_stack") and not isinstance(val, list):
+            if isinstance(val, str):
+                details[key] = [val]
+            else:
+                return False, f"Key '{key}' should be a list, got {type(val).__name__}"
+        # Coerce string fields
+        if key in ("destination", "domain", "relation", "name", "context", "location", "description") and not isinstance(val, str):
+            details[key] = str(val)
+
+    return True, ""
+
+
+def coerce_date(value: str) -> str:
+    """Try to coerce a date string to ISO 8601 format.
+
+    Handles: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, "March 20", "Mar 20 2026",
+    and other common formats. Returns the original string if coercion fails.
+    Logs a warning to stderr if coercion was applied.
+    """
+    if not value:
+        return value
+
+    # Already ISO 8601
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(value, fmt)
+            if fmt == "%Y-%m-%d":
+                return value  # Keep date-only as-is
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+
+    # Try common natural date formats
+    current_year = datetime.now().year
+    # Formats with year first (no ambiguity)
+    year_formats = [
+        "%B %d, %Y",   # "March 20, 2026"
+        "%b %d %Y",    # "Mar 20 2026"
+        "%m/%d/%Y",    # "3/20/2026"
+        "%d %B %Y",    # "20 March 2026"
+        "%d %b %Y",    # "20 Mar 2026"
+    ]
+    for fmt in year_formats:
+        try:
+            dt = datetime.strptime(value.strip(), fmt)
+            result = dt.strftime("%Y-%m-%d")
+            print(f"Warning: coerced date '{value}' → '{result}'", file=sys.stderr)
+            return result
+        except ValueError:
+            continue
+
+    # Formats without year — inject current year to avoid deprecation warning
+    no_year_formats = [
+        ("%B %d", "%B %d %Y"),   # "March 20" → "March 20 2026"
+        ("%b %d", "%b %d %Y"),   # "Mar 20" → "Mar 20 2026"
+    ]
+    for _, parse_fmt in no_year_formats:
+        try:
+            dt = datetime.strptime(f"{value.strip()} {current_year}", parse_fmt)
+            result = dt.strftime("%Y-%m-%d")
+            print(f"Warning: coerced date '{value}' → '{result}'", file=sys.stderr)
+            return result
+        except ValueError:
+            continue
+
+    return value
+
+
+def merge_details(old: dict | None, new: dict) -> dict:
+    """Merge new details into old, key-by-key.
+
+    - New keys are added
+    - Existing keys are updated
+    - Keys set to None are deleted
+    - Lists are replaced (not appended)
+    """
+    result = dict(old or {})
+    for k, v in new.items():
+        if v is None:
+            result.pop(k, None)
+        else:
+            result[k] = v
+    return result
+
+
+def max_confidence(a: str | None, b: str | None) -> str:
+    """Return the higher confidence level."""
+    rank_a = CONFIDENCE_RANK.get(a or "low", 0)
+    rank_b = CONFIDENCE_RANK.get(b or "low", 0)
+    if rank_a >= rank_b:
+        return a or "low"
+    return b or "low"
+
+
+def _build_bus_payload(fact_row: dict) -> dict:
+    """Build a fact event payload from a database row using bus_helpers."""
+    from assistant.bus_helpers import fact_event_payload
+    return fact_event_payload(
+        fact_id=fact_row["id"],
+        contact=fact_row["contact"],
+        fact_type=fact_row["fact_type"],
+        summary=fact_row["summary"],
+        details=json.loads(fact_row["details"]) if fact_row["details"] else None,
+        confidence=fact_row["confidence"],
+        starts_at=fact_row["starts_at"],
+        ends_at=fact_row["ends_at"],
+    )
+
+
+def produce_fact_event(event_type: str, fact_row: dict, silent: bool = False):
+    """Produce a fact event to the bus using bus_helpers."""
+    if silent:
+        return
+
+    try:
+        from bus.bus import Bus, Producer
+        from assistant.bus_helpers import produce_event
+        bus = Bus(str(DB_PATH))
+        producer = Producer(bus)
+        payload = _build_bus_payload(fact_row)
+        produce_event(producer, "facts", event_type, payload,
+                      key=fact_row["contact"], source="fact-cli")
+        producer.close()
+        bus.close()
+    except Exception as e:
+        print(f"Warning: failed to produce bus event: {e}", file=sys.stderr)
+
+
+def _build_facts_section(rows, total: int, contact: str) -> str:
+    """Build the ## Active Facts markdown section with explicit markers."""
+    display = rows[:15]
+    lines = [FACTS_MARKER_START, "## Active Facts", ""]
+    for row in display:
+        emoji = TYPE_EMOJI.get(row["fact_type"], "📝")
+        lines.append(f"- {emoji} {row['summary']} ({row['fact_type']})")
+
+    if total > 15:
+        lines.append(f"\n*15 of {total} active facts shown. Run `fact list --contact \"{contact}\"` for all.*")
+
+    lines.append(FACTS_MARKER_END)
+    return "\n".join(lines)
+
+
+def _get_active_facts(conn, contact: str):
+    """Query active high/medium confidence facts for a contact, ordered for display.
+
+    Searches by all known identifiers (phone + display name) for the contact.
+    """
+    alts = _contact_alternatives(contact)
+    placeholders = ",".join("?" * len(alts))
+    return conn.execute(f"""
+        SELECT * FROM facts
+        WHERE contact IN ({placeholders}) AND active = 1
+          AND confidence IN ('high', 'medium')
+        ORDER BY
+            CASE WHEN starts_at IS NOT NULL THEN 0 ELSE 1 END,
+            starts_at ASC,
+            created_at DESC
+    """, alts).fetchall()
+
+
+def _row_to_dict(row) -> dict:
+    """Convert a sqlite3.Row to a plain dict."""
+    return dict(row)
+
+
+def _format_row_json(row) -> dict:
+    """Format a fact row for JSON output."""
+    d = _row_to_dict(row)
+    if d.get("details"):
+        try:
+            d["details"] = json.loads(d["details"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return d
+
+
+# ── Commands ──────────────────────────────────────────────────
+
+def cmd_save(args):
+    """Save a new fact."""
+    details = json.loads(args.details) if args.details else {}
+
+    ok, err = validate_details(args.type, details)
+    if not ok:
+        print(f"Error: {err}", file=sys.stderr)
+        sys.exit(1)
+
+    # Normalize contact: resolve display names to phone numbers
+    resolved = _resolve_contact(args.contact)
+    contact = resolved["canonical"]
+    if contact != args.contact:
+        print(f"Resolved contact '{args.contact}' → '{contact}'", file=sys.stderr)
+    elif not resolved["phone"] and not args.contact.startswith("+"):
+        print(f"Warning: could not resolve '{args.contact}' to a phone number, saving as-is", file=sys.stderr)
+
+    starts_at = coerce_date(args.starts) if args.starts else None
+    ends_at = coerce_date(args.ends) if args.ends else None
+    now = utcnow()
+
+    conn = get_conn()
+    try:
+        cur = conn.execute("""
+            INSERT INTO facts (contact, fact_type, summary, details, confidence,
+                               starts_at, ends_at, active, created_at, last_confirmed,
+                               source, source_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+        """, (
+            contact, args.type, args.summary, json.dumps(details) if details else None,
+            args.confidence or "high",
+            starts_at, ends_at, now, now,
+            args.source or "manual", args.source_ref,
+        ))
+        conn.commit()
+        fact_id = cur.lastrowid
+
+        row = conn.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
+        row_dict = _row_to_dict(row)
+        if args.json:
+            print(json.dumps(_format_row_json(row)))
+        else:
+            print(f"Saved fact #{fact_id}: {args.summary}")
+    finally:
+        conn.close()
+
+    # Produce bus event AFTER commit (use dict copy, not Row object)
+    produce_fact_event("fact.created", row_dict, silent=args.silent)
+
+
+def cmd_update(args):
+    """Update an existing fact."""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM facts WHERE id = ?", (args.id,)).fetchone()
+        if not row:
+            print(f"Error: fact #{args.id} not found", file=sys.stderr)
+            sys.exit(1)
+
+        updates = {}
+        if args.summary:
+            updates["summary"] = args.summary
+
+        if args.details:
+            new_details = json.loads(args.details)
+            old_details = json.loads(row["details"]) if row["details"] else {}
+            merged = merge_details(old_details, new_details)
+
+            ok, err = validate_details(row["fact_type"], merged)
+            if not ok:
+                print(f"Error: {err}", file=sys.stderr)
+                sys.exit(1)
+
+            updates["details"] = json.dumps(merged)
+
+        if args.starts:
+            updates["starts_at"] = coerce_date(args.starts)
+        if args.ends:
+            updates["ends_at"] = coerce_date(args.ends)
+        if args.confidence:
+            # Take the higher of old and new confidence
+            updates["confidence"] = max_confidence(row["confidence"], args.confidence)
+
+        if not updates:
+            print("No updates specified")
+            return
+
+        updates["updated_at"] = utcnow()
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [args.id]
+        conn.execute(f"UPDATE facts SET {set_clause} WHERE id = ?", values)
+        conn.commit()
+
+        row = conn.execute("SELECT * FROM facts WHERE id = ?", (args.id,)).fetchone()
+        row_dict = _row_to_dict(row)
+        if args.json:
+            print(json.dumps(_format_row_json(row)))
+        else:
+            print(f"Updated fact #{args.id}")
+    finally:
+        conn.close()
+
+    # Produce bus event AFTER commit (use dict copy, not Row object)
+    produce_fact_event("fact.updated", row_dict, silent=args.silent)
+
+
+def cmd_list(args):
+    """List facts with optional filters."""
+    conn = get_conn(readonly=True)
+    try:
+        where = []
+        params = []
+
+        if args.contact:
+            alts = _contact_alternatives(args.contact)
+            placeholders = ",".join("?" * len(alts))
+            where.append(f"contact IN ({placeholders})")
+            params.extend(alts)
+        if args.type:
+            where.append("fact_type = ?")
+            params.append(args.type)
+        if args.active:
+            where.append("active = 1")
+
+        clause = "WHERE " + " AND ".join(where) if where else ""
+        limit_clause = f" LIMIT {args.limit}" if args.limit else ""
+        rows = conn.execute(
+            f"SELECT * FROM facts {clause} ORDER BY created_at DESC{limit_clause}",
+            params,
+        ).fetchall()
+
+        if not rows:
+            if args.json:
+                print("[]")
+            else:
+                print("No facts found.")
+            return
+
+        if args.json:
+            print(json.dumps([_format_row_json(r) for r in rows]))
+            return
+
+        for row in rows:
+            status = "✓" if row["active"] else "✗"
+            emoji = TYPE_EMOJI.get(row["fact_type"], "📝")
+            conf = row["confidence"][0].upper() if row["confidence"] else "?"
+            temporal = ""
+            if row["starts_at"]:
+                temporal = f" [{row['starts_at']}"
+                if row["ends_at"]:
+                    temporal += f" → {row['ends_at']}"
+                temporal += "]"
+            print(f"  {status} #{row['id']} {emoji} {row['summary']} ({row['fact_type']}, {conf}){temporal}")
+            if args.verbose and row["details"]:
+                print(f"      details: {row['details']}")
+    finally:
+        conn.close()
+
+
+def cmd_search(args):
+    """Search facts by summary text."""
+    conn = get_conn(readonly=True)
+    try:
+        query = "SELECT * FROM facts WHERE summary LIKE ? ORDER BY created_at DESC"
+        params = [f"%{args.query}%"]
+        if not args.all:
+            query = "SELECT * FROM facts WHERE summary LIKE ? AND active = 1 ORDER BY created_at DESC"
+
+        rows = conn.execute(query, params).fetchall()
+
+        if not rows:
+            print(f"No facts matching '{args.query}'")
+            return
+
+        if args.json:
+            print(json.dumps([_format_row_json(r) for r in rows]))
+            return
+
+        for row in rows:
+            emoji = TYPE_EMOJI.get(row["fact_type"], "📝")
+            status = "✓" if row["active"] else "✗"
+            print(f"  {status} #{row['id']} {emoji} {row['summary']} ({row['fact_type']}, {row['contact']})")
+    finally:
+        conn.close()
+
+
+def cmd_upcoming(args):
+    """Show facts with upcoming dates."""
+    conn = get_conn(readonly=True)
+    try:
+        now = utcnow()
+        cutoff = (datetime.now(timezone.utc) + timedelta(days=args.days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Include facts that:
+        # 1. Start in the future (within --days window)
+        # 2. OR are currently active (started in past, ends in future or no end date)
+        rows = conn.execute("""
+            SELECT * FROM facts
+            WHERE active = 1
+              AND starts_at IS NOT NULL
+              AND (
+                  (starts_at >= ? AND starts_at <= ?)
+                  OR (starts_at < ? AND (ends_at IS NULL OR ends_at >= ?))
+              )
+            ORDER BY starts_at ASC
+        """, (now, cutoff, now, now)).fetchall()
+
+        if not rows:
+            if args.json:
+                print("[]")
+            else:
+                print(f"No upcoming facts in the next {args.days} days.")
+            return
+
+        if args.json:
+            print(json.dumps([_format_row_json(r) for r in rows]))
+            return
+
+        for row in rows:
+            emoji = TYPE_EMOJI.get(row["fact_type"], "📝")
+            print(f"  {emoji} {row['summary']} — {row['starts_at']} ({row['contact']})")
+    finally:
+        conn.close()
+
+
+def cmd_deactivate(args):
+    """Deactivate a fact or all facts."""
+    conn = get_conn()
+    try:
+        if args.all:
+            ids = [r["id"] for r in conn.execute("SELECT id FROM facts WHERE active = 1").fetchall()]
+            if not ids:
+                print("No active facts to deactivate.")
+                return
+            now = utcnow()
+            conn.execute("UPDATE facts SET active = 0, updated_at = ? WHERE active = 1", (now,))
+            conn.commit()
+            # Re-fetch after commit so event payloads reflect actual state
+            updated_rows = conn.execute(
+                f"SELECT * FROM facts WHERE id IN ({','.join('?' * len(ids))})", ids
+            ).fetchall()
+            updated_dicts = [_row_to_dict(r) for r in updated_rows]
+            print(f"Deactivated {len(ids)} facts.")
+            for rd in updated_dicts:
+                produce_fact_event("fact.expired", rd, silent=args.silent)
+        else:
+            if args.id is None:
+                print("Error: must specify fact ID or --all", file=sys.stderr)
+                sys.exit(1)
+            row = conn.execute("SELECT * FROM facts WHERE id = ?", (args.id,)).fetchone()
+            if not row:
+                print(f"Error: fact #{args.id} not found", file=sys.stderr)
+                sys.exit(1)
+
+            conn.execute(
+                "UPDATE facts SET active = 0, updated_at = ? WHERE id = ?",
+                (utcnow(), args.id),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM facts WHERE id = ?", (args.id,)).fetchone()
+            row_dict = _row_to_dict(row)
+            print(f"Deactivated fact #{args.id}: {row['summary']}")
+            # Produce event after commit (use dict copy)
+            produce_fact_event("fact.expired", row_dict, silent=args.silent)
+    finally:
+        conn.close()
+
+
+def cmd_context(args):
+    """Get formatted fact context for a contact (for CLAUDE.md injection)."""
+    conn = get_conn(readonly=True)
+    try:
+        rows = _get_active_facts(conn, args.contact)
+
+        if not rows:
+            print("No active facts for this contact.")
+            return
+
+        if args.json:
+            print(json.dumps([_format_row_json(r) for r in rows[:15]]))
+            return
+
+        print(_build_facts_section(rows, len(rows), args.contact))
+    finally:
+        conn.close()
+
+
+def cmd_inject(args):
+    """Inject active facts into a contact's CLAUDE.md."""
+    conn = get_conn(readonly=True)
+    try:
+        rows = _get_active_facts(conn, args.contact)
+    finally:
+        conn.close()
+
+    if not rows:
+        print(f"No active facts for {args.contact}")
+        return
+
+    facts_section = _build_facts_section(rows, len(rows), args.contact)
+    display_count = min(len(rows), 15)
+
+    # Find the contact's CLAUDE.md files
+    transcripts_base = Path.home() / "transcripts"
+    injected = 0
+
+    for backend in ("imessage", "signal"):
+        # Try both raw chat_id and sanitized versions
+        contact = args.contact
+        sanitized = contact.replace("+", "_")
+        for chat_dir_name in (contact, sanitized):
+            claude_md = transcripts_base / backend / chat_dir_name / "CLAUDE.md"
+            if claude_md.exists():
+                content = claude_md.read_text()
+
+                if FACTS_MARKER_START in content and FACTS_MARKER_END in content:
+                    # Replace between explicit markers
+                    start_idx = content.index(FACTS_MARKER_START)
+                    end_idx = content.index(FACTS_MARKER_END) + len(FACTS_MARKER_END)
+                    content = content[:start_idx] + facts_section + content[end_idx:]
+                elif "## Active Facts" in content:
+                    # Legacy: replace old-style section (migrate to markers)
+                    start_idx = content.index("## Active Facts")
+                    rest = content[start_idx + len("## Active Facts"):]
+                    end_idx = rest.find("\n## ")
+                    if end_idx == -1:
+                        end_idx = rest.find("\n---")
+                    if end_idx == -1:
+                        end_idx = len(rest)
+                    content = content[:start_idx] + facts_section + "\n" + content[start_idx + len("## Active Facts") + end_idx:]
+                else:
+                    # Append before the last --- separator if it exists
+                    last_sep = content.rfind("\n---\n")
+                    if last_sep != -1:
+                        content = content[:last_sep] + "\n\n" + facts_section + content[last_sep:]
+                    else:
+                        content = content.rstrip() + "\n\n" + facts_section + "\n"
+
+                # Atomic write: write to temp file then rename
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=claude_md.parent, suffix=".tmp", prefix=".claude_md_"
+                )
+                try:
+                    with os.fdopen(tmp_fd, "w") as f:
+                        f.write(content)
+                    os.replace(tmp_path, claude_md)
+                except Exception:
+                    os.unlink(tmp_path)
+                    raise
+                injected += 1
+                print(f"Injected {display_count} facts into {claude_md}")
+
+    if injected == 0:
+        print(f"No CLAUDE.md found for {args.contact}")
+
+
+def cmd_expire(args):
+    """Expire temporal facts where ends_at < now."""
+    conn = get_conn()
+    now = utcnow()
+    try:
+        contact_filter = ""
+        contact_params: list = []
+        if hasattr(args, "contact") and args.contact:
+            alts = _contact_alternatives(args.contact)
+            placeholders = ",".join("?" * len(alts))
+            contact_filter = f" AND contact IN ({placeholders})"
+            contact_params = alts
+
+        # Expire facts with ends_at in the past
+        rows = conn.execute(f"""
+            SELECT * FROM facts
+            WHERE active = 1
+              AND ends_at IS NOT NULL
+              AND ends_at < ?
+              {contact_filter}
+        """, [now] + contact_params).fetchall()
+
+        # Also expire events with only starts_at (no ends_at) after 1 day
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        event_rows = conn.execute(f"""
+            SELECT * FROM facts
+            WHERE active = 1
+              AND ends_at IS NULL
+              AND starts_at IS NOT NULL
+              AND starts_at < ?
+              AND fact_type = 'event'
+              {contact_filter}
+        """, [yesterday] + contact_params).fetchall()
+
+        all_rows = list(rows) + list(event_rows)
+
+        if not all_rows:
+            print("No facts to expire.")
+            return
+
+        ids = [row["id"] for row in all_rows]
+        # Batch update all at once, then commit, then produce events
+        for fact_id in ids:
+            conn.execute(
+                "UPDATE facts SET active = 0, updated_at = ? WHERE id = ?",
+                (now, fact_id),
+            )
+        conn.commit()
+
+        # Re-fetch after commit so event payloads reflect actual state
+        updated_rows = conn.execute(
+            f"SELECT * FROM facts WHERE id IN ({','.join('?' * len(ids))})", ids
+        ).fetchall()
+        updated_dicts = [_row_to_dict(r) for r in updated_rows]
+
+        for rd in updated_dicts:
+            print(f"  Expired #{rd['id']}: {rd['summary']}")
+            produce_fact_event("fact.expired", rd, silent=args.silent)
+
+        print(f"Expired {len(all_rows)} facts.")
+    finally:
+        conn.close()
+
+
+def cmd_stale(args):
+    """Show stale non-temporal facts (no recent confirmation)."""
+    conn = get_conn(readonly=True)
+    now = datetime.now(timezone.utc)
+    try:
+        contact_filter = ""
+        contact_params: list = []
+        if hasattr(args, "contact") and args.contact:
+            alts = _contact_alternatives(args.contact)
+            placeholders = ",".join("?" * len(alts))
+            contact_filter = f" AND contact IN ({placeholders})"
+            contact_params = alts
+
+        rows = conn.execute(f"""
+            SELECT * FROM facts
+            WHERE active = 1
+              AND starts_at IS NULL
+              AND ends_at IS NULL
+              {contact_filter}
+            ORDER BY last_confirmed ASC
+        """, contact_params).fetchall()
+
+        stale = []
+        for row in rows:
+            threshold_days = STALENESS_THRESHOLDS.get(row["fact_type"], 90)
+            last = row["last_confirmed"] or row["created_at"]
+            try:
+                last_dt = datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                try:
+                    last_dt = datetime.strptime(last, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+
+            days_since = (now - last_dt).days
+            if days_since >= threshold_days:
+                stale.append((row, days_since, threshold_days))
+
+        if not stale:
+            print("No stale facts.")
+            return
+
+        if args.json:
+            print(json.dumps([{
+                **_format_row_json(row),
+                "days_since_confirmed": days,
+                "threshold_days": threshold,
+            } for row, days, threshold in stale]))
+            return
+
+        for row, days, threshold in stale:
+            emoji = TYPE_EMOJI.get(row["fact_type"], "📝")
+            print(f"  ⚠️ #{row['id']} {emoji} {row['summary']} — {days}d since last confirmed (threshold: {threshold}d)")
+    finally:
+        conn.close()
+
+
+def cmd_audit(args):
+    """Show potential duplicate facts for manual review."""
+    conn = get_conn(readonly=True)
+    try:
+        rows = conn.execute("""
+            SELECT * FROM facts
+            WHERE active = 1
+            ORDER BY contact, fact_type, created_at DESC
+        """).fetchall()
+
+        # Group by (contact, fact_type) and check for near-duplicates
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for row in rows:
+            groups[(row["contact"], row["fact_type"])].append(row)
+
+        found = 0
+        for (contact, fact_type), group in groups.items():
+            if len(group) < 2:
+                continue
+            # Check all pairs for similar summaries
+            for i, a in enumerate(group):
+                for b in group[i + 1:]:
+                    # Simple substring check
+                    a_lower = a["summary"].lower()
+                    b_lower = b["summary"].lower()
+                    if a_lower in b_lower or b_lower in a_lower:
+                        if found == 0:
+                            print("Potential duplicates:\n")
+                        print(f"  #{a['id']}: {a['summary']}")
+                        print(f"  #{b['id']}: {b['summary']}")
+                        print(f"  → contact={contact}, type={fact_type}\n")
+                        found += 1
+
+        if found == 0:
+            print("No potential duplicates found.")
+        else:
+            print(f"\n{found} potential duplicate pair(s). Review and deactivate as needed.")
+    finally:
+        conn.close()
+
+
+def cmd_rebuild(args):
+    """Rebuild facts from bus history. Requires Phase 2 extraction infrastructure."""
+    print("Error: 'fact rebuild' requires the nightly extraction infrastructure (Phase 2).", file=sys.stderr)
+    print(f"Would re-extract facts from bus messages since {args.since}.", file=sys.stderr)
+    print("For now, use 'fact save' to manually add facts.", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_import(args):
+    """Import facts from extraction log. Requires Phase 2 extraction infrastructure."""
+    log_file = LOG_DIR / "fact-extraction.jsonl"
+    if not log_file.exists():
+        print(f"Error: extraction log not found at {log_file}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Error: 'fact import' requires the nightly extraction infrastructure (Phase 2).", file=sys.stderr)
+    print(f"Would import facts from extraction log entry at {args.from_log}.", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_test_extraction(args):
+    """Run golden-set regression test for fact extraction. Phase 2 stub."""
+    print("Error: 'fact test-extraction' is not yet implemented.", file=sys.stderr)
+    print("Would run golden test cases to validate extraction prompt quality.", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_gc(args):
+    """Garbage-collect old deactivated facts (>180 days)."""
+    conn = get_conn()
+    try:
+        result = conn.execute("""
+            DELETE FROM facts
+            WHERE active = 0
+              AND updated_at < datetime('now', '-180 days')
+        """)
+        conn.commit()
+        count = result.rowcount
+        print(f"Deleted {count} old deactivated facts.")
+    finally:
+        conn.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Structured facts CLI")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # save
+    p = sub.add_parser("save", help="Save a new fact")
+    p.add_argument("--contact", required=True, help="Contact chat_id")
+    p.add_argument("--type", required=True, help="Fact type (travel, event, preference)")
+    p.add_argument("--summary", required=True, help="Human-readable summary")
+    p.add_argument("--details", help="JSON details blob")
+    p.add_argument("--confidence", choices=["high", "medium", "low"], default="high")
+    p.add_argument("--starts", help="Start date (ISO 8601 or natural like 'March 20')")
+    p.add_argument("--ends", help="End date (ISO 8601 or natural like 'March 25')")
+    p.add_argument("--source", default="manual", help="Source (sms, signal, email, calendar, manual)")
+    p.add_argument("--source-ref", help="Source reference (bus:12345, gmail:msg_abc)")
+    p.add_argument("--silent", action="store_true", help="Suppress bus events")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # update
+    p = sub.add_parser("update", help="Update an existing fact")
+    p.add_argument("id", type=int, help="Fact ID")
+    p.add_argument("--summary", help="New summary")
+    p.add_argument("--details", help="JSON details to merge")
+    p.add_argument("--starts", help="New start date")
+    p.add_argument("--ends", help="New end date")
+    p.add_argument("--confidence", choices=["high", "medium", "low"])
+    p.add_argument("--silent", action="store_true", help="Suppress bus events")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # list
+    p = sub.add_parser("list", help="List facts")
+    p.add_argument("--contact", help="Filter by contact")
+    p.add_argument("--type", help="Filter by fact type")
+    p.add_argument("--active", action="store_true", help="Only active facts")
+    p.add_argument("--verbose", "-v", action="store_true", help="Show details JSON")
+    p.add_argument("--limit", type=int, help="Limit number of results")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # search
+    p = sub.add_parser("search", help="Search facts by summary")
+    p.add_argument("query", help="Search query")
+    p.add_argument("--all", action="store_true", help="Include inactive facts")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # upcoming
+    p = sub.add_parser("upcoming", help="Show upcoming temporal facts")
+    p.add_argument("--days", type=int, default=7, help="Number of days ahead (default 7)")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # deactivate
+    p = sub.add_parser("deactivate", help="Deactivate a fact")
+    p.add_argument("id", type=int, nargs="?", help="Fact ID")
+    p.add_argument("--all", action="store_true", help="Deactivate ALL active facts")
+    p.add_argument("--silent", action="store_true", help="Suppress bus events")
+
+    # context
+    p = sub.add_parser("context", help="Get formatted fact context for a contact")
+    p.add_argument("--contact", required=True, help="Contact chat_id")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # inject
+    p = sub.add_parser("inject", help="Inject facts into contact's CLAUDE.md")
+    p.add_argument("--contact", required=True, help="Contact chat_id")
+
+    # expire
+    p = sub.add_parser("expire", help="Expire temporal facts past their end date")
+    p.add_argument("--contact", help="Filter by contact")
+    p.add_argument("--silent", action="store_true", help="Suppress bus events")
+
+    # stale
+    p = sub.add_parser("stale", help="Show stale non-temporal facts")
+    p.add_argument("--contact", help="Filter by contact")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # audit
+    sub.add_parser("audit", help="Show potential duplicate facts")
+
+    # rebuild (Phase 2 stub)
+    p = sub.add_parser("rebuild", help="Rebuild facts from bus history (Phase 2)")
+    p.add_argument("--since", required=True, help="Rebuild from this date")
+    p.add_argument("--silent", action="store_true", help="Suppress bus events")
+
+    # import (Phase 2 stub)
+    p = sub.add_parser("import", help="Import facts from extraction log (Phase 2)")
+    p.add_argument("--from-log", required=True, help="Extraction log timestamp to import")
+    p.add_argument("--silent", action="store_true", help="Suppress bus events")
+    p.add_argument("--emit-events", action="store_true", help="Emit bus events (default: silent)")
+
+    # test-extraction (Phase 2 stub)
+    p = sub.add_parser("test-extraction", help="Run golden-set regression test (Phase 2)")
+    p.add_argument("--golden-dir", help="Directory containing golden test cases")
+
+    # gc
+    sub.add_parser("gc", help="Garbage-collect old deactivated facts")
+
+    args = parser.parse_args()
+
+    commands = {
+        "save": cmd_save,
+        "update": cmd_update,
+        "list": cmd_list,
+        "search": cmd_search,
+        "upcoming": cmd_upcoming,
+        "deactivate": cmd_deactivate,
+        "context": cmd_context,
+        "inject": cmd_inject,
+        "expire": cmd_expire,
+        "stale": cmd_stale,
+        "audit": cmd_audit,
+        "rebuild": cmd_rebuild,
+        "import": cmd_import,
+        "test-extraction": cmd_test_extraction,
+        "gc": cmd_gc,
+    }
+
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,88 +1,60 @@
 ---
 name: memory
-description: Store and retrieve persistent memories about contacts. Use when asked what you know/remember about someone, viewing memories, or saving new memories. Trigger phrases - 'what do you know about', 'what's in memories', 'show memories', 'what do you remember', 'remember this'. Backed by memory-search daemon with SQLite FTS.
-allowed-tools: Bash(uv:*)
+description: Store and retrieve persistent memories about contacts. Use when asked what you know/remember about someone, viewing memories, searching conversation history, or saving new memories. Trigger phrases - 'what do you know about', 'what's in memories', 'show memories', 'what do you remember', 'remember this', 'search memory', 'find when we discussed', 'when did we talk about'.
+allowed-tools: Bash(uv:*), Bash(cd:*)
 ---
 
 # Memory System
 
-Persistent memory for contacts backed by **memory-search** (SQLite with FTS5).
+Persistent memory for contacts backed by three layers:
 
-Storage tiers:
-1. **memory-search SQLite** - Primary storage with full-text search at `http://localhost:7890`
-2. **CLAUDE.md** (per transcript folder) - Hot cache summary, auto-loaded by Claude Code
-3. **Contacts.app notes** - Contact facts (who they are)
+## Memory Layers
 
-## Prerequisites
+1. **Bus FTS5 Search** — Full-text search across ALL conversation events (messages, sessions, system events). Primary search for "find when we discussed X" or "search for Y in messages". Searches both hot and archived records in `bus.db`.
+2. **Structured Facts** (`facts` table in bus.db) — Queryable structured data about contacts: travel, events, preferences. Extracted nightly and injected into CLAUDE.md. Use `~/dispatch/scripts/fact` CLI to query.
+3. **CLAUDE.md** (per transcript folder) — Hot cache summary of ongoing work, preferences, and context. Auto-loaded by Claude Code. Includes `## Active Facts` section from the facts table.
+4. **Contacts.app notes** — Contact facts (who they are, relationships, preferences). Populated by nightly consolidation.
 
-The memory-search daemon must be running:
-```bash
-cd ~/dispatch/services/memory-search && ~/.bun/bin/bun run src/daemon.ts
-```
+## Bus Search (Primary — for conversation history)
 
-Check health: `curl http://localhost:7890/health`
-
-## Contact Identifier
-
-All commands accept any of these formats:
-- **Phone number**: `+16175551234` (looks up contact automatically)
-- **Display name**: `Jane Doe` (converts to session format)
-- **Session name**: `jane-doe` (used as-is)
-
-## Quick Reference
+Search across all bus events using FTS5:
 
 ```bash
-# Save a memory (any identifier format works)
-uv run ~/.claude/skills/memory/scripts/memory.py save "+16175551234" "memory text" --type preference
-uv run ~/.claude/skills/memory/scripts/memory.py save "Jane Doe" "memory text"
-uv run ~/.claude/skills/memory/scripts/memory.py save "jane-doe" "memory text"
+# Search messages about a topic
+cd ~/dispatch && uv run -m bus.cli search "WebGPU matmul" --topic messages
 
-# Load memories for contact
-uv run ~/.claude/skills/memory/scripts/memory.py load "+16175551234"
+# Search what a specific contact said
+cd ~/dispatch && uv run -m bus.cli search "deploy" --key "+16175969496" --since 7
 
-# Search across all memories (uses FTS5)
-uv run ~/.claude/skills/memory/scripts/memory.py search "keyword"
+# Search with FTS5 operators
+cd ~/dispatch && uv run -m bus.cli search "matmul OR shader" --topic messages
 
-# Ask with natural language (smart query)
-uv run ~/.claude/skills/memory/scripts/memory.py ask "contact-name" "what are their preferences?"
+# Phrase search
+cd ~/dispatch && uv run -m bus.cli search '"buffer pooling"' --topic messages
 
-# Get compact summary for session injection
-uv run ~/.claude/skills/memory/scripts/memory.py summary "contact-name"
+# Search SDK events (tool usage, errors)
+cd ~/dispatch && uv run -m bus.cli search-sdk "error" --event-type error
 
-# Show memory statistics
-uv run ~/.claude/skills/memory/scripts/memory.py stats
+# Check FTS health
+cd ~/dispatch && uv run -m bus.cli fts-status
 
-# Sync CLAUDE.md from database
-uv run ~/.claude/skills/memory/scripts/memory.py sync "contact-name"
-
-# Delete a memory by ID
-uv run ~/.claude/skills/memory/scripts/memory.py delete 123
+# Rebuild FTS indexes if drift detected
+cd ~/dispatch && uv run -m bus.cli fts-rebuild
 ```
 
-## HTTP API (Direct Access)
+**When to use bus search:**
+- "find when we discussed X" → `bus search "X" --topic messages`
+- "what did Nikhil say about Y" → `bus search "Y" --key "+16175969496"`
+- "search for Z in the last 3 days" → `bus search "Z" --since 3`
+- "when did we work on A" → `bus search "A" --topic messages`
 
-The memory system is exposed via HTTP endpoints:
-
-```bash
-# Save memory
-curl -X POST http://localhost:7890/memory/save \
-  -H "Content-Type: application/json" \
-  -d '{"contact":"jane-doe","memory_text":"Loves hiking","type":"preference","importance":4}'
-
-# Load memories for contact
-curl "http://localhost:7890/memory/load?contact=jane-doe&limit=20"
-
-# Search memories (FTS)
-curl "http://localhost:7890/memory/search?q=hiking&contact=jane-doe"
-
-# Get stats
-curl "http://localhost:7890/memory/stats"
-
-# Delete memory
-curl -X POST http://localhost:7890/memory/delete \
-  -H "Content-Type: application/json" \
-  -d '{"id":123}'
-```
+**Bus search options:**
+- `--topic` — filter by topic (messages, sessions, system, tasks)
+- `--key` — filter by chat_id/phone number
+- `--type` — filter by event type (message.in, message.sent, etc.)
+- `--source` — filter by source (imessage, signal, system)
+- `--since N` — only last N days
+- `--limit N` — max results (default 20)
 
 ## Memory Consolidation (Nightly to Contacts.app)
 
@@ -125,64 +97,61 @@ uv run ~/.claude/skills/memory/scripts/memory.py consolidate --verbose "contact-
 
 **Check status:** `claude-assistant status` shows last consolidation run.
 
-## Memory Types
+## Structured Facts (queryable facts database)
 
-Claude decides the type when saving. Common types:
-- `fact` - Personal facts ("birthday is March 5")
-- `preference` - Likes/dislikes ("prefers dark mode")
-- `lesson` - Things learned ("GCS needs no-cache headers")
-- `project` - Work completed ("built podcast system")
-- `relationship` - People connections ("partner is Jane")
-- `context` - Ongoing situations ("working on memory system")
+Structured facts store concrete, actionable knowledge about contacts (travel, events, preferences) in a queryable SQLite table. Facts are extracted nightly and injected into CLAUDE.md as `## Active Facts`.
 
-New types can be created organically as needed.
+```bash
+# Query facts
+~/dispatch/scripts/fact list --contact "+16175969496" --active
+~/dispatch/scripts/fact list --contact "+16175969496" --type travel --active
+~/dispatch/scripts/fact search "california"
+~/dispatch/scripts/fact upcoming --days 14
+
+# Save a fact manually
+~/dispatch/scripts/fact save --contact "+16175969496" --type travel \
+  --summary "Flying to SF March 20-25" \
+  --details '{"destination": "San Francisco", "depart": "2026-03-20"}' \
+  --starts "2026-03-20" --ends "2026-03-25"
+
+# Get formatted context for a contact
+~/dispatch/scripts/fact context --contact "+16175969496"
+
+# JSON output for programmatic use
+~/dispatch/scripts/fact list --active --json
+~/dispatch/scripts/fact upcoming --days 7 --json
+```
+
+**Fact types (Phase 1):** travel, event, preference
+**Confidence levels:** high, medium, low (only high/medium shown in CLAUDE.md)
+**Bus events:** fact.created, fact.updated, fact.expired on `facts` topic
+
+**When to use facts vs other memory layers:**
+- "Where is Nikhil?" → `fact list --contact "+16175969496" --type travel --active`
+- "What's coming up?" → `fact upcoming --days 14`
+- "When did we discuss X?" → `bus search "X" --topic messages` (use bus FTS, not facts)
+- "What do I know about them?" → Check CLAUDE.md + Contacts.app notes
+
+**Tier access:** Admin gets full CRUD. Favorites/family get read-only (list, search, upcoming).
+
+## Saving Memories
+
+When a user says "remember this" or you learn something important:
+
+1. **Contact facts** (birthday, relationships, preferences) → Update Contacts.app notes via consolidation or manually via the contacts skill
+2. **Structured facts** (travel, events, short-term plans) → `~/dispatch/scripts/fact save` or wait for nightly extraction
+3. **Technical context / ongoing work** → Update the contact's CLAUDE.md at `~/transcripts/{backend}/{sanitized_chat_id}/CLAUDE.md`
 
 ## Memory Permissions
 
 **Who can see what:**
-- Admin + Partner: Can access ALL memories
-- Favorites: Can ONLY see their own memories
+- Admin + Partner: Can access ALL memories and bus search
+- Favorites: Can ONLY see their own memories and search results
 - Family/Unknown: No memory access (stateless)
 
 **If a favorites user asks about other people's memories:**
 - "What do you know about Sam?" → "I can only share what I remember about you."
 - "What did the admin say?" → "I keep conversations private."
-
-## When to Save Memories
-
-**Explicit:** User says "remember this" or "note that..."
-
-**Implicit (use judgment):**
-- Preferences discovered during conversation
-- Important personal info shared
-- Lessons learned from troubleshooting
-- Projects completed
-- Recurring interests/topics
-
-## Database Location
-
-Stored in memory-search SQLite: `~/.cache/memory-search/index.sqlite`
-
-## Schema
-
-```sql
-CREATE TABLE memories (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  contact TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'fact',
-  memory_text TEXT NOT NULL,
-  importance INTEGER NOT NULL DEFAULT 3,
-  tags TEXT,  -- JSON array
-  created_at TEXT NOT NULL,
-  modified_at TEXT NOT NULL
-);
-
--- Full-text search
-CREATE VIRTUAL TABLE memories_fts USING fts5(
-  contact, type, memory_text,
-  tokenize='porter unicode61'
-);
-```
 
 ## CLAUDE.md Location
 

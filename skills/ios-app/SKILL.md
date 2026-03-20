@@ -649,6 +649,29 @@ For public link (external):
 
 Don't embed the link in a paragraph - send it standalone so they can tap/copy easily.
 
+## TestFlight Daily Limits
+
+Apple caps TestFlight uploads at approximately **25 builds per day per app**. The limit resets roughly 24 hours after the first upload in the window.
+
+### Guidelines
+
+- **Check build count before iterative sessions** — if you're planning multiple build-test cycles, know how many uploads you've already used today
+- **At 20+ builds in a day, warn and switch to direct device deploy via Xcode** — don't burn the last few slots on iteration; save them for the final candidate
+- **If the limit is hit, schedule the upload for after reset — don't retry in a loop** — retrying wastes time and won't succeed until the window resets
+- **Prefer simulator + direct device deploy during development iteration** — these have no daily limits and are faster anyway
+- **Save TestFlight for release candidates** — once the build is verified on simulator and device, then upload to TestFlight for wider distribution
+
+### Practical Workflow
+
+```
+Development iteration:
+  Simulator build → test → fix → repeat (unlimited)
+  Direct device deploy → test → fix → repeat (unlimited)
+
+Release candidate:
+  Final verified build → TestFlight upload (counts toward daily limit)
+```
+
 ## App Store Connect CLI (`asc`)
 
 **Location:** `~/.claude/skills/ios-app/scripts/asc`

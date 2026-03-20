@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# Wrapper script for search-daemon CLI
-
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-
-exec ~/.bun/bin/bun run "$SCRIPT_DIR/src/cli.ts" "$@"
