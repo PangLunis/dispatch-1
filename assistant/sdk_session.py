@@ -719,28 +719,32 @@ class SDKSession:
             f.write(f"{timestamp} | HOOK | PreCompact fired for {session_name}\n")
 
         # Send compaction notice to the chat (fire-and-forget but reap the process)
-        try:
-            from assistant import config
-            from assistant.backends import get_backend
-            assistant_name = config.get("assistant.name", "Assistant")
-            backend = get_backend(self.source)
-            if self.session_type == "group":
-                send_tpl = backend.send_group_cmd
-            else:
-                send_tpl = backend.send_cmd
-            # Template is like '~/.claude/skills/.../send-sms "{chat_id}"'
-            # Extract the script path (before the first space) and expand ~
-            script_path = str(Path(send_tpl.split()[0]).expanduser())
-            proc = subprocess.Popen(
-                [script_path, self.chat_id, f"[{assistant_name.upper()}] Compacting conversation\u2026"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            # Reap in a background thread to prevent zombie processes
-            import threading
-            threading.Thread(target=proc.wait, daemon=True, name="reap-compact-sms").start()
-        except Exception as e:
-            self._log.error(f"PRECOMPACT | send notice failed: {e}")
+        # Controlled by hooks.pre_compact_notify config (default: true)
+        from assistant import config
+        if config.get("hooks.pre_compact_notify", True):
+            try:
+                from assistant.backends import get_backend
+                assistant_name = config.get("assistant.name", "Assistant")
+                backend = get_backend(self.source)
+                if self.session_type == "group":
+                    send_tpl = backend.send_group_cmd
+                else:
+                    send_tpl = backend.send_cmd
+                # Template is like '~/.claude/skills/.../send-sms "{chat_id}"'
+                # Extract the script path (before the first space) and expand ~
+                script_path = str(Path(send_tpl.split()[0]).expanduser())
+                proc = subprocess.Popen(
+                    [script_path, self.chat_id, f"[{assistant_name.upper()}] Compacting conversation\u2026"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                # Reap in a background thread to prevent zombie processes
+                import threading
+                threading.Thread(target=proc.wait, daemon=True, name="reap-compact-sms").start()
+            except Exception as e:
+                self._log.error(f"PRECOMPACT | send notice failed: {e}")
+        else:
+            self._log.info(f"PRECOMPACT | notify disabled by config")
 
         # Let native compaction proceed (no more summarize-and-restart)
         return {}

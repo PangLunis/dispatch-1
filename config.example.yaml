@@ -31,6 +31,9 @@ podcast:
   title: "Your Audio Articles"
   email: "you@example.com"
 
+hooks:
+  pre_compact_notify: true  # Send SMS when context window compacts (set false to silence)
+
 chrome:
   profiles:
     0:
