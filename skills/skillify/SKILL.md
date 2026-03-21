@@ -1,6 +1,6 @@
 ---
 name: skillify
-description: Analyze conversations to propose new skills AND improvements to existing skills. Mines transcripts for automation opportunities, recurring workflows, tool gaps, and skill quality issues. Discovery subagent reads all chats holistically, then parallel refinement subagents evaluate each idea. Trigger words - skillify, propose skills, what should we automate, skill opportunities, improve skills.
+description: Analyze conversations to propose new skills, improvements to existing skills, and skill merges. Mines transcripts for automation opportunities, recurring workflows (cross-session AND within-session), repeated primitives over multiple days, tool gaps, and skill quality issues. Re-evaluates previously refuted proposals when new evidence appears. Discovery subagent reads all chats holistically, then parallel refinement subagents evaluate each idea. Trigger words - skillify, propose skills, what should we automate, skill opportunities, improve skills, merge skills.
 ---
 
 # Skillify
@@ -8,6 +8,7 @@ description: Analyze conversations to propose new skills AND improvements to exi
 Analyze recent conversations to:
 1. **Propose new skills** to automate recurring workflows, fill tool gaps, or build discussed ideas
 2. **Suggest improvements to existing skills** based on user corrections, workarounds, and back-and-forth that indicates a skill's instructions are incomplete
+3. **Suggest skill merges** when two or more existing skills overlap significantly or would be better as a single unified skill
 
 ## When to Use
 
@@ -55,6 +56,8 @@ The discovery subagent:
    - Agent did lengthy manual work that a reusable script could handle
    - Existing skill was used but failed or needed workarounds
    - **A repeatable multi-step process was followed across chats** — even if it looks like "normal coding", ask: "Is this a process that could be applied to OTHER inputs?" If the same workflow (e.g., convert model → build shaders → benchmark → verify correctness) was done for Model A in one chat and Model B in another, that's a SKILL, not just coding.
+   - **Within-session repeated primitives** — the pattern does NOT have to span multiple sessions. If the same multi-step primitive (e.g., "fetch URL → extract data → format → save") was done 3+ times within a SINGLE session, that's a strong skill signal. The repetition makes it automatable regardless of whether other sessions do it too.
+   - **Repeated primitives over multiple days** — check previous days' transcripts (via old skillify reports and bus history). If a user does the same manual steps on Monday, Wednesday, and Friday across different sessions, that's a skill candidate even if each individual session only did it once. Cross-reference with historical skillify reports to detect multi-day patterns.
 
    **SKIP:**
    - Truly one-off coding tasks (fixing a specific bug, adding a feature to a specific app)
@@ -72,7 +75,14 @@ The discovery subagent:
    - Workarounds that suggest missing edge cases ("it doesn't handle Z, so do this instead")
    - Agent apologized for doing something wrong that a skill should have prevented
 
-3. **Returns TWO lists:**
+   **SKILL MERGE signals — look for skills that should be combined:**
+   - Two skills that cover overlapping domains (e.g., separate skills for "image-to-video" and "video-generator" that both call the same APIs)
+   - Skills that are always used together and would be simpler as one (e.g., a "fetch" skill and a "parse" skill that are never used independently)
+   - Skills with confusing boundaries where users/agents pick the wrong one (e.g., "hue" vs "lutron" might benefit from a unified "lights" skill)
+   - Small skills that are too narrow to justify their own SKILL.md and would fit naturally inside another skill
+   - Multiple skills wrapping the same underlying tool/API with slight variations
+
+3. **Returns THREE lists:**
 
    **a) New skill ideas** — each with:
    - `name`: kebab-case
@@ -91,13 +101,20 @@ The discovery subagent:
    - `source_sessions`: list of session names
    - `type`: "skill_improvement"
 
+   **c) Skill merge ideas** — each with:
+   - `skills_to_merge`: list of 2+ skill names that should be combined
+   - `proposed_name`: kebab-case name for the merged skill
+   - `rationale`: why these skills belong together (overlapping functionality, always used together, confusing boundaries, etc.)
+   - `evidence`: examples from transcripts where the overlap caused confusion, or structural analysis showing redundancy
+   - `type`: "skill_merge"
+
 ### Step 3: Refinement (Parallel Subagents — One Per Idea)
 
-For each raw idea from discovery (both new skills AND skill improvements), spawn a **refinement subagent** in parallel.
+For each raw idea from discovery (new skills, skill improvements, AND skill merges), spawn a **refinement subagent** in parallel.
 
 #### For new skill ideas, each refinement subagent:
 
-1. **Checks existing skills** — reads `sed -n '/^---$/,/^---$/p' ~/.claude/skills/*/SKILL.md` to get frontmatter for all ~65+ existing skills. Decides: is this idea already covered?
+1. **Checks existing skills** — reads `sed -n '/^---$/,/^---$/p' ~/.claude/skills/*/SKILL.md` to get frontmatter for all existing skills. Decides: is this idea already covered?
 
 2. **Checks previous proposals** — reads `cat ~/dispatch/state/skillify-proposals.json 2>/dev/null || echo '{"runs":[]}'`. Has this been proposed before?
 
@@ -137,12 +154,51 @@ For each raw idea from discovery (both new skills AND skill improvements), spawn
 
 5. **Returns** the verdict and proposal.
 
-### Step 4: Rank, Persist & Present
+#### For skill merge ideas, each refinement subagent:
 
-Collect results from all refinement subagents:
-- Drop refuted ideas
-- Rank accepted proposals: high signal first, cross-chat patterns ranked higher, smaller complexity first
-- Cap at **5 proposals**
+1. **Reads both/all skills' SKILL.md files** — `cat ~/.claude/skills/{skill_name}/SKILL.md` for each skill in the merge proposal
+
+2. **Analyzes overlap** — how much functionality is shared? Are the trigger words confusing? Do sessions ever use the wrong one? Would merging reduce confusion or create a bloated mega-skill?
+
+3. **Makes a verdict**: **ACCEPT**, **REFINE**, or **REFUTE**
+   - ACCEPT: the skills clearly overlap, merging would reduce confusion and improve discoverability
+   - REFINE: partial merge makes sense (e.g., merge 2 of 3, or extract shared logic into a base skill)
+   - REFUTE: the skills are distinct enough that merging would make the combined skill too broad or confusing
+
+4. **If accepted or refined**, produces a merge proposal:
+   - **skills_to_merge**: list of skill names
+   - **proposed_name**: name for the merged skill
+   - **rationale**: why merging improves the system
+   - **migration_plan**: what happens to the old skills (delete, redirect, alias)
+   - **proposed_structure**: outline of the merged SKILL.md (sections, trigger words)
+
+5. **Returns** the verdict and proposal.
+
+### Step 4: Re-evaluate Previously Refuted Proposals
+
+**CRITICAL: Before finalizing refinement results, check if any previously refuted proposals should be reconsidered.**
+
+1. Load historical proposals: `cat ~/dispatch/state/skillify-proposals.json 2>/dev/null`
+2. For each refuted proposal from the past 30 days:
+   - Check if today's transcripts contain NEW evidence supporting the refuted idea
+   - Check if the refutation reason is still valid (e.g., "already covered by skill X" — but skill X was since deleted or changed)
+   - Check if the idea appeared again independently (same concept, different phrasing)
+3. If new evidence exists, create a refinement subagent to re-evaluate with the combined old + new evidence
+4. If re-accepted, mark it with `"previously_refuted": true`, `"original_refute_date": "..."`, `"original_refute_reason": "..."`, and `"new_evidence": "..."` so the admin sees the full history
+5. If still refuted after re-evaluation, drop it silently (don't re-report in Refuted section — it was already reported)
+
+This ensures good ideas that were initially refuted due to insufficient evidence get a fair second look as more data accumulates.
+
+### Step 5: Rank, Persist & Present
+
+Collect results from all refinement subagents (Steps 3 and 4):
+- Drop refuted ideas (except re-evaluated ones that were re-accepted)
+- Rank accepted proposals by type, then within each type:
+  - **New skills**: high signal first, cross-chat/multi-day patterns ranked higher, smaller complexity first
+  - **Improvements**: by severity of the issue (user frustration level, frequency of occurrence)
+  - **Merges**: by degree of overlap and confusion caused
+  - **Re-evaluated**: always shown separately regardless of ranking
+- Cap at **5 proposals per type** (new skills, improvements, merges counted separately)
 
 **Persist** to `~/dispatch/state/skillify-proposals.json`:
 
@@ -151,18 +207,23 @@ Collect results from all refinement subagents:
   "runs": [
     {
       "date": "2026-03-13",
-      "proposals": [...],
+      "proposals": [
+        {"type": "new_skill", "name": "...", "signal": "high", ...},
+        {"type": "skill_improvement", "skill_name": "...", ...},
+        {"type": "skill_merge", "skills_to_merge": [...], "proposed_name": "...", ...},
+        {"type": "new_skill", "name": "...", "previously_refuted": true, "original_refute_date": "2026-03-08", "new_evidence": "...", ...}
+      ],
       "sessions_analyzed": 5,
       "skipped_sessions": [],
-      "refuted": [{"name": "...", "reason": "..."}]
+      "refuted": [{"name": "...", "reason": "...", "type": "new_skill|skill_improvement|skill_merge"}]
     }
   ]
 }
 ```
 
-Append new run to the `runs` array. If more than 30 runs, drop the oldest.
+All proposal types go in the same `proposals` array, distinguished by their `type` field. Append new run to the `runs` array. If more than 30 runs, drop the oldest.
 
-**Present** results in two sections:
+**Present** results in three sections:
 
 **## New Skills**
 - Show new skill proposals with full details
@@ -172,10 +233,14 @@ Append new run to the `runs` array. If more than 30 runs, drop the oldest.
 - Show improvement proposals with: skill name, issue, proposed SKILL.md change, evidence
 - For each, end with: `To apply: "update [skill_name] — [proposed_change summary]"`
 
+**## Suggested Skill Merges**
+- Show merge proposals with: skills to merge, proposed name, rationale, migration plan
+- For each, end with: `To merge: "merge [skill-a] and [skill-b] into [proposed-name]"`
+
 **Nightly mode** (prompt contains "--nightly"): Send the FULL report via SMS to admin so they can approve/deny when they wake up. Include everything — don't summarize or truncate:
 
 ```
-🔧 skillify nightly — N new skills, M improvements
+🔧 skillify nightly — N new skills, M improvements, K merges
 
 ## New Skills
 
@@ -200,6 +265,23 @@ Reply "apply skill-name fix" to update it.
 
 2. ...
 
+## Skill Merges
+
+1. **merged-name** — merge [skill-a] + [skill-b]
+Rationale: [why these belong together]
+Migration: [what happens to old skills]
+Reply "merge skill-a skill-b" to combine them.
+
+2. ...
+
+## Re-evaluated (previously refuted, now accepted with new evidence)
+
+1. **idea-name** — previously refuted [date]: "[old reason]"
+New evidence: "[new quote/pattern from today's transcripts]"
+Reply "build idea-name" to create it.
+
+2. ...
+
 ## Refuted
 - idea-name — [reason]
 ```
@@ -215,17 +297,21 @@ Show the FULL details for each proposal. The admin needs enough context to make 
 ```bash
 RUN_ID=$(date +%Y%m%d-%H%M)
 ~/dispatch/bus/cli.py produce system \
-  '{"scanner":"skillify","run_id":"'"$RUN_ID"'","mode":"nightly","duration_seconds":DURATION,"summary":{"sessions_analyzed":N,"new_skills_proposed":N,"improvements_proposed":N,"refuted":N},"findings":[ACCEPTED_PROPOSALS_AS_JSON]}' \
+  '{"scanner":"skillify","run_id":"'"$RUN_ID"'","mode":"nightly","duration_seconds":DURATION,"summary":{"sessions_analyzed":N,"new_skills_proposed":N,"improvements_proposed":N,"merges_proposed":N,"re_evaluated":N,"refuted":N},"findings":[ACCEPTED_PROPOSALS_AS_JSON]}' \
   --type scan.completed --source skillify --key "scan-skillify-$RUN_ID"
 ```
 
-The `findings` array should include all accepted new skill proposals and skill improvement proposals with their full details (name, description, seed_spec, evidence, source_sessions, etc.). Refuted items go in `summary.refuted` count only, not in findings.
+The `findings` array should include ALL accepted proposals: new skills, skill improvements, skill merges, and re-evaluated proposals — each with their full details and `type` field. Refuted items go in `summary.refuted` count only, not in findings.
 
 This enables `bus reports --scanner skillify` to query historical scan results (stored in archive indefinitely).
 
-### Step 5: Build on Request
+### Step 6: Build/Merge on Request
 
-When the user says "build [name]" or "build the [name] skill", look up the proposal in `~/dispatch/state/skillify-proposals.json`, use the seed_spec and key_instructions to build it via the skill-builder skill, and update the proposal's status to "built".
+**For new skills:** When the user says "build [name]" or "build the [name] skill", look up the proposal in `~/dispatch/state/skillify-proposals.json`, use the seed_spec and key_instructions to build it via the skill-builder skill, and update the proposal's status to "built".
+
+**For merges:** When the user says "merge [skill-a] [skill-b]" or "merge [skill-a] and [skill-b] into [name]", look up the merge proposal, read both skills' SKILL.md files, create the merged skill via skill-builder, delete the old skill directories, and update the proposal's status to "merged".
+
+**For improvements:** When the user says "apply [skill-name] fix", look up the improvement proposal and apply the proposed_change directly to the skill's SKILL.md. Update the proposal's status to "applied".
 
 ## Calibration Examples
 
@@ -250,6 +336,18 @@ When the user says "build [name]" or "build the [name] skill", look up the propo
 5. **Agent set up CI/CD pipeline in 3 different repos the same way this week**
    → name: repo-ci-setup, signal: medium, complexity: medium
    Why: same process repeated across projects = skill opportunity
+
+6. **Within one session, user asked agent to fetch a URL, extract specific data, format it, save it — 4 separate times for different URLs**
+   → name: url-data-extractor, signal: medium, complexity: small
+   Why: same multi-step primitive repeated 4x in a SINGLE session. Doesn't need cross-session evidence.
+
+7. **User does "check flight status → format update → send to partner" every few days across different sessions**
+   → name: flight-status-updater, signal: medium, complexity: medium
+   Why: repeated primitive over multiple days. Each session only did it once, but the pattern spans a week.
+
+8. **Skills `image-to-video` and `shader-video` both generate video content, have overlapping trigger words, and agents sometimes pick the wrong one**
+   → type: skill_merge, proposed_name: video-generator
+   Why: overlapping domains causing routing confusion. Would be better as one skill with sub-modes.
 
 ### BAD candidates (SKIP these):
 
@@ -287,6 +385,7 @@ This shows past findings with their verdicts (accepted/refuted). Use this to:
 - Skip ideas that were already proposed and are being tracked
 - Understand patterns in what gets refuted (calibrate your signal)
 - Build on previous proposals rather than starting from scratch
+- **Re-evaluate previously refuted proposals** — if today's transcripts show new evidence for a refuted idea, feed it into Step 4 for reconsideration. Ideas get refuted for lack of evidence, but evidence accumulates over days/weeks. A pattern that was "one-off" 5 days ago might now have 3 occurrences.
 
 ### Recent Code Changes
 
@@ -294,7 +393,7 @@ Check git history for recent changes that provide context on what was built, fix
 
 ```bash
 cd ~/dispatch && git log --oneline --since="7 days ago" -- assistant/ bus/
-cd ~/dispatch && git log --oneline --since="7 days ago" -- ~/.claude/skills/
+cd ~/.claude && git log --oneline --since="7 days ago" -- skills/
 ```
 
 This helps you:

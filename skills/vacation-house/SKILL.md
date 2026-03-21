@@ -413,7 +413,7 @@ After `nightly-scraper` completes, the agent MUST:
 2. Generate HTML report following the design spec below
 3. Self-grade report against the Report Quality Rubric (Step 7)
 4. If any dimension scores below 3/5, fix and regenerate
-5. Publish to sven-pages: `~/.claude/skills/sven-pages/scripts/publish ./folder --name vacation-scraper-YYYY-MM-DD --public`
+5. Publish to sven-pages: `~/.claude/skills/sven-pages/scripts/publish ./folder --name vacation-scraper-YYYY-MM-DD --acl "admin-email"`
 6. Send SMS summary with report link to chat ID
 
 7. **REPORT GRADING** (final quality gate): After the HTML report is generated but BEFORE publishing, self-grade the report against the rubric below. If any dimension scores below 3/5, fix the issue and re-generate. Log the grade in the archive.
@@ -517,7 +517,7 @@ Use the **bus dashboard design pattern** — the same warm papery aesthetic from
 - Show VCGI info below maps: assessed value, official acreage, SPAN
 6. Publish to sven-pages:
    ```bash
-   ~/.claude/skills/sven-pages/scripts/publish ./report-folder --name vacation-scraper-YYYY-MM-DD --public
+   ~/.claude/skills/sven-pages/scripts/publish ./report-folder --name vacation-scraper-YYYY-MM-DD --acl "admin-email"
    ```
 7. SMS just sends a short summary + link:
    ```

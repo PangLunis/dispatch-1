@@ -122,6 +122,8 @@ Structured facts store concrete, actionable knowledge about contacts (travel, ev
 ~/dispatch/scripts/fact upcoming --days 7 --json
 ```
 
+**Contact normalization:** The `fact` CLI normalizes contact identifiers to phone numbers on save (resolves display names via the contacts CLI). Queries search both phone number and display name formats, so `--contact "Nikhil"` and `--contact "+16175969496"` both work.
+
 **Fact types (Phase 1):** travel, event, preference
 **Confidence levels:** high, medium, low (only high/medium shown in CLAUDE.md)
 **Bus events:** fact.created, fact.updated, fact.expired on `facts` topic

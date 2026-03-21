@@ -28,6 +28,8 @@ The system has 4 key data sources for latency analysis:
 
 5. **Archive tables** (`bus.db`, tables `records_archive` and `sdk_events_archive`) — Same schema as hot tables plus `archived_at` column. infinite retention. Auto-populated when records are pruned from hot tables. Use for longer-term baselines and trend analysis beyond the hot table retention windows.
 
+6. **Bus Skill Reference** — See the `/bus` skill (`~/dispatch/skills/bus/SKILL.md`) for comprehensive schema docs, anomaly detection queries, CLI usage, and event type reference. All explorers that query bus.db should reference this skill for standard patterns (retry spikes, source volume anomalies, event rate bursts, error payload analysis, etc.).
+
 ### Dynamic Baselines
 
 **NEVER hardcode baseline thresholds.** Baselines are computed dynamically by reading historical perf data. The approach:
@@ -429,8 +431,8 @@ You are a system resource analyst. Check for resource-related performance issues
      LIMIT 20
    "
 
-7. Check sven-api health (bind failures indicate restart loop):
-   tail -50 ~/dispatch/logs/sven-api.log 2>/dev/null | grep -i "error\|bind\|failed\|address already in use"
+7. Check dispatch-api health (bind failures indicate restart loop):
+   tail -50 ~/dispatch/logs/dispatch-api.log 2>/dev/null | grep -i "error\|bind\|failed\|address already in use"
 
 8. Check queue depth trends (compare against yesterday's pattern):
    cat ~/dispatch/logs/perf-$(date +%Y-%m-%d).jsonl 2>/dev/null | grep '"metric":"sdk_queue_depth"' | jq -r '[.ts, .value, .session] | @tsv' | sort -t$'\t' -k2 -rn | head -20

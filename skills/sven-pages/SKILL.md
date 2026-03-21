@@ -1,20 +1,31 @@
 ---
 name: sven-pages
-description: Publish HTML folders with per-folder ACLs. Supports public access or email-based access control. Trigger words - deploy, pages, report, html hosting, publish.
+description: Publish HTML folders with per-folder ACLs. Default is PRIVATE (admin-only). Supports public access or email-based access control. Trigger words - deploy, pages, report, html hosting, publish.
 ---
 
 # sven-pages
 
-Publish HTML folders to Cloudflare with per-folder access control.
+Publish HTML folders to Cloudflare with per-folder access control. **Default is PRIVATE (admin-only).**
+
+## Privacy-First Policy
+
+**Pages are PRIVATE by default.** Only use `--public` when the user explicitly asks to make something public.
+
+- **In a chat context**: Always use `--acl` with the chat participants' emails
+- **For personal/admin pages**: Use default (no flags) for admin-only access
+- **Public pages**: Only use `--public` when explicitly told "make it public"
 
 ## Quick Start
 
 ```bash
-# Publish a folder publicly (no auth required)
-~/.claude/skills/sven-pages/scripts/publish ./my-report --public
+# Publish a folder (private, admin-only — this is the default)
+~/.claude/skills/sven-pages/scripts/publish ./my-report
 
-# Publish with specific users allowed (requires Cloudflare Access)
+# Publish shared with specific users (use this in chat contexts)
 ~/.claude/skills/sven-pages/scripts/publish ./my-report --acl "alice@gmail.com,bob@gmail.com"
+
+# Publish publicly (ONLY when explicitly asked)
+~/.claude/skills/sven-pages/scripts/publish ./my-report --public
 
 # List all published pages
 ~/.claude/skills/sven-pages/scripts/publish --list
@@ -33,24 +44,45 @@ Publish HTML folders to Cloudflare with per-folder access control.
 
 Each folder can have its own ACL:
 
+- **No ACL (default)**: Only admin can access
+- **Email list (`--acl "a@x.com,b@x.com"`)**: Only listed emails can access
 - **Public (`--public`)**: Anyone with the URL can access
-- **Email list (`--acl "a@x.com,b@x.com"`)**: Only listed emails can access (requires Cloudflare Access setup)
-- **No ACL (default)**: Only admins can access
+
+## Two Publishing Systems
+
+### System 1: sven-pages-worker (Cloudflare Workers KV)
+
+- **URL**: `https://sven-pages-worker.nicklaudethorat.workers.dev/{folder}/`
+- **Storage**: Cloudflare KV namespace `SVEN_PAGES`
+- **CLI**: `~/.claude/skills/sven-pages/scripts/publish`
+- ACLs managed per-folder via the CLI
+
+### System 2: svenflow.ai (Cloud Run + Hono)
+
+- **URL**: `https://svenflow.ai/pages/{folder}/`
+- **Storage**: Filesystem `./pages/` dir on Cloud Run
+- **ACLs**: Stored in `ACL_JSON` env var as JSON
+- **Auth**: Google OAuth login for protected pages
+- Pages without an ACL entry are **PRIVATE** (require admin login)
+- Pages with `["*"]` in ACL are **PUBLIC**
+- The `/pages` listing only shows PUBLIC pages
+
+To make a page public on svenflow.ai, add `"pagename": ["*"]` to the `ACL_JSON` env var.
+
+## For Group Chats
+
+When publishing a report in a group chat, always share with participants:
+
+```bash
+# Get emails of group members, then publish with ACL
+~/.claude/skills/sven-pages/scripts/publish ./report --acl "participant1@gmail.com,participant2@gmail.com"
+```
 
 ## Architecture
 
 - **Worker**: `sven-pages-worker` on Cloudflare Workers
 - **Storage**: Cloudflare KV namespace `SVEN_PAGES`
 - **URL**: `https://sven-pages-worker.nicklaudethorat.workers.dev/{folder}/`
-
-## For Group Chats
-
-When publishing a report in a group chat, you can auto-share with participants:
-
-```bash
-# Get emails of group members, then publish with ACL
-~/.claude/skills/sven-pages/scripts/publish ./report --acl "participant1@gmail.com,participant2@gmail.com"
-```
 
 ## Admin Notes
 

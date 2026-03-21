@@ -27,7 +27,7 @@
 
 ### Existing Assets
 
-- **Keychain entry:** `discord` service with `nicklaudethorat@gmail.com` — this is a Discord *account* password, NOT a bot token. A new bot token needs to be created via Developer Portal and stored as `discord_bot_token`.
+- **Keychain entry:** `discord` service with `<discord-account-email>` — this is a Discord *account* password, NOT a bot token. A new bot token needs to be created via Developer Portal and stored as `discord_bot_token`.
 - **Old plan:** `plans/discord-backend.md` — reference implementation for Seb's VPS architecture.
 
 ---
@@ -655,8 +655,8 @@ discord:
   channel_ids:
     - "1234567890"  # Target channel snowflake ID(s)
   users:
-    "NIKHIL_DISCORD_USER_ID":
-      name: "Nikhil"
+    "ADMIN_DISCORD_USER_ID":
+      name: "Admin"
       tier: "admin"
     # Unmapped users are IGNORED (unknown tier)
     # Add users explicitly to grant access
@@ -797,7 +797,7 @@ Bot ignores all DMs (`if not message.guild: return`) — prevents private backdo
 
 ## 8. Open Questions
 
-1. **Which Discord server/channel(s)?** Nikhil needs to specify the target server and channel(s).
+1. **Which Discord server/channel(s)?** Admin needs to specify the target server and channel(s).
 2. **Bot name?** "Sven" is the natural choice but needs to be available on the server.
-3. **User mapping:** Need Nikhil's Discord user ID for admin tier mapping. Other participants can be added later.
+3. **User mapping:** Need admin's Discord user ID for admin tier mapping. Other participants can be added later.
 4. **read-discord CLI:** Not included in v1 — could add later using Discord REST API (`GET /channels/{id}/messages`) for message history. Sessions that restart won't have Discord history context until this is implemented.

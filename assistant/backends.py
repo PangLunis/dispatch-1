@@ -78,6 +78,16 @@ BACKENDS: dict[str, BackendConfig] = {
         history_cmd="",
         supports_image_context=True,
     ),
+    "dispatch-api": BackendConfig(
+        name="dispatch-api",
+        label="DISPATCH-API",
+        session_suffix="-dispatch-api",
+        registry_prefix="dispatch-api:",
+        send_cmd='~/.claude/skills/sven-app/scripts/reply-dispatch-api "{chat_id}"',
+        send_group_cmd='~/.claude/skills/sven-app/scripts/reply-dispatch-api "{chat_id}"',
+        history_cmd="",
+        supports_image_context=True,
+    ),
 }
 
 

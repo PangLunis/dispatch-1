@@ -218,7 +218,7 @@ hue:
 │   ├── watchdog         # Auto-recovery daemon
 │   └── watchdog-*       # Watchdog management
 ├── services/            # Supporting services
-│   └── sven-api/        # iOS app backend
+│   └── dispatch-api/        # iOS app backend
 ├── tests/               # Test suite (920+ tests)
 ├── state/               # Runtime state
 │   ├── sessions.json    # Session registry

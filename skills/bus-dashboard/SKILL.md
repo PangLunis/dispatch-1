@@ -16,8 +16,9 @@ Generate a visualization of dispatch bus events from `~/dispatch/state/bus.db`.
 # Custom time window
 ~/.claude/skills/bus-dashboard/scripts/generate --hours 12
 
-# Generate and publish publicly
+# Generate and publish publicly (only if explicitly needed)
 ~/.claude/skills/bus-dashboard/scripts/generate --public
+
 
 # Custom output path
 ~/.claude/skills/bus-dashboard/scripts/generate --output ~/reports/bus.html

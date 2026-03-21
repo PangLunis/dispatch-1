@@ -186,6 +186,7 @@ class SDKSession:
         self.last_activity = datetime.now()
         self.last_inject_at: Optional[datetime] = None  # When last message was injected
         self.last_response_at: datetime = datetime.now()  # When last ResultMessage received
+        self.last_tool_activity_at: Optional[datetime] = None  # When last ToolResultBlock received
         self._error_count = 0
         self._consecutive_error_turns = 0
 
@@ -339,6 +340,14 @@ class SDKSession:
         if self.last_inject_at and self.last_inject_at > self.last_response_at:
             stuck_seconds = (datetime.now() - self.last_inject_at).total_seconds()
             if stuck_seconds > 600:
+                # If tools are still completing, the session is actively working
+                # (e.g. Agent subagents, long Bash commands). Don't flag as stuck
+                # unless tool activity also stalled for 10+ min.
+                # Hard cap at 60 min to catch truly infinite loops.
+                if self.last_tool_activity_at and self.last_tool_activity_at > self.last_response_at:
+                    tool_idle = (datetime.now() - self.last_tool_activity_at).total_seconds()
+                    if tool_idle < 600 and stuck_seconds < 3600:
+                        return True, "ok"  # Tools still active, not stuck
                 return False, f"stuck(inject={stuck_seconds:.0f}s_ago)"
         return True, "ok"
 
@@ -814,6 +823,7 @@ class SDKSession:
             # UserMessage contains tool results - track completion timing
             for block in (message.content if isinstance(message.content, list) else []):
                 if isinstance(block, ToolResultBlock):
+                    self.last_tool_activity_at = datetime.now()
                     tool_use_id = block.tool_use_id
                     if tool_use_id in self._pending_tools:
                         start_time, tool_input, tool_name = self._pending_tools.pop(tool_use_id)

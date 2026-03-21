@@ -52,16 +52,21 @@ def query_bus_data(db_path: str, hours: int) -> dict:
         (cutoff,),
     ).fetchall()
 
-    # 15-min buckets
+    # 15-min buckets broken down by source
     rows = conn.execute(
-        "SELECT timestamp FROM records WHERE timestamp > ? ORDER BY timestamp",
+        "SELECT timestamp, source FROM records WHERE timestamp > ? ORDER BY timestamp",
         (cutoff,),
     ).fetchall()
-    buckets = {}
-    for (ts,) in rows:
+    buckets = {}  # {bucket_key: {source: count}}
+    all_sources = set()
+    for ts, source in rows:
         dt = datetime.fromtimestamp(ts / 1000)
         bucket = dt.strftime("%H:") + str(dt.minute // 15 * 15).zfill(2)
-        buckets[bucket] = buckets.get(bucket, 0) + 1
+        src = source or "system"
+        all_sources.add(src)
+        if bucket not in buckets:
+            buckets[bucket] = {}
+        buckets[bucket][src] = buckets[bucket].get(src, 0) + 1
 
     # Messages per contact/group
     msg_rows = conn.execute(
@@ -141,7 +146,8 @@ def query_bus_data(db_path: str, hours: int) -> dict:
         "event_types": [
             {"topic": t, "type": ty, "count": c} for t, ty, c in event_types
         ],
-        "buckets": dict(sorted(buckets.items())),
+        "buckets": {k: buckets[k] for k in sorted(buckets.keys())},
+        "sources": sorted(all_sources),
         "contact_msgs": dict(
             sorted(contact_msgs.items(), key=lambda x: -x[1])
         ),
@@ -211,10 +217,15 @@ def generate_html(data: dict, hours: int) -> str:
     )
     avg_resp = f"{data['avg_response']:.0f}s"
 
-    # Timeline JSON
+    # Timeline JSON — stacked by source
+    sources = data.get("sources", [])
     timeline_json = json.dumps(
-        [{"t": k, "v": v} for k, v in data["buckets"].items()]
+        [
+            {"t": k, "total": sum(v.values()), **{s: v.get(s, 0) for s in sources}}
+            for k, v in data["buckets"].items()
+        ]
     )
+    sources_json = json.dumps(sources)
 
     # Contacts JSON
     contacts_json = json.dumps(
@@ -260,7 +271,10 @@ def generate_html(data: dict, hours: int) -> str:
     )
 
     # Find spike bucket
-    max_bucket = max(data["buckets"].items(), key=lambda x: x[1]) if data["buckets"] else ("?", 0)
+    max_bucket = max(
+        ((k, sum(v.values())) for k, v in data["buckets"].items()),
+        key=lambda x: x[1],
+    ) if data["buckets"] else ("?", 0)
     spike_callout = ""
     if max_bucket[1] > 150:  # significant spike
         spike_callout = f"""
@@ -341,9 +355,8 @@ def generate_html(data: dict, hours: int) -> str:
   .timeline-section {{ margin-bottom: 56px; }}
   .timeline-grid {{ display: flex; gap: 2px; align-items: flex-end; height: 160px; padding-bottom: 28px; position: relative; }}
   .timeline-bar-group {{ flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; position: relative; }}
-  .timeline-bar {{ width: 100%; min-height: 2px; background: var(--signal-orange); opacity: 0.7; transition: opacity 0.15s ease; }}
-  .timeline-bar:hover {{ opacity: 1; }}
-  .timeline-bar.spike {{ opacity: 0.9; }}
+  .timeline-bar {{ width: 100%; min-height: 0; transition: opacity 0.15s ease; opacity: 0.75; }}
+  .timeline-bar-group:hover .timeline-bar {{ opacity: 1; }}
   .timeline-label {{ position: absolute; bottom: -24px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ink-muted); white-space: nowrap; }}
   .timeline-tooltip {{ position: absolute; top: -28px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-secondary); opacity: 0; transition: opacity 0.15s ease; pointer-events: none; }}
   .timeline-bar-group:hover .timeline-tooltip {{ opacity: 1; }}
@@ -468,21 +481,37 @@ def generate_html(data: dict, hours: int) -> str:
 </div>
 <script>
 const timeline = {timeline_json};
-const maxV = Math.max(...timeline.map(d => d.v));
+const sources = {sources_json};
+const sourceColors = {{}};
+const palette = ['#c2410c', '#1d4ed8', '#15803d', '#7c3aed', '#b45309', '#be185d', '#0e7490', '#4338ca'];
+sources.forEach((s, i) => sourceColors[s] = palette[i % palette.length]);
+const maxV = Math.max(...timeline.map(d => d.total));
 const el = document.getElementById("timeline");
 timeline.forEach((d, i) => {{
   const group = document.createElement("div");
   group.className = "timeline-bar-group";
-  const h = Math.max(2, (d.v / maxV) * 130);
-  const isSpike = d.v > maxV * 0.6;
+  const totalH = Math.max(2, (d.total / maxV) * 130);
   const isLast = i === timeline.length - 1;
+  const parts = sources.map(s => {{
+    const v = d[s] || 0;
+    const h = d.total > 0 ? (v / d.total) * totalH : 0;
+    return `<div class="timeline-bar" style="height:${{h}}px;background:${{sourceColors[s]}};${{isLast ? 'opacity:0.35;' : ''}}" title="${{s}}: ${{v}}"></div>`;
+  }}).join('');
+  const breakdown = sources.filter(s => d[s]).map(s => `${{s}}: ${{d[s]}}`).join(', ');
   group.innerHTML = `
-    <div class="timeline-tooltip">${{d.v}}${{isLast ? ' (partial)' : ''}}</div>
-    <div class="timeline-bar${{isSpike ? ' spike' : ''}}" style="height:${{h}}px;${{isLast ? 'opacity:0.35;' : ''}}"></div>
+    <div class="timeline-tooltip">${{d.total}}${{isLast ? ' (partial)' : ''}}</div>
+    ${{parts}}
     ${{i % 4 === 0 ? `<span class="timeline-label">${{d.t}}</span>` : ''}}
   `;
   el.appendChild(group);
 }});
+// Add legend after timeline
+const legendDiv = document.createElement("div");
+legendDiv.style.cssText = "display:flex;gap:16px;margin-top:12px;flex-wrap:wrap;";
+sources.forEach(s => {{
+  legendDiv.innerHTML += `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-tertiary)"><div style="width:8px;height:8px;border-radius:2px;background:${{sourceColors[s]}}"></div>${{s}}</div>`;
+}});
+el.parentElement.appendChild(legendDiv);
 
 const contacts = {contacts_json};
 const maxMsg = contacts[0]?.count || 1;

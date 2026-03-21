@@ -115,6 +115,14 @@ def main():
         print("Empty message, skipping", file=sys.stderr)
         sys.exit(1)
 
+    # Strip sven-app: prefix from chat_id — sessions pass their full session name
+    # (e.g., "sven-app:dispatch-api:my-chat") but messages are stored under the
+    # base chat_id (e.g., "dispatch-api:my-chat") to match user messages.
+    chat_id = args.chat_id
+    if chat_id.startswith("sven-app:"):
+        chat_id = chat_id[len("sven-app:"):]
+    args.chat_id = chat_id
+
     # Fix escaped exclamation marks from shell
     # Claude Code sometimes escapes ! as \! when calling via Bash
     message = args.message.replace("\\!", "!")
@@ -125,21 +133,9 @@ def main():
     # Generate unique ID
     message_id = str(uuid.uuid4())
 
-    # Generate TTS audio
-    audio_filename = f"{message_id}.wav"
-    audio_path = AUDIO_DIR / audio_filename
-
-    tts_success = generate_tts(message, audio_path)
-    audio_path_str = str(audio_path) if tts_success else None
-
-    # Store message
-    store_message(message_id, "assistant", message, audio_path_str, args.chat_id)
-
-    print(f"Message stored: {message_id}")
-    if tts_success:
-        print(f"Audio generated: {audio_path}")
-    else:
-        print("Audio generation failed, message stored without audio")
+    # Store message immediately WITHOUT TTS (lazy TTS — generated on-demand via GET /audio)
+    store_message(message_id, "assistant", message, None, args.chat_id)
+    print(f"Message stored: {message_id} (TTS will be generated on first play)")
 
     # Send push notification
     if PUSH_SCRIPT.exists():

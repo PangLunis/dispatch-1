@@ -95,10 +95,10 @@ CONSOLIDATION_STATE_FILE = STATE_DIR / "last_consolidation_date.txt"
 
 SIGNAL_ENABLED = os.environ.get("DISABLE_SIGNAL", "").lower() not in ("1", "true", "yes")
 
-# Sven API config - lives in dispatch/services/sven-api
-SVEN_API_DIR = ASSISTANT_DIR / "services" / "sven-api"
-SVEN_API_SCRIPT = SVEN_API_DIR / "server.py"
-SVEN_API_PORT = 9091
+# Dispatch API config - lives in dispatch/services/dispatch-api
+DISPATCH_API_DIR = ASSISTANT_DIR / "services" / "dispatch-api"
+DISPATCH_API_SCRIPT = DISPATCH_API_DIR / "server.py"
+DISPATCH_API_PORT = 9091
 
 # macOS epoch offset (2001-01-01 to 1970-01-01)
 MACOS_EPOCH_OFFSET = 978307200
@@ -1573,8 +1573,8 @@ class Manager:
         self.reminders = ReminderPoller(self.sessions, self.contacts)
         self.ipc = IPCServer(self.sessions, self.registry, self.contacts)
 
-        # Spawn Sven API as child process
-        self.sven_api_daemon = self._spawn_sven_api_daemon()
+        # Spawn Dispatch API as child process
+        self.dispatch_api_daemon = self._spawn_dispatch_api_daemon()
 
         # Signal integration
         self.signal_queue = queue.Queue()
@@ -1704,7 +1704,7 @@ class Manager:
         Transient: session timeouts, temporary connection issues, resource exhaustion.
         Permanent: malformed messages, missing data, programming errors.
         """
-        error_str = str(error).lower()
+        error_str = f"{type(error).__name__}: {error}".lower()
         transient_patterns = [
             "timeout", "control request timeout", "connection refused",
             "resource temporarily unavailable", "too many open files",
@@ -1713,6 +1713,7 @@ class Manager:
         permanent_patterns = [
             "keyerror", "valueerror", "typeerror", "attributeerror",
             "json", "decode", "malformed", "missing required",
+            "size",
         ]
         # Check permanent first — if it matches, don't retry
         for pattern in permanent_patterns:
@@ -1822,7 +1823,7 @@ class Manager:
                             produce_event(self._producer, "messages", "message.received", {
                                 **record.payload,
                                 "_retry_count": retry_count + 1,
-                                "_original_offset": record.offset,
+                                "_original_offset": record.payload.get("_original_offset", record.offset),
                                 "_last_error": error_str,
                             }, key=record.key, source="consumer-retry")
                         else:
@@ -2475,18 +2476,18 @@ class Manager:
                 pass
             setattr(self, attr_name, None)
 
-    def _spawn_sven_api_daemon(self) -> Optional[subprocess.Popen]:
-        """Spawn the Sven API server as a child process.
+    def _spawn_dispatch_api_daemon(self) -> Optional[subprocess.Popen]:
+        """Spawn the Dispatch API server as a child process.
 
         Returns the Popen object or None if spawn failed.
         """
-        if not SVEN_API_SCRIPT.exists():
-            log.warning(f"Sven API script not found at {SVEN_API_SCRIPT}")
+        if not DISPATCH_API_SCRIPT.exists():
+            log.warning(f"Dispatch API script not found at {DISPATCH_API_SCRIPT}")
             return None
 
-        sven_api_log_path = LOGS_DIR / "sven-api.log"
-        self._close_log_fh('_sven_api_log_fh')
-        self._sven_api_log_fh = open(sven_api_log_path, "a")
+        dispatch_api_log_path = LOGS_DIR / "dispatch-api.log"
+        self._close_log_fh('_dispatch_api_log_fh')
+        self._dispatch_api_log_fh = open(dispatch_api_log_path, "a")
 
         # Kill any orphaned process on port 9091 to prevent bind failures
         killed_any = False
@@ -2513,31 +2514,31 @@ class Manager:
 
         try:
             proc = subprocess.Popen(
-                [str(UV), "run", str(SVEN_API_SCRIPT)],
-                stdout=self._sven_api_log_fh,
-                stderr=self._sven_api_log_fh,
-                cwd=str(SVEN_API_DIR),
+                [str(UV), "run", str(DISPATCH_API_SCRIPT)],
+                stdout=self._dispatch_api_log_fh,
+                stderr=self._dispatch_api_log_fh,
+                cwd=str(DISPATCH_API_DIR),
                 start_new_session=True,
             )
         except Exception:
-            self._close_log_fh('_sven_api_log_fh')
+            self._close_log_fh('_dispatch_api_log_fh')
             raise
 
         try:
-            log.info(f"Spawned Sven API daemon (PID: {proc.pid})")
-            lifecycle_log.info(f"SVEN_API | SPAWNED | pid={proc.pid}")
+            log.info(f"Spawned Dispatch API daemon (PID: {proc.pid})")
+            lifecycle_log.info(f"DISPATCH_API | SPAWNED | pid={proc.pid}")
             produce_event(getattr(self, '_producer', None), "system", "health.service_spawned",
-                service_spawned_payload("sven_api", proc.pid), source="daemon")
+                service_spawned_payload("dispatch_api", proc.pid), source="daemon")
             return proc
         except Exception as e:
-            log.error(f"Failed to spawn Sven API daemon: {e}")
+            log.error(f"Failed to spawn Dispatch API daemon: {e}")
             return None
 
-    def _check_sven_api_health(self) -> bool:
-        """Check if Sven API is responding."""
+    def _check_dispatch_api_health(self) -> bool:
+        """Check if Dispatch API is responding."""
         try:
             import urllib.request
-            url = f"http://localhost:{SVEN_API_PORT}/health"
+            url = f"http://localhost:{DISPATCH_API_PORT}/health"
             with urllib.request.urlopen(url, timeout=2) as resp:
                 return resp.status == 200
         except Exception:
@@ -2675,32 +2676,32 @@ class Manager:
         if SIGNAL_SOCKET.exists():
             SIGNAL_SOCKET.unlink()
 
-    def _stop_sven_api(self):
-        """Stop Sven API daemon (kills entire process group, not just wrapper)."""
-        if self.sven_api_daemon:
+    def _stop_dispatch_api(self):
+        """Stop Dispatch API daemon (kills entire process group, not just wrapper)."""
+        if self.dispatch_api_daemon:
             # Kill the entire process group (wrapper + child processes)
             # since start_new_session=True creates a new process group
             try:
-                pgid = os.getpgid(self.sven_api_daemon.pid)
+                pgid = os.getpgid(self.dispatch_api_daemon.pid)
                 os.killpg(pgid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
                 # Process already dead
                 pass
             try:
-                self.sven_api_daemon.wait(timeout=5)
+                self.dispatch_api_daemon.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 try:
-                    pgid = os.getpgid(self.sven_api_daemon.pid)
+                    pgid = os.getpgid(self.dispatch_api_daemon.pid)
                     os.killpg(pgid, signal.SIGKILL)
                 except (ProcessLookupError, OSError):
                     try:
-                        self.sven_api_daemon.kill()
+                        self.dispatch_api_daemon.kill()
                     except (ProcessLookupError, OSError):
                         pass
-            self.sven_api_daemon = None
-            log.info("Stopped Sven API daemon")
+            self.dispatch_api_daemon = None
+            log.info("Stopped Dispatch API daemon")
 
-        self._close_log_fh('_sven_api_log_fh')
+        self._close_log_fh('_dispatch_api_log_fh')
 
     async def _run_health_checks(self):
         """Run all health checks in background (non-blocking).
@@ -2710,7 +2711,7 @@ class Manager:
         - Session health_check_all (liveness)
         - Tier 2 deep Haiku analysis
         - Signal daemon health
-        - Sven API health
+        - Dispatch API health
         """
         try:
             log.info("Running session health check (background)...")
@@ -2758,21 +2759,21 @@ class Manager:
                         service_restarted_payload("discord_listener", "died"), source="health")
                     self._start_discord_listener()
 
-            # Check Sven API health
-            if self.sven_api_daemon is not None:
-                if self.sven_api_daemon.poll() is not None:
-                    log.warning("Sven API died, restarting...")
-                    lifecycle_log.info(f"SVEN_API | DIED | restarting")
+            # Check Dispatch API health
+            if self.dispatch_api_daemon is not None:
+                if self.dispatch_api_daemon.poll() is not None:
+                    log.warning("Dispatch API died, restarting...")
+                    lifecycle_log.info(f"DISPATCH_API | DIED | restarting")
                     produce_event(self._producer, "system", "health.service_restarted",
-                        service_restarted_payload("sven_api", "died"), source="health")
-                    self.sven_api_daemon = self._spawn_sven_api_daemon()
-                elif not self._check_sven_api_health():
-                    log.warning("Sven API not responding, restarting...")
-                    lifecycle_log.info(f"SVEN_API | UNRESPONSIVE | restarting")
+                        service_restarted_payload("dispatch_api", "died"), source="health")
+                    self.dispatch_api_daemon = self._spawn_dispatch_api_daemon()
+                elif not self._check_dispatch_api_health():
+                    log.warning("Dispatch API not responding, restarting...")
+                    lifecycle_log.info(f"DISPATCH_API | UNRESPONSIVE | restarting")
                     produce_event(self._producer, "system", "health.service_restarted",
-                        service_restarted_payload("sven_api", "unresponsive"), source="health")
-                    self.sven_api_daemon.kill()
-                    self.sven_api_daemon = self._spawn_sven_api_daemon()
+                        service_restarted_payload("dispatch_api", "unresponsive"), source="health")
+                    self.dispatch_api_daemon.kill()
+                    self.dispatch_api_daemon = self._spawn_dispatch_api_daemon()
 
             # Proactive FD monitoring via ResourceRegistry — calibrated leak detection
             try:
@@ -3446,13 +3447,8 @@ You have 15 minutes. Work efficiently.
             self.discord_listener.stop()
             self.discord_listener = None
 
-        # Wait for sven api daemon
-        if self.sven_api_daemon:
-            try:
-                self.sven_api_daemon.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.sven_api_daemon.kill()
-            log.info("Stopped Sven API daemon")
+        # Stop dispatch api daemon (kills entire process group, not just wrapper)
+        self._stop_dispatch_api()
 
         # Wait for signal daemon
         if self.signal_daemon:
@@ -3541,15 +3537,15 @@ You have 15 minutes. Work efficiently.
 
         # Register log file handles from subprocess spawns (created in __init__)
         for attr_name, resource_name in [
-            ('_sven_api_log_fh', 'sven_api_log_fh'),
+            ('_dispatch_api_log_fh', 'dispatch_api_log_fh'),
         ]:
             fh = getattr(self, attr_name, None)
             if fh is not None:
                 resource_registry.register(resource_name, fh, fh.close)
 
         # Register subprocesses
-        if self.sven_api_daemon:
-            resource_registry.register('sven_api_daemon', self.sven_api_daemon, self.sven_api_daemon.terminate)
+        if self.dispatch_api_daemon:
+            resource_registry.register('dispatch_api_daemon', self.dispatch_api_daemon, self.dispatch_api_daemon.terminate)
 
         # ── Create ManagedSQLiteReader for chat.db (single reader, dedicated thread) ──
         self._chat_reader = ManagedSQLiteReader(

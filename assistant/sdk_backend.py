@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -139,36 +139,55 @@ Briefly describe what you see in this image, keeping the sender's context in min
     else:
         prompt = "Briefly describe what you see in this image. Be concise but capture key details - who/what is shown, the setting, and any notable elements. 2-3 sentences max."
 
-    # Call Gemini CLI
+    # Call Gemini CLI (with 1 retry for transient failures)
+    import time
+    max_attempts = 2
     try:
-        import time
-        gemini_start = time.perf_counter()
-        proc = await asyncio.create_subprocess_exec(
-            str(GEMINI_CLI),
-            "-m", "gemini-3-pro-image-preview",
-            "-i", actual_path,
-            prompt,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
-        gemini_ms = (time.perf_counter() - gemini_start) * 1000
-        perf.timing("gemini_vision_ms", gemini_ms, component="daemon")
+        for attempt in range(max_attempts):
+            try:
+                gemini_start = time.perf_counter()
+                proc = await asyncio.create_subprocess_exec(
+                    str(GEMINI_CLI),
+                    "-m", "gemini-3-pro-image-preview",
+                    "-i", actual_path,
+                    prompt,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+                gemini_ms = (time.perf_counter() - gemini_start) * 1000
+                perf.timing("gemini_vision_ms", gemini_ms, component="daemon")
 
-        if proc.returncode == 0 and stdout:
-            description = stdout.decode().strip()
-            log.info(f"Gemini vision: analyzed {path.name} ({len(description)} chars)")
-            return description
-        else:
-            log.warning(f"Gemini vision failed: {stderr.decode()[:200]}")
-            perf.error("gemini_vision_failed", component="daemon")
-            return None
-    except asyncio.TimeoutError:
-        log.warning(f"Gemini vision: timeout for {image_path}")
-        return None
-    except Exception as e:
-        log.warning(f"Gemini vision error: {e}")
-        return None
+                if proc.returncode == 0 and stdout:
+                    description = stdout.decode().strip()
+                    if attempt > 0:
+                        log.info(f"Gemini vision: succeeded on retry for {path.name}")
+                    log.info(f"Gemini vision: analyzed {path.name} ({len(description)} chars)")
+                    return description
+                else:
+                    error_msg = stderr.decode()[:200] if stderr else "no output"
+                    if attempt < max_attempts - 1:
+                        log.warning(f"Gemini vision failed (attempt {attempt + 1}), retrying: {error_msg}")
+                        await asyncio.sleep(2.0)  # backoff before retry
+                        continue
+                    log.warning(f"Gemini vision failed: {error_msg}")
+                    perf.error("gemini_vision_failed", component="daemon")
+                    return None
+            except asyncio.TimeoutError:
+                if attempt < max_attempts - 1:
+                    log.warning(f"Gemini vision: timeout (attempt {attempt + 1}), retrying: {image_path}")
+                    await asyncio.sleep(2.0)  # backoff before retry
+                    continue
+                log.warning(f"Gemini vision: timeout for {image_path}")
+                return None
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    log.warning(f"Gemini vision error (attempt {attempt + 1}), retrying: {e}")
+                    await asyncio.sleep(2.0)  # backoff before retry
+                    continue
+                log.warning(f"Gemini vision error: {e}")
+                return None
+        return None  # unreachable, but satisfies type checker
     finally:
         # Clean up HEIC temp file to prevent /tmp accumulation
         if heic_temp_path and heic_temp_path.exists():
@@ -314,6 +333,11 @@ class SDKBackend:
         self._last_fast_check: Dict[str, datetime] = {}  # chat_id -> last scan timestamp
         self._recently_healed: Dict[str, datetime] = {}  # chat_id -> heal timestamp
         self._last_auth_error_notification: Optional[datetime] = None  # debounce auth error SMS
+
+        # Circuit breaker: track restart timestamps per session to prevent crash loops
+        self._restart_timestamps: Dict[str, list] = {}  # chat_id -> list of restart datetimes
+        self.CIRCUIT_BREAKER_MAX_RESTARTS = 3  # max restarts allowed in window
+        self.CIRCUIT_BREAKER_WINDOW_SECONDS = 300  # 5-minute window
 
     def _read_restart_initiator(self) -> str | None:
         """Read the restart initiator chat_id from the graceful restart marker.
@@ -1070,6 +1094,15 @@ Gemini analyzed the attached image:
         if not chat_id:
             raise ValueError("chat_id cannot be empty for group message")
 
+        # Prefix chat_id for registry storage (e.g. discord:abc123, signal:xyz)
+        # Same logic as inject_message — without this, Discord/Signal group
+        # sessions use wrong keys and can't be found in the registry.
+        from assistant.backends import get_backend
+        backend = get_backend(source)
+        if backend.registry_prefix and not chat_id.startswith(backend.registry_prefix):
+            chat_id = f"{backend.registry_prefix}{chat_id}"
+        chat_id = normalize_chat_id(chat_id)
+
         msg_body = format_message_body(text, attachments, audio_transcription)
 
         # Lock only for session creation check; inject happens outside lock
@@ -1373,6 +1406,22 @@ Respond via: ~/.claude/skills/sms-assistant/scripts/send-sms "{admin_phone}" "[M
             clean: If True, clear the SDK session index and stored session_id
                    to force a completely fresh session (no resume)
         """
+        # Circuit breaker: prevent crash loops (max N restarts in M seconds)
+        now = datetime.now()
+        timestamps = self._restart_timestamps.get(chat_id, [])
+        cutoff = now - timedelta(seconds=self.CIRCUIT_BREAKER_WINDOW_SECONDS)
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= self.CIRCUIT_BREAKER_MAX_RESTARTS:
+            session_name = (self.registry.get(chat_id) or {}).get("session_name", chat_id)
+            lifecycle_log.warning(
+                f"CIRCUIT_BREAKER | {session_name} | "
+                f"{len(timestamps)} restarts in {self.CIRCUIT_BREAKER_WINDOW_SECONDS}s, "
+                f"refusing restart"
+            )
+            return None
+        timestamps.append(now)
+        self._restart_timestamps[chat_id] = timestamps
+
         # Save session info before killing
         reg = self.registry.get(chat_id)
 

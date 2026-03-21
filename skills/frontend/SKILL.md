@@ -89,6 +89,31 @@ Each command's full instructions are in `./impeccable/{command}/SKILL.md`.
 
 ## Supporting References
 
+### UI/UX Pro Max — Design Intelligence Database
+
+Read `./ui-ux-pro-max/SKILL.md` for comprehensive design guidance. Contains:
+- **99 UX guidelines** (prioritized: accessibility → touch → performance → layout → animation → forms → navigation → charts)
+- **161 color palettes** by product type (SaaS, dashboard, fintech, healthcare, etc.)
+- **57 font pairings** with Google Fonts recommendations
+- **50+ design styles** (glassmorphism, minimalism, brutalism, dark mode, etc.)
+- **25 chart types** with library recommendations
+- **161 product type patterns** with reasoning rules
+
+Has a Python search CLI for querying the database:
+```bash
+uv run ~/.claude/skills/frontend/ui-ux-pro-max/scripts/search.py "<query>" --domain <domain>
+# Domains: product, style, color, typography, chart, ux, landing, google-fonts, react, web, prompt
+# Example: uv run scripts/search.py "dark dashboard monitoring" --domain style
+# Design system: uv run scripts/search.py "ops dashboard" --design-system
+```
+
+Key UX rules for dashboards/command centers:
+- Contrast 4.5:1, keyboard nav, aria-labels (Priority 1: Accessibility)
+- Min touch target 44x44px, loading feedback (Priority 2: Touch)
+- Skeleton screens for >1s loads, virtualize 50+ item lists (Priority 3: Performance)
+- Mobile-first breakpoints, no horizontal scroll (Priority 5: Layout)
+- Chart legends always visible, tooltips on interact, accessible colors (Priority 10: Charts)
+
 ### Vercel React Best Practices
 
 Read `./vercel-react/SKILL.md` and `./vercel-react/AGENTS.md` for React/Next.js code. 57 rules across 8 categories:

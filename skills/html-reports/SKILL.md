@@ -95,7 +95,10 @@ th{color:#8b949e;font-weight:500}
 # Via iMessage
 ~/.claude/skills/sms-assistant/scripts/send-sms "chat_id" --file report.html
 
-# Via sven-pages (permanent URL)
+# Via sven-pages (permanent URL, private by default)
+~/.claude/skills/sven-pages/scripts/publish ./report-folder --acl "participant@gmail.com"
+
+# Only if explicitly asked to make it public:
 ~/.claude/skills/sven-pages/scripts/publish ./report-folder --public
 ```
 

@@ -260,7 +260,7 @@ def _resolve_leg_datetime(leg: dict, fact: dict) -> tuple[datetime | None, datet
 
             # Extract year from fact
             starts_at = fact.get("starts_at", "")
-            year = 2026  # Default
+            year = datetime.now().year  # Default to current year
             if starts_at and len(starts_at) >= 4:
                 year = int(starts_at[:4])
 
@@ -682,17 +682,20 @@ def handle_fact_event(records: list) -> None:
 
 def _get_full_fact(fact_id: int) -> dict | None:
     """Read the full fact from the database."""
+    conn = None
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
-        conn.close()
         if row:
             return dict(row)
         return None
     except Exception as e:
         log.error(f"FactReminderConsumer: failed to read fact {fact_id}: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 
 def _cancel_existing_reminders(fact_id: int, data: dict) -> int:

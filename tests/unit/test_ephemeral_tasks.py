@@ -799,7 +799,7 @@ class TestTopicCreation:
              patch('assistant.manager.ReminderPoller'), \
              patch('assistant.manager.IPCServer'), \
              patch('assistant.manager.Manager._load_state', return_value=0), \
-             patch('assistant.manager.Manager._spawn_sven_api_daemon', return_value=None):
+             patch('assistant.manager.Manager._spawn_dispatch_api_daemon', return_value=None):
 
             mock_bus = MagicMock()
             MockBus.return_value = mock_bus

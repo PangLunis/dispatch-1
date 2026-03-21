@@ -156,7 +156,7 @@ uvicorn sven_api:app --host 0.0.0.0 --port 9091
 ## File Locations
 
 - iOS App: `~/dispatch/apps/sven-ios/` (moved from ~/code/ios-apps/Sven/ on 2026-02-11)
-- Mac API: `~/dispatch/services/sven-api/` (to be created)
+- Mac API: `~/dispatch/services/dispatch-api/` (to be created)
 - This Plan: `~/dispatch/apps/sven-ios/PLAN.md`
 
 ## Next Steps
@@ -165,7 +165,7 @@ uvicorn sven_api:app --host 0.0.0.0 --port 9091
 2. [x] Deploy to TestFlight
 3. [x] Set up Tailscale between phone and mac
 4. [x] Fix transcript overwrite bug - switched to Moonshine, accumulates lines
-5. [x] Create API server on mac (port 9091) - ~/dispatch/services/sven-api/server.py
+5. [x] Create API server on mac (port 9091) - ~/dispatch/services/dispatch-api/server.py
 6. [ ] Add App Attest to iOS app
 7. [ ] Update iOS app to POST to mac
 8. [ ] Test end-to-end flow

@@ -191,24 +191,24 @@ class TestSvenAppInjectIntegration:
     """Integration tests for sven-app inject workflow."""
 
     def test_sven_app_inject_includes_admin_flag(self):
-        """Verify sven-api server passes --admin flag correctly.
+        """Verify dispatch-api server passes --admin flag correctly.
 
         The server.py should include both --sms and --admin flags
         when calling inject-prompt.
         """
-        server_path = Path.home() / "dispatch/services/sven-api/server.py"
+        server_path = Path.home() / "dispatch/services/dispatch-api/server.py"
         if not server_path.exists():
-            pytest.skip("sven-api server.py not found")
+            pytest.skip("dispatch-api server.py not found")
 
         content = server_path.read_text()
 
         # Verify inject call includes --admin
         assert '--admin' in content, \
-            "sven-api server should pass --admin flag to inject-prompt"
+            "dispatch-api server should pass --admin flag to inject-prompt"
 
         # Verify inject call includes --sms (needed for tier to be used)
         assert '--sms' in content, \
-            "sven-api server should pass --sms flag to inject-prompt"
+            "dispatch-api server should pass --sms flag to inject-prompt"
 
     def test_sven_app_session_claude_md_shows_admin(self):
         """Verify CLAUDE.md for sven-app states admin tier."""

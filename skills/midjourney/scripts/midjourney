@@ -324,7 +324,7 @@ def submit_video(fetcher, cookies, parent_job_id, image_num=0, prompt="", motion
         },
         "t": "video",
         "videoType": video_type,
-        "newPrompt": f"{prompt} --motion {motion} --video 1" if prompt else f"--motion {motion} --video 1",
+        "newPrompt": f"{prompt} --video 1" if prompt else "--video 1",
         "parentJob": {"job_id": parent_job_id, "image_num": image_num},
         "animateMode": "auto",
     }

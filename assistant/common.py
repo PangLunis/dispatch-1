@@ -201,9 +201,13 @@ def wrap_sms(
 
   # Determine the reply command based on backend
   if source == "sven-app":
-    reply_cmd = f'~/.claude/skills/sven-app/scripts/reply-sven "{chat_id}"'
+    reply_cmd = f'~/.claude/skills/sven-app/scripts/reply-sven "{chat_id}" "message"'
+  elif source == "discord":
+    reply_cmd = '~/.claude/skills/sms-assistant/scripts/reply "message" [--image PATH] [--file PATH]'
+  elif source == "signal":
+    reply_cmd = '~/.claude/skills/sms-assistant/scripts/reply "message" [--image PATH] [--file PATH]'
   else:
-    reply_cmd = '~/.claude/skills/sms-assistant/scripts/reply'
+    reply_cmd = '~/.claude/skills/sms-assistant/scripts/reply "message" [--image PATH] [--file PATH]'
 
   # Format timestamp in local timezone (US Eastern)
   now = datetime.now(ZoneInfo("America/New_York"))
@@ -215,7 +219,7 @@ Chat ID: {chat_id}
 Time: {timestamp}{reply_context}
 {display_prompt}
 ---END {backend.label}---
-**Important:** You are in a text message session. Communicate back with: {reply_cmd} "message"
+**Important:** You are in a text message session. Communicate back with: {reply_cmd}
 """
 
 
@@ -298,7 +302,7 @@ def format_message_body(
   if attachments:
     attachment_lines = []
     for att in attachments:
-      size_kb = att["size"] // 1024
+      size_kb = (att.get("size") or 0) // 1024
       attachment_lines.append(f"  - {att['name']} ({att['mime_type']}, {size_kb}KB)")
       attachment_lines.append(f"    Path: {att['path']}")
     msg_body += "\n\nATTACHMENTS:\n" + "\n".join(attachment_lines)

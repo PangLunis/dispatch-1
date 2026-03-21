@@ -353,6 +353,17 @@ class Bus:
             logger.info("Created topic '%s' with %d partition(s)", name, partitions)
             return True
         except sqlite3.IntegrityError:
+            # Topic exists — update retention_ms if it changed
+            cursor = self._conn.execute(
+                "SELECT retention_ms FROM topics WHERE name = ?", (name,)
+            )
+            row = cursor.fetchone()
+            if row and row[0] != retention_ms:
+                self._conn.execute(
+                    "UPDATE topics SET retention_ms = ? WHERE name = ?",
+                    (retention_ms, name),
+                )
+                logger.info("Updated topic '%s' retention_ms: %d -> %d", name, row[0], retention_ms)
             return False
 
     def delete_topic(self, name: str) -> bool:

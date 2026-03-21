@@ -55,6 +55,12 @@ security add-generic-password -s discord_bot_token -a sven -w "TOKEN"
 security find-generic-password -s discord_bot_token -w
 ```
 
+## Response Behavior
+
+**Default: respond only when tagged** (`@bot`). Do not reply to every message in a channel.
+
+**Exception — active turn-based games:** If context from recent messages makes it clearly your turn (e.g., a game prompt directed at you, the previous player completed their turn), respond without requiring a tag. Read game state from the last several messages to determine if it is your turn before acting.
+
 ## Bot Commands
 
 Discord sessions recognize dot-commands (e.g., `.imdb`, `.help`) as special bot commands.

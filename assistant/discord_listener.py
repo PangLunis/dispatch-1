@@ -132,7 +132,7 @@ class DiscordListener:
                     {
                         "mime_type": a.content_type or "application/octet-stream",
                         "name": a.filename,
-                        "size": a.size,
+                        "size": a.size or 0,
                         "path": a.url,  # Discord CDN URL
                     }
                     for a in message.attachments

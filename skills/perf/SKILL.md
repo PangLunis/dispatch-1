@@ -24,7 +24,7 @@ Analyze performance metrics from the dispatch daemon and SDK sessions.
 # Filter by component
 ~/dispatch/bin/perf-analyze --component daemon
 ~/dispatch/bin/perf-analyze --component session
-~/dispatch/bin/perf-analyze --component sven-api
+~/dispatch/bin/perf-analyze --component dispatch-api
 ```
 
 ## Available Metrics
@@ -54,7 +54,7 @@ Analyze performance metrics from the dispatch daemon and SDK sessions.
 - `sdk_queue_depth` - Messages waiting in session queue (catches backup)
 - `session_wake_latency_ms` - Time from queue get to query completion (for idle sessions)
 
-### sven-api Component
+### dispatch-api Component
 - `request_ms` - HTTP request latency (by endpoint)
 
 ## Related: Bus Event Analytics
@@ -88,7 +88,7 @@ Fields:
 - `ts` - ISO timestamp
 - `metric` - Metric name
 - `value` - Numeric value
-- `component` - Source component (daemon, session, sven-api)
+- `component` - Source component (daemon, session, dispatch-api)
 - Additional labels vary by metric
 
 ### Tool Execution Schema

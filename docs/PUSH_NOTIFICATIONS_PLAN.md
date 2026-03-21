@@ -334,7 +334,7 @@ Create `~/dispatch/state/sven-push-config.json`:
    - Build 36 with push notifications (used Tailscale IP)
    - Build 38 with local network IP fix (10.10.10.59)
 3. **Backend** - Add /register-apns endpoint to store tokens ✅ (2026-02-11)
-   - Endpoint added to ~/dispatch/services/sven-api/server.py
+   - Endpoint added to ~/dispatch/services/dispatch-api/server.py
    - Stores mapping: device_token -> apns_token
    - File: ~/dispatch/state/sven-apns-tokens.json
 4. **Push Script** - Create send-push script ✅ (2026-02-11)

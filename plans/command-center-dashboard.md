@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-A single-page dark-themed real-time dashboard served from the existing sven-api FastAPI server (port 9091) at `/dashboard`. Provides full operational visibility into the Dispatch personal assistant system: live event streams, session management, SDK tool analytics, performance metrics, scheduled tasks, skill inventory, and log tailing.
+A single-page dark-themed real-time dashboard served from the existing dispatch-api FastAPI server (port 9091) at `/dashboard`. Provides full operational visibility into the Dispatch personal assistant system: live event streams, session management, SDK tool analytics, performance metrics, scheduled tasks, skill inventory, and log tailing.
 
 **Data scale**: 103K bus events, 38K SDK events, 40 sessions, 84 skills, 14 facts, 26 days of perf JSONL, 14 log files.
 
@@ -15,8 +15,8 @@ A single-page dark-themed real-time dashboard served from the existing sven-api 
 ### 2.1 File Layout
 
 ```
-~/dispatch/services/sven-api/server.py    — Add API endpoints (backend)
-~/dispatch/services/sven-api/dashboard.html — Single HTML file (frontend)
+~/dispatch/services/dispatch-api/server.py    — Add API endpoints (backend)
+~/dispatch/services/dispatch-api/dashboard.html — Single HTML file (frontend)
 ```
 
 ### 2.2 Serving
@@ -91,7 +91,7 @@ Returns system-level health snapshot.
   "skills_count": 84,
   "services": {
     "signal_daemon": {"status": "running", "pid": 456},
-    "sven_api": {"status": "running", "pid": 789}
+    "dispatch_api": {"status": "running", "pid": 789}
   }
 }
 ```
@@ -183,7 +183,7 @@ Returns all sessions with enriched metadata.
     {
       "chat_id": "+16175969496",
       "session_name": "imessage/_16175969496",
-      "contact_name": "Nikhil Thorat",
+      "contact_name": "Admin User",
       "tier": "admin",
       "type": "individual",
       "source": "imessage",
@@ -398,7 +398,7 @@ Returns tail of a log file.
   "returned_from_line": 14900,
   "available_files": [
     "manager.log", "session_lifecycle.log", "watchdog.log",
-    "sven-api.log", "signal-daemon.log", "compactions.log",
+    "dispatch-api.log", "signal-daemon.log", "compactions.log",
     "memory-consolidation.log", "nightly-scraper.log"
   ]
 }
@@ -606,7 +606,7 @@ Load Inter and JetBrains Mono from Google Fonts via `<link>` tags (no npm needed
 │ ┌────────────────────────┐ ┌────────────────────────────┐│
 │ │ Active Sessions        │ │ Service Health             ││
 │ │ Top 5 by last activity │ │ ✅ Daemon    PID 12345     ││
-│ │ 🟡 Nikhil  admin  3s  │ │ ✅ Signal    PID 456       ││
+│ │ 🟡 Admin   admin  3s  │ │ ✅ Signal    PID 456       ││
 │ │ 🔵 Mom     family 2m  │ │ ✅ Sven API  PID 789       ││
 │ │ 🔵 Dan     fav    15m │ │ ✅ Watchdog  Active        ││
 │ └────────────────────────┘ └────────────────────────────┘│
@@ -673,7 +673,7 @@ Load Inter and JetBrains Mono from Google Fonts via `<link>` tags (no npm needed
 │ ┌──────┬──────────┬──────┬──────┬──────┬───────┬───────┐│
 │ │Status│Contact   │Tier  │Source│Type  │Last Msg│Events ││
 │ ├──────┼──────────┼──────┼──────┼──────┼───────┼───────┤│
-│ │ 🟢  │Nikhil T. │admin │iMsg  │indiv │3s ago │ 5,230 ││
+│ │ 🟢  │Admin U.  │admin │iMsg  │indiv │3s ago │ 5,230 ││
 │ │ 🟢  │Partner   │wife  │iMsg  │indiv │2m ago │ 3,100 ││
 │ │ 🟡  │Mom       │family│iMsg  │indiv │1h ago │   890 ││
 │ │ ⚪  │Dan K.    │fav   │signal│indiv │2d ago │   120 ││
@@ -837,7 +837,7 @@ Load Inter and JetBrains Mono from Google Fonts via `<link>` tags (no npm needed
 │ └────────────────────────────────────────────────────────┘│
 │                                                          │
 │ Available: manager.log | session_lifecycle.log |          │
-│ watchdog.log | sven-api.log | signal-daemon.log          │
+│ watchdog.log | dispatch-api.log | signal-daemon.log          │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -1052,7 +1052,7 @@ def scan_skills():
 ```python
 ALLOWED_LOGS = {
     "manager.log", "session_lifecycle.log", "watchdog.log",
-    "sven-api.log", "signal-daemon.log", "compactions.log",
+    "dispatch-api.log", "signal-daemon.log", "compactions.log",
     "memory-consolidation.log", "nightly-scraper.log",
     "chat-context-consolidation.log", "embed-rerank.log",
     "memory-search.log", "search-daemon.log",

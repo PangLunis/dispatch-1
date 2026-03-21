@@ -738,7 +738,7 @@ class TestServiceSpawnedPayload:
         assert payload["socket"] == "/tmp/signal.sock"
 
     def test_all_service_types(self):
-        for svc in ("search", "signal", "sven-api"):
+        for svc in ("search", "signal", "dispatch-api"):
             payload = service_spawned_payload(svc, 1)
             assert payload["service"] == svc
 
@@ -866,11 +866,11 @@ class TestHealmeEvents:
 class TestServiceSpawnedEvents:
     """Verify daemon spawns emit health.service_spawned."""
 
-    def test_spawn_sven_api_daemon_emits_event(self):
+    def test_spawn_dispatch_api_daemon_emits_event(self):
         import inspect
         from assistant.manager import Manager
 
-        source = inspect.getsource(Manager._spawn_sven_api_daemon)
+        source = inspect.getsource(Manager._spawn_dispatch_api_daemon)
         assert "health.service_spawned" in source
         assert "service_spawned_payload" in source
 

@@ -10,7 +10,7 @@ This skill provides the backend infrastructure for the Sven iOS voice assistant 
 ## Architecture
 
 ```
-iOS App → POST /prompt → sven-api → inject-prompt → SDK Session
+iOS App → POST /prompt → dispatch-api → inject-prompt → SDK Session
                                                         ↓
                                               Claude generates response
                                                         ↓
@@ -18,7 +18,7 @@ iOS App → POST /prompt → sven-api → inject-prompt → SDK Session
                                                         ↓
                                     reply-sven stores message + generates TTS
                                                         ↓
-iOS App ← GET /messages ← sven-api ← reads from SQLite message bus
+iOS App ← GET /messages ← dispatch-api ← reads from SQLite message bus
 iOS App ← GET /audio/{id} ← serves TTS audio files
 ```
 
@@ -51,7 +51,7 @@ Called by Claude to send responses. Stores message in SQLite and generates TTS a
 - Session name: `sven-app/voice`
 - Tier: admin (full access)
 
-## API Endpoints (sven-api)
+## API Endpoints (dispatch-api)
 
 - `POST /prompt` - Receive transcript, inject into session (JSON body)
 - `POST /prompt-with-image` - Receive transcript + image via multipart/form-data
