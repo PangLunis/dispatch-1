@@ -1,0 +1,125 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""
+reply-app - Store assistant response and generate TTS audio.
+
+Called by Claude sessions to send responses to the dispatch iOS app.
+Stores message in SQLite database and generates TTS via Kokoro.
+
+Usage:
+    reply-app <chat_id> <message> [--image <path>]
+
+The chat_id is typically "voice" for the main app session.
+Use --image to attach an image file to the response.
+"""
+
+import argparse
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+# Add scripts dir to path for shared module import
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dispatch_db import init_db, store_message, copy_image_to_canonical, get_chat_title
+
+# Paths
+AUDIO_DIR = Path.home() / "dispatch" / "state" / "dispatch-audio"
+TTS_SCRIPT = Path.home() / ".claude" / "skills" / "tts" / "scripts" / "speak"
+PUSH_SCRIPT = Path.home() / ".claude" / "skills" / "dispatch-app" / "scripts" / "send-push"
+
+
+def generate_tts(text: str, output_path: Path) -> bool:
+    """Generate TTS audio using Kokoro."""
+    try:
+        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+        result = subprocess.run(
+            [str(TTS_SCRIPT), text, "-o", str(output_path)],
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout for long responses
+        )
+
+        if result.returncode != 0:
+            print(f"TTS failed: {result.stderr}", file=sys.stderr)
+            return False
+
+        return output_path.exists()
+
+    except subprocess.TimeoutExpired:
+        print("TTS timed out", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"TTS error: {e}", file=sys.stderr)
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Store dispatch app response with TTS")
+    parser.add_argument("chat_id", help="Chat ID (typically 'voice')")
+    parser.add_argument("message", help="Message text to send")
+    parser.add_argument("--image", help="Path to image file to attach", default=None)
+    args = parser.parse_args()
+
+    if not args.message.strip():
+        print("Empty message, skipping", file=sys.stderr)
+        sys.exit(1)
+
+    # Strip dispatch-app: or sven-app: prefix from chat_id — sessions pass their
+    # full session name but messages are stored under the base chat_id to match
+    # user messages.
+    chat_id = args.chat_id
+    if chat_id.startswith("dispatch-app:"):
+        chat_id = chat_id[len("dispatch-app:"):]
+    elif chat_id.startswith("sven-app:"):
+        chat_id = chat_id[len("sven-app:"):]
+
+    # Fix escaped exclamation marks from shell
+    # Claude Code sometimes escapes ! as \! when calling via Bash
+    message = args.message.replace("\\!", "!")
+
+    # Initialize database
+    init_db()
+
+    # Generate unique ID
+    message_id = str(uuid.uuid4())
+
+    # Handle optional image attachment
+    image_path = None
+    if args.image:
+        image_path = copy_image_to_canonical(args.image, message_id, chat_id)
+        if image_path:
+            print(f"Image copied: {image_path}")
+        else:
+            print(f"Warning: image not found: {args.image}", file=sys.stderr)
+
+    # Store message immediately WITHOUT TTS (lazy TTS — generated on-demand via GET /audio)
+    store_message(message_id, "assistant", message, chat_id, image_path=image_path)
+    print(f"Message stored: {message_id} (TTS will be generated on first play)")
+
+    # Send push notification
+    if PUSH_SCRIPT.exists():
+        try:
+            # Truncate for preview
+            preview = message[:100] + "..." if len(message) > 100 else message
+            chat_title = get_chat_title(chat_id) or chat_id
+            result = subprocess.run(
+                [str(PUSH_SCRIPT), message_id, preview, "--chat-id", chat_id, "--chat-title", chat_title],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                print(f"Push notification sent")
+            else:
+                print(f"Push notification failed: {result.stderr}", file=sys.stderr)
+        except Exception as e:
+            print(f"Push notification error: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

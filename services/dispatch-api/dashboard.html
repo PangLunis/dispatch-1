@@ -1,0 +1,2344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dispatch Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg-primary: #000000;
+  --bg-secondary: #0a0a0a;
+  --bg-tertiary: #111111;
+  --bg-surface: #1a1a1a;
+  --text-primary: #e4e4e7;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #52525b;
+  --accent-blue: #2563eb;
+  --accent-blue-secondary: #3b82f6;
+  --accent-purple: #8b5cf6;
+  --accent-green: #22c55e;
+  --accent-amber: #f59e0b;
+  --accent-red: #ef4444;
+  --accent-cyan: #06b6d4;
+  --accent-orange: #f97316;
+  --accent-pink: #ec4899;
+  --tier-admin: #f59e0b;
+  --tier-partner: #ec4899;
+  --tier-family: #22c55e;
+  --tier-favorite: #3b82f6;
+  --tier-bots: #8b5cf6;
+  --chart-1: #2563eb;
+  --chart-2: #8b5cf6;
+  --chart-3: #22c55e;
+  --chart-4: #f59e0b;
+  --chart-5: #ef4444;
+  --chart-6: #06b6d4;
+  --chart-7: #f97316;
+  --border: rgba(255,255,255,0.06);
+  --border-active: rgba(255,255,255,0.12);
+  --font-mono: 'Fira Code', 'SF Mono', monospace;
+  --font-sans: 'Fira Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  overflow-y: auto;
+  height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Layout */
+.app { display: flex; height: 100vh; }
+
+/* Left Nav */
+.nav {
+  width: 200px;
+  min-width: 200px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 0;
+  position: relative;
+  z-index: 10;
+}
+
+.nav-logo {
+  padding: 0 20px 16px;
+  font-family: var(--font-mono);
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--accent-blue);
+  letter-spacing: 3px;
+  text-shadow: 0 0 10px rgba(37,99,235,0.3);
+}
+
+.nav-status {
+  padding: 0 20px 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.6875rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  box-shadow: 0 0 6px rgba(34,197,94,0.5);
+  animation: glow-dot 2s ease-in-out infinite;
+}
+
+.status-dot.down { background: var(--accent-red); box-shadow: 0 0 6px rgba(239,68,68,0.5); animation: none; }
+.status-dot.degraded { background: var(--accent-amber); box-shadow: 0 0 6px rgba(245,158,11,0.5); }
+
+@keyframes glow-dot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+  50% { opacity: 0.6; box-shadow: 0 0 10px rgba(34,197,94,0.7); }
+}
+
+.nav-items { flex: 1; padding: 8px 0; }
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease-out, background 0.15s ease-out;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  border-left: 2px solid transparent;
+}
+
+.nav-item:hover, .nav-item:focus-visible {
+  background: rgba(255,255,255,0.03);
+  color: var(--text-primary);
+  outline: none;
+}
+.nav-item:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-blue); }
+
+.nav-item.active {
+  background: rgba(37,99,235,0.06);
+  color: var(--text-primary);
+  border-left-color: var(--accent-blue);
+  font-weight: 500;
+}
+
+.nav-item svg { width: 16px; height: 16px; opacity: 0.5; }
+.nav-item.active svg { opacity: 0.9; }
+
+.nav-footer {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+  line-height: 1.8;
+}
+
+/* Main Content */
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+  background: var(--bg-primary);
+}
+
+.page { display: none; }
+.page.active { display: block; }
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.page-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.6875rem;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.live-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  box-shadow: 0 0 6px rgba(34,197,94,0.5);
+  animation: glow-dot 2s ease-in-out infinite;
+}
+
+/* Stat Cards */
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-top: 1px solid var(--card-accent, var(--accent-blue));
+  border-radius: 0;
+  padding: 18px 16px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s ease-out;
+}
+
+.stat-card:hover { border-color: var(--border-active); border-top-color: var(--card-accent, var(--accent-blue)); }
+
+.stat-card::before {
+  display: none;
+}
+
+.stat-number {
+  font-family: var(--font-mono);
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--card-accent, var(--accent-blue));
+  line-height: 1.2;
+  text-shadow: 0 0 20px rgba(37,99,235,0.15);
+}
+
+.stat-label {
+  font-size: 0.6875rem;
+  font-family: var(--font-sans);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-top: 6px;
+  font-weight: 500;
+}
+
+/* Panels */
+.panels {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.panels-2 { grid-template-columns: 1fr 1fr; }
+.panels-1 { grid-template-columns: 1fr; }
+
+.panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 20px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.panel-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+
+/* Tables */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table thead th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.data-table tbody td {
+  padding: 7px 12px;
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+
+.data-table tbody tr { transition: background 0.1s ease-out; }
+.data-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+.table-scroll {
+  max-height: 500px;
+  overflow-y: auto;
+  border-radius: 0;
+  border: 1px solid var(--border);
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 0;
+  font-size: 0.625rem;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.badge-admin { background: rgba(245,158,11,0.1); color: var(--tier-admin); border: 1px solid rgba(245,158,11,0.2); }
+.badge-partner { background: rgba(236,72,153,0.1); color: var(--tier-partner); border: 1px solid rgba(236,72,153,0.2); }
+.badge-family { background: rgba(34,197,94,0.1); color: var(--tier-family); border: 1px solid rgba(34,197,94,0.2); }
+.badge-favorite { background: rgba(59,130,246,0.1); color: var(--tier-favorite); border: 1px solid rgba(59,130,246,0.2); }
+.badge-bots { background: rgba(139,92,246,0.1); color: var(--tier-bots); border: 1px solid rgba(139,92,246,0.2); }
+.badge-unknown { background: rgba(82,82,91,0.1); color: var(--text-tertiary); border: 1px solid rgba(82,82,91,0.2); }
+
+.badge-imessage { background: rgba(37,99,235,0.1); color: var(--accent-blue-secondary); border: 1px solid rgba(37,99,235,0.2); }
+.badge-signal { background: rgba(6,182,212,0.1); color: var(--accent-cyan); border: 1px solid rgba(6,182,212,0.2); }
+.badge-type { background: rgba(139,92,246,0.1); color: var(--accent-purple); border: 1px solid rgba(139,92,246,0.2); }
+.badge-error { background: rgba(239,68,68,0.1); color: var(--accent-red); border: 1px solid rgba(239,68,68,0.2); }
+.badge-healthy { background: rgba(34,197,94,0.1); color: var(--accent-green); border: 1px solid rgba(34,197,94,0.2); }
+.badge-retrying { background: rgba(245,158,11,0.1); color: var(--accent-amber); border: 1px solid rgba(245,158,11,0.2); }
+
+/* Filter Bar */
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: center;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.filter-bar select, .filter-bar input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 0;
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  outline: none;
+  transition: border-color 0.15s ease-out;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.filter-bar select:focus, .filter-bar input:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 1px rgba(37,99,235,0.2);
+}
+
+.filter-bar input { flex: 1; min-width: 200px; }
+
+.btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  border-radius: 0;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: all 0.15s ease-out;
+}
+.btn:hover { background: var(--bg-surface); border-color: var(--border-active); color: var(--text-primary); }
+.btn.active { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
+
+/* Event Stream */
+.event-row {
+  animation: slide-in 0.2s ease-out;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Charts */
+.chart-container {
+  position: relative;
+  height: 250px;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.panel-collapse-btn {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  user-select: none;
+  margin-right: 8px;
+}
+.panel-collapse-btn:hover { color: var(--text-secondary); }
+.panel-body-collapsed { display: none !important; }
+.panel-collapsed { padding-bottom: 8px !important; }
+.panel-collapsed .panel-header { margin-bottom: 0 !important; }
+.panel-collapsed .chart-legend { display: none !important; }
+.panel-detail-link {
+  font-size: 0.6875rem;
+  color: var(--accent-blue);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.panel-detail-link:hover { opacity: 1; }
+.chart-legend {
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 6px 12px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: #555570 transparent;
+}
+.chart-container canvas {
+  max-width: 100% !important;
+}
+
+/* Session Cards */
+.session-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.session-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 14px 16px;
+  transition: border-color 0.2s ease-out;
+}
+.session-card:hover { border-color: var(--border-active); }
+
+.session-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.session-name {
+  font-weight: 600;
+  font-size: 0.875rem;
+  font-family: var(--font-sans);
+}
+
+.session-meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+
+/* Skills Grid */
+.skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 10px;
+}
+
+.skill-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 14px 16px;
+  transition: border-color 0.2s ease-out;
+}
+.skill-card:hover { border-color: var(--border-active); }
+
+.skill-name {
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--accent-blue-secondary);
+  margin-bottom: 4px;
+}
+
+.skill-desc {
+  font-size: 0.75rem;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.skill-meta {
+  font-size: 0.625rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* Log Viewer */
+.log-viewer {
+  background: #000000;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  max-height: 600px;
+  overflow-y: auto;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  line-height: 1.7;
+}
+
+/* Utility classes */
+.text-sm { font-size: 0.75rem; }
+.text-xs { font-size: 0.625rem; }
+.text-muted { color: var(--text-secondary); }
+.text-dim { color: var(--text-tertiary); }
+.text-mono { font-family: var(--font-mono); }
+.truncate { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+
+.log-line { white-space: pre-wrap; padding: 1px 0; color: var(--text-secondary); }
+.log-line-error { color: var(--accent-red); }
+.log-line-warn { color: var(--accent-amber); }
+.log-line-info { color: var(--accent-green); }
+.log-line-debug { color: var(--text-tertiary); }
+
+/* Time range buttons */
+.time-range-btns {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+/* Status dots for sessions */
+.status-indicator {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-active { background: var(--accent-green); box-shadow: 0 0 6px rgba(34,197,94,0.4); }
+.status-recent { background: var(--accent-amber); box-shadow: 0 0 6px rgba(245,158,11,0.4); }
+.status-stale { background: var(--text-tertiary); }
+.status-group { background: var(--accent-blue); box-shadow: 0 0 6px rgba(37,99,235,0.4); }
+
+/* Bottom bar */
+.bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+
+/* Overview service health */
+.service-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8125rem;
+  font-family: var(--font-sans);
+}
+.service-row:last-child { border-bottom: none; }
+.service-status { font-size: 0.875rem; }
+.service-name { flex: 1; }
+.service-detail { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 0.6875rem; }
+
+/* Event type dots */
+.event-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+/* Expandable row */
+.expanded-payload {
+  background: var(--bg-tertiary);
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+  border-radius: 0;
+  margin: 4px 12px 8px;
+}
+
+/* Payload row for click-to-expand */
+.payload-row { display: table-row; }
+.payload-row.collapsed { display: none; }
+.payload-row td {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--border);
+}
+.payload-row pre {
+  background: #050505;
+  padding: 12px 16px;
+  margin: 4px 12px 8px;
+  border-radius: 0;
+  border-left: 2px solid var(--accent-blue);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.json-key { color: #7dd3fc; }
+.json-string { color: #86efac; }
+.json-number { color: #fbbf24; }
+.json-bool { color: #c084fc; }
+.json-null { color: #6b7280; font-style: italic; }
+
+/* Loading and empty states */
+.state-message {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-tertiary);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Table horizontal scroll wrapper */
+.table-scroll-x { overflow-x: auto; }
+
+/* Badge for active/inactive facts */
+.badge-active { background: rgba(34,197,94,0.1); color: var(--accent-green); border: 1px solid rgba(34,197,94,0.2); }
+.badge-inactive { background: rgba(82,82,91,0.1); color: var(--text-tertiary); border: 1px solid rgba(82,82,91,0.2); }
+
+/* Mobile hamburger */
+.nav-toggle {
+  display: none;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 1.125rem;
+  flex-shrink: 0;
+}
+
+.nav-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 40;
+}
+.nav-overlay.open { display: block; }
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .nav-toggle { display: block; }
+  .nav {
+    position: fixed;
+    left: -220px;
+    top: 0;
+    bottom: 0;
+    width: 220px;
+    transition: left 0.25s ease-out;
+    z-index: 50;
+  }
+  .nav.open { left: 0; }
+  .main { padding: 16px; }
+  .panels-2 { grid-template-columns: 1fr; }
+  .stat-cards { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .stat-number { font-size: 1.5rem; }
+  .stat-card { padding: 14px; }
+  .page-header { gap: 8px; }
+  .filter-bar input { min-width: 120px; flex-shrink: 1; }
+  .session-grid { grid-template-columns: 1fr; }
+  .skills-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 480px) {
+  .stat-cards { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .stat-number { font-size: 1.25rem; }
+  .stat-card { padding: 10px; }
+  .stat-label { font-size: 0.625rem; }
+  .main { padding: 10px; }
+  .panel { padding: 12px; }
+  .chart-container { height: 180px; }
+  /* Horizontal scroll for tables on small screens — keep table layout, scroll sideways */
+  .table-scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table-scroll-x table { min-width: 600px; }
+  .data-table th, .data-table td { font-size: 0.6875rem; padding: 6px 8px; }
+}
+</style>
+</head>
+<body>
+<div class="nav-overlay" id="nav-overlay" onclick="closeNav()"></div>
+<div class="app">
+  <!-- Left Navigation -->
+  <nav class="nav">
+    <div class="nav-logo">DISPATCH</div>
+    <div class="nav-status">
+      <span class="status-dot" id="nav-status-dot"></span>
+      <span id="nav-status-text">Checking...</span>
+    </div>
+    <div class="nav-items">
+      <div class="nav-item active" data-page="overview" tabindex="0" role="button" onclick="navigate('overview')" onkeydown="if(event.key==='Enter')navigate('overview')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Overview
+      </div>
+      <div class="nav-item" data-page="bus" tabindex="0" role="button" onclick="navigate('bus')" onkeydown="if(event.key==='Enter')navigate('bus')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Message Bus
+      </div>
+      <div class="nav-item" data-page="sessions" tabindex="0" role="button" onclick="navigate('sessions')" onkeydown="if(event.key==='Enter')navigate('sessions')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Sessions
+      </div>
+      <div class="nav-item" data-page="sdk" tabindex="0" role="button" onclick="navigate('sdk')" onkeydown="if(event.key==='Enter')navigate('sdk')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        SDK Events
+      </div>
+      <div class="nav-item" data-page="perf" tabindex="0" role="button" onclick="navigate('perf')" onkeydown="if(event.key==='Enter')navigate('perf')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+        Performance
+      </div>
+      <div class="nav-item" data-page="skills" tabindex="0" role="button" onclick="navigate('skills')" onkeydown="if(event.key==='Enter')navigate('skills')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        Skills
+      </div>
+      <div class="nav-item" data-page="tasks" tabindex="0" role="button" onclick="navigate('tasks')" onkeydown="if(event.key==='Enter')navigate('tasks')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        Tasks
+      </div>
+      <div class="nav-item" data-page="facts" tabindex="0" role="button" onclick="navigate('facts')" onkeydown="if(event.key==='Enter')navigate('facts')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        Facts
+      </div>
+      <div class="nav-item" data-page="logs" tabindex="0" role="button" onclick="navigate('logs')" onkeydown="if(event.key==='Enter')navigate('logs')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        Logs
+      </div>
+      <a href="/agents" class="nav-item" style="text-decoration:none;color:inherit;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        Agents ↗
+      </a>
+    </div>
+    <div class="nav-footer">
+      <div id="nav-clock"></div>
+      <div id="nav-uptime"></div>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <div class="main">
+    <!-- Overview Page -->
+    <div class="page active" id="page-overview">
+      <div class="page-header">
+        <div class="page-title">System Overview</div>
+        <div class="live-indicator"><span class="live-dot"></span> Live - 5s</div>
+      </div>
+      <div class="stat-cards" id="overview-stats"></div>
+      <div class="panels panels-1">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Events by Source (Last 24h)</span><a class="panel-detail-link" onclick="navigate('bus')">Details →</a></div>
+          <div class="chart-container"><canvas id="chart-event-rate"></canvas></div>
+        </div>
+      </div>
+      <div class="panels panels-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Events by Type (Last 24h)</span><a class="panel-detail-link" onclick="navigate('bus')">Details →</a></div>
+          <div class="chart-container"><canvas id="chart-event-by-type"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Events by Chat (Last 24h)</span><a class="panel-detail-link" onclick="navigate('sessions')">Details →</a></div>
+          <div class="chart-container"><canvas id="chart-chat-activity"></canvas></div>
+        </div>
+      </div>
+      <div class="panels panels-1" style="margin-top:16px">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Activity by Person (Last 24h)</span><a class="panel-detail-link" onclick="navigate('sessions')">Details →</a></div>
+          <div class="chart-container"><canvas id="chart-person-activity"></canvas></div>
+        </div>
+      </div>
+      <div class="panels panels-1" style="margin-top:16px">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">SDK Calls (Last 24h)</span><a class="panel-detail-link" onclick="navigate('sdk')">Details →</a></div>
+          <div class="chart-container"><canvas id="chart-sdk-rate"></canvas></div>
+        </div>
+      </div>
+      <div class="panels panels-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Active Sessions</span><a class="panel-detail-link" onclick="navigate('sessions')">Details →</a></div>
+          <div id="overview-sessions"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Service Health</span></div>
+          <div id="overview-services"></div>
+        </div>
+      </div>
+      <div class="panels panels-2" style="margin-top:16px">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Tool Usage</span></div>
+          <div class="chart-container" style="height:200px"><canvas id="chart-tool-usage"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Active Tasks</span></div>
+          <div id="overview-tasks" style="max-height:280px;overflow-y:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Message Bus Page -->
+    <div class="page" id="page-bus">
+      <div class="page-header">
+        <div class="page-title">Message Bus</div>
+        <div class="live-indicator"><span class="live-dot" id="bus-live-dot"></span> <span id="bus-live-text">Live - 3s</span></div>
+      </div>
+      <div class="panel" style="margin-bottom:16px" id="bus-chart-panel">
+        <div class="panel-header"><span class="panel-collapse-btn" onclick="togglePanelCollapse('bus-chart-panel')">▼</span><span class="panel-title">Bus Event Rate (Last 24h)</span></div>
+        <div class="panel-body"><div class="chart-container"><canvas id="chart-bus-rate"></canvas></div></div>
+      </div>
+      <div class="filter-bar">
+        <input type="text" id="bus-filter-search" placeholder="Search payload..." style="background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:0.8125rem;min-width:180px" oninput="debounceBusSearch()">
+        <select id="bus-filter-type"><option value="">All Types</option></select>
+        <select id="bus-filter-source"><option value="">All Sources</option></select>
+        <select id="bus-filter-topic"><option value="">All Topics</option></select>
+        <button class="btn" id="bus-pause-btn" onclick="toggleBusPause()">Pause</button>
+      </div>
+      <div class="table-scroll-x">
+        <div class="table-scroll" style="max-height:calc(100vh - 240px)">
+          <table class="data-table" style="table-layout:auto">
+            <thead><tr>
+              <th style="width:24px"></th>
+              <th style="white-space:nowrap">Age</th>
+              <th style="white-space:nowrap">Type</th>
+              <th style="white-space:nowrap">Source</th>
+              <th>Key</th>
+              <th style="width:50px;white-space:nowrap">Offset</th>
+            </tr></thead>
+            <tbody id="bus-events-body"><tr><td colspan="6"><div class="state-message">Loading...</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="bottom-bar">
+        <span id="bus-total-info"></span>
+        <span id="bus-showing-info"></span>
+      </div>
+    </div>
+
+    <!-- Sessions Page -->
+    <div class="page" id="page-sessions">
+      <div class="page-header">
+        <div class="page-title">Sessions</div>
+        <div class="live-indicator"><span class="live-dot"></span> Live - 5s</div>
+      </div>
+      <div class="stat-cards" id="session-stats"></div>
+      <div class="table-scroll-x">
+        <div class="table-scroll" style="max-height:calc(100vh - 260px)">
+          <table class="data-table">
+            <thead><tr>
+              <th style="width:30px"></th>
+              <th>Contact</th>
+              <th>Tier</th>
+              <th>Source</th>
+              <th>Type</th>
+              <th>Last Active</th>
+              <th>Model</th>
+            </tr></thead>
+            <tbody id="sessions-body"><tr><td colspan="7"><div class="state-message">Loading...</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- SDK Events Page -->
+    <div class="page" id="page-sdk">
+      <div class="page-header">
+        <div class="page-title">SDK Events</div>
+        <div class="live-indicator"><span class="live-dot"></span> Live - 3s</div>
+      </div>
+      <div class="panels panels-2" id="sdk-charts-panel">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-collapse-btn" onclick="togglePanelCollapse('sdk-charts-panel')">▼</span><span class="panel-title">Tool Usage Distribution</span></div>
+          <div class="panel-body"><div class="chart-container"><canvas id="chart-sdk-donut"></canvas></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Tool Stats</span></div>
+          <div class="panel-body"><div class="table-scroll-x">
+            <div class="table-scroll" style="max-height:250px">
+              <table class="data-table">
+                <thead><tr><th>Tool</th><th>Count</th><th>Avg ms</th><th>Errors</th></tr></thead>
+                <tbody id="sdk-stats-body"></tbody>
+              </table>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <div class="filter-bar" style="margin-top:16px">
+        <input type="text" id="sdk-filter-search" placeholder="Search payload..." style="background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:0.8125rem;min-width:180px" oninput="debounceSdkSearch()">
+        <select id="sdk-filter-tool"><option value="">All Tools</option></select>
+        <select id="sdk-filter-session"><option value="">All Sessions</option></select>
+        <label style="display:flex;align-items:center;gap:4px;font-size:0.8125rem;color:var(--text-secondary);cursor:pointer">
+          <input type="checkbox" id="sdk-filter-errors" style="accent-color:var(--accent-red)"> Errors only
+        </label>
+        <button class="btn" id="sdk-pause-btn" onclick="toggleSdkPause()">Pause</button>
+      </div>
+      <div class="table-scroll-x">
+        <div class="table-scroll" style="max-height:400px;margin-top:8px">
+          <table class="data-table">
+            <thead><tr>
+              <th>Time</th>
+              <th>Tool</th>
+              <th>Session</th>
+              <th>Duration</th>
+              <th>Payload</th>
+            </tr></thead>
+            <tbody id="sdk-events-body"><tr><td colspan="5"><div class="state-message">Loading...</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Performance Page -->
+    <div class="page" id="page-perf">
+      <div class="page-header">
+        <div class="page-title">Performance</div>
+        <div class="live-indicator"><span class="live-dot"></span> Live - 10s</div>
+      </div>
+      <div class="time-range-btns">
+        <button class="btn" onclick="setPerfHours(1, this)">1h</button>
+        <button class="btn active" onclick="setPerfHours(6, this)">6h</button>
+        <button class="btn" onclick="setPerfHours(24, this)">24h</button>
+        <button class="btn" onclick="setPerfHours(168, this)">7d</button>
+      </div>
+      <div class="stat-cards" id="perf-stats"></div>
+      <div class="panels panels-1">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Latency Over Time</span>
+            <select id="perf-metric-select" style="background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:4px 8px;border-radius:0;font-size:0.75rem"></select>
+          </div>
+          <div class="chart-container" style="height:300px"><canvas id="chart-perf-main"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skills Page -->
+    <div class="page" id="page-skills">
+      <div class="page-header">
+        <div class="page-title">Skills</div>
+        <div class="live-indicator"><span class="live-dot"></span> Static</div>
+      </div>
+      <div class="filter-bar">
+        <input type="text" id="skills-search" placeholder="Filter skills..." oninput="filterSkills()">
+      </div>
+      <div class="skills-grid" id="skills-grid"></div>
+    </div>
+
+    <!-- Tasks Page -->
+    <div class="page" id="page-tasks">
+      <div class="page-header">
+        <div class="page-title">Tasks & Reminders</div>
+        <div class="live-indicator"><span class="live-dot"></span> Live - 10s</div>
+      </div>
+      <div class="table-scroll-x">
+        <div class="table-scroll" style="max-height:350px">
+          <table class="data-table">
+            <thead><tr>
+              <th>Title</th>
+              <th>Schedule</th>
+              <th>Next Fire</th>
+              <th>Last Fired</th>
+              <th>Fired</th>
+              <th>Status</th>
+            </tr></thead>
+            <tbody id="tasks-body"><tr><td colspan="6"><div class="state-message">Loading...</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-header"><span class="panel-title">Recent Task Events</span></div>
+        <div class="table-scroll-x">
+          <div class="table-scroll" style="max-height:300px">
+            <table class="data-table">
+              <thead><tr><th>Time</th><th>Type</th><th>Task</th><th>Key</th></tr></thead>
+              <tbody id="task-events-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Facts Page -->
+    <div class="page" id="page-facts">
+      <div class="page-header">
+        <div class="page-title">Facts</div>
+        <div class="live-indicator"><span class="live-dot"></span> Live - 30s</div>
+      </div>
+      <div class="table-scroll-x">
+        <div class="table-scroll" style="max-height:calc(100vh - 180px)">
+          <table class="data-table">
+            <thead><tr>
+              <th>Contact</th>
+              <th>Type</th>
+              <th>Summary</th>
+              <th>Confidence</th>
+              <th>Source</th>
+              <th>Created</th>
+              <th>Status</th>
+            </tr></thead>
+            <tbody id="facts-body"><tr><td colspan="7"><div class="state-message">Loading...</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logs Page -->
+    <div class="page" id="page-logs">
+      <div class="page-header">
+        <div class="page-title">Logs</div>
+        <div class="live-indicator"><span class="live-dot"></span> Live - 3s</div>
+      </div>
+      <div class="filter-bar">
+        <select id="logs-file-select" onchange="switchLogFile()"></select>
+        <button class="btn" id="logs-pause-btn" onclick="toggleLogsPause()">Pause</button>
+      </div>
+      <div class="log-viewer" id="log-viewer"><div class="state-message">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+let currentPage = 'overview';
+let pollers = {};
+let healthData = {};
+let chartInstances = {};
+let busPaused = false;
+let sdkPaused = false;
+let logsPaused = false;
+let logTotalLines = 0;
+let perfHours = 6;
+let allSkills = [];
+let busStreamOffset = null;  // cursor for bus streaming (null = first load)
+let sdkStreamId = null;      // cursor for sdk streaming (null = first load)
+let busLoading = false;      // in-flight guard
+let sdkLoading = false;      // in-flight guard
+let logsLoading = false;     // in-flight guard
+
+// ─────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatNum(n) {
+  if (n === null || n === undefined) return '-';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return n.toLocaleString();
+}
+
+function formatAge(seconds) {
+  if (seconds === null || seconds === undefined) return '-';
+  if (seconds < 0) seconds = 0;
+  if (seconds < 60) return Math.floor(seconds) + 's ago';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+  return Math.floor(seconds / 86400) + 'd ago';
+}
+
+function formatTs(ms) {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function formatIso(iso) {
+  if (!iso) return '-';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch { return iso; }
+}
+
+function eventColor(type) {
+  if (!type) return 'var(--text-tertiary)';
+  if (type.startsWith('message.')) return 'var(--accent-pink)';
+  if (type.startsWith('session.')) return 'var(--accent-blue)';
+  if (type.startsWith('health.')) return 'var(--accent-green)';
+  if (type.startsWith('task.')) return 'var(--accent-amber)';
+  if (type.startsWith('scan.')) return 'var(--accent-cyan)';
+  return 'var(--accent-purple)';
+}
+
+function toolColor(tool) {
+  const colors = { Bash: '#4a9eff', Read: '#22c55e', Grep: '#06b6d4', Edit: '#8b5cf6', Write: '#ec4899', Agent: '#f59e0b', Glob: '#ef4444', WebFetch: '#06b6d4', WebSearch: '#ec4899' };
+  return colors[tool] || '#8888a0';
+}
+
+function tierBadge(tier) {
+  const cls = { admin: 'badge-admin', partner: 'badge-partner', wife: 'badge-partner', family: 'badge-family', favorite: 'badge-favorite', bots: 'badge-bots' };
+  const label = tier === 'wife' ? 'partner' : (tier || 'unknown');
+  return `<span class="badge ${cls[tier] || 'badge-unknown'}">${escapeHtml(label)}</span>`;
+}
+
+function sourceBadge(src) {
+  if (src === 'imessage') return '<span class="badge badge-imessage">iMessage</span>';
+  if (src === 'signal') return '<span class="badge badge-signal">Signal</span>';
+  return `<span class="badge badge-type">${escapeHtml(src || '-')}</span>`;
+}
+
+function statusDot(ageSeconds, type) {
+  if (type === 'group') return '<span class="status-indicator status-group"></span>';
+  if (ageSeconds === null) return '<span class="status-indicator status-stale"></span>';
+  if (ageSeconds < 300) return '<span class="status-indicator status-active"></span>';
+  if (ageSeconds < 3600) return '<span class="status-indicator status-recent"></span>';
+  return '<span class="status-indicator status-stale"></span>';
+}
+
+let lastApiSuccess = Date.now();
+let connectionLost = false;
+
+async function api(path) {
+  try {
+    const opts = activeAbortController ? { signal: activeAbortController.signal } : {};
+    const r = await fetch(path, opts);
+    if (!r.ok) throw new Error(r.statusText);
+    lastApiSuccess = Date.now();
+    if (connectionLost) {
+      connectionLost = false;
+      document.getElementById('connection-banner')?.remove();
+    }
+    return await r.json();
+  } catch (e) {
+    if (e.name === 'AbortError') return null;  // Navigation abort — not a failure
+    console.error('API error:', path, e);
+    if (Date.now() - lastApiSuccess > 10000 && !connectionLost) {
+      connectionLost = true;
+      const banner = document.createElement('div');
+      banner.id = 'connection-banner';
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:var(--accent-red);color:white;text-align:center;padding:6px;font-size:0.8125rem;font-weight:500;';
+      banner.textContent = '⚠ Connection lost — dashboard data may be stale';
+      document.body.prepend(banner);
+    }
+    return null;
+  }
+}
+
+function animateNumber(el, target, duration = 600) {
+  // Parse the current displayed value, handling formatted numbers like "1,234" or "103K"
+  const txt = el.textContent.trim();
+  let start = 0;
+  if (txt.endsWith('K')) start = Math.round(parseFloat(txt) * 1000);
+  else if (txt.endsWith('M')) start = Math.round(parseFloat(txt) * 1000000);
+  else start = parseInt(txt.replace(/[^0-9]/g, '')) || 0;
+  if (start === target) { el.textContent = formatNum(target); return; }
+  const startTime = performance.now();
+  function step(now) {
+    const progress = Math.min((now - startTime) / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const current = Math.round(start + (target - start) * eased);
+    el.textContent = formatNum(current);
+    if (progress < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+// ─────────────────────────────────────────────
+// Navigation
+// ─────────────────────────────────────────────
+function toggleNav() {
+  const nav = document.querySelector('.nav');
+  const overlay = document.getElementById('nav-overlay');
+  nav.classList.toggle('open');
+  overlay.classList.toggle('open');
+}
+function closeNav() {
+  document.querySelector('.nav').classList.remove('open');
+  document.getElementById('nav-overlay').classList.remove('open');
+}
+
+const VALID_PAGES = ['overview','bus','sessions','sdk','perf','skills','tasks','facts','logs'];
+let activeAbortController = null;
+
+function navigate(page) {
+  // Validate route — fallback to overview
+  if (!VALID_PAGES.includes(page)) page = 'overview';
+
+  // Close mobile nav on navigate
+  closeNav();
+
+  // Abort in-flight requests from previous page
+  if (activeAbortController) activeAbortController.abort();
+  activeAbortController = new AbortController();
+
+  // Clear old pollers
+  Object.values(pollers).forEach(id => clearInterval(id));
+  pollers = {};
+
+  currentPage = page;
+  location.hash = page;
+  document.title = `${page.charAt(0).toUpperCase() + page.slice(1)} — Dispatch`;
+
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+  document.querySelectorAll('.page').forEach(el => el.classList.toggle('active', el.id === 'page-' + page));
+
+  // Reset cursor-based streaming state on page switch
+  busStreamOffset = null;
+  sdkStreamId = null;
+  logTotalLines = 0;
+
+  // Start page-specific polling
+  switch (page) {
+    case 'overview': loadOverview(); pollers.overview = setInterval(loadOverview, 5000); break;
+    case 'bus': loadBusFilters(); loadBus(); pollers.bus = setInterval(() => { if (!busPaused) loadBus(); }, 3000); break;
+    case 'sessions': loadSessions(); pollers.sessions = setInterval(loadSessions, 5000); break;
+    case 'sdk': loadSdkStats(); loadSdk(); pollers.sdkStats = setInterval(loadSdkStats, 10000); pollers.sdk = setInterval(() => { if (!sdkPaused) loadSdk(); }, 3000); break;
+    case 'perf': loadPerf(); pollers.perf = setInterval(loadPerf, 10000); break;
+    case 'skills': loadSkills(); pollers.skills = setInterval(loadSkills, 60000); break;
+    case 'tasks': loadTasks(); pollers.tasks = setInterval(loadTasks, 10000); break;
+    case 'facts': loadFacts(); pollers.facts = setInterval(loadFacts, 30000); break;
+    case 'logs': loadLogFiles(); loadLogs(); pollers.logs = setInterval(() => { if (!logsPaused) loadLogs(); }, 3000); break;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Clock
+// ─────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('nav-clock').textContent = now.toLocaleTimeString('en-US', { hour12: false, timeZoneName: 'short' });
+  if (healthData.uptime_seconds != null) {
+    const u = healthData.uptime_seconds + Math.floor((Date.now() / 1000) - (healthData._loadedAt || Date.now() / 1000));
+    const d = Math.floor(u / 86400);
+    const h = Math.floor((u % 86400) / 3600);
+    const m = Math.floor((u % 3600) / 60);
+    document.getElementById('nav-uptime').textContent = `Up ${d}d ${h}h ${m}m`;
+  }
+}
+setInterval(updateClock, 1000);
+
+// ─────────────────────────────────────────────
+// Update relative timestamps
+// ─────────────────────────────────────────────
+setInterval(() => {
+  // Scope to active page only to avoid scanning hidden elements
+  const activePage = document.getElementById('page-' + currentPage);
+  if (!activePage) return;
+  activePage.querySelectorAll('[data-age-ts]').forEach(el => {
+    const ts = parseInt(el.dataset.ageTs);
+    if (ts) {
+      const age = (Date.now() - ts) / 1000;
+      el.textContent = formatAge(age);
+    }
+  });
+  activePage.querySelectorAll('[data-age-iso]').forEach(el => {
+    const iso = el.dataset.ageIso;
+    if (iso) {
+      const age = (Date.now() - new Date(iso).getTime()) / 1000;
+      el.textContent = formatAge(age);
+    }
+  });
+}, 1000);
+
+// ─────────────────────────────────────────────
+// Overview Page
+// ─────────────────────────────────────────────
+async function loadOverview() {
+  const [health, eventStats, sdkStats, recentData, sessData, tasksData] = await Promise.all([
+    api('/api/dashboard/health'),
+    api('/api/dashboard/events/stats'),
+    api('/api/dashboard/sdk/stats'),
+    api('/api/dashboard/events?limit=10'),
+    api('/api/dashboard/sessions'),
+    api('/api/dashboard/tasks'),
+  ]);
+
+  if (health) {
+    healthData = health;
+    healthData._loadedAt = Date.now() / 1000;
+
+    // Nav status
+    const dot = document.getElementById('nav-status-dot');
+    const txt = document.getElementById('nav-status-text');
+    dot.className = 'status-dot' + (health.health_status === 'healthy' ? '' : health.health_status === 'degraded' ? ' degraded' : ' down');
+    txt.textContent = health.health_status === 'healthy' ? 'Running' : health.health_status === 'degraded' ? 'Degraded' : 'Down';
+
+    // Stat cards
+    const cards = [
+      { value: health.active_sessions, label: 'ACTIVE SESSIONS', accent: 'var(--accent-blue)' },
+      { value: health.total_bus_events, label: 'BUS EVENTS', accent: 'var(--accent-pink)' },
+    ];
+
+    renderStatCards('overview-stats', cards);
+
+    // Services
+    document.getElementById('overview-services').innerHTML = `
+      <div class="service-row">
+        <span class="status-indicator ${health.daemon_running ? 'status-active' : 'status-stale'}"></span>
+        <span class="service-name">Daemon</span>
+        <span class="service-detail">PID ${health.daemon_pid || '-'}</span>
+      </div>
+      <div class="service-row">
+        <span class="status-indicator ${health.health_status === 'healthy' ? 'status-active' : 'status-stale'}"></span>
+        <span class="service-name">Health</span>
+        <span class="service-detail">${health.health_status}</span>
+      </div>
+      <div class="service-row">
+        <span class="status-indicator ${health.last_event_age_seconds != null && health.last_event_age_seconds < 60 ? 'status-active' : 'status-stale'}"></span>
+        <span class="service-name">Bus Activity</span>
+        <span class="service-detail">${health.last_event_age_seconds != null ? formatAge(health.last_event_age_seconds) : 'no events'}</span>
+      </div>
+    `;
+  }
+
+  // Event rate chart — stacked by source
+  if (eventStats && eventStats.by_hour && eventStats.by_hour.length) {
+    const labels = eventStats.by_hour.map(h => {
+      const d = new Date(h.hour);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    });
+    const sources = eventStats.all_sources || [];
+    const palette = ['#4a9eff', '#c2410c', '#15803d', '#7c3aed', '#b45309', '#be185d', '#0e7490', '#4338ca', '#059669', '#dc2626', '#6366f1', '#d97706'];
+    if (sources.length > 0) {
+      const datasets = sources.map((src, i) => ({
+        label: src,
+        data: eventStats.by_hour.map(h => h[src] || 0),
+        color: palette[i % palette.length],
+      }));
+      renderStackedAreaChart('chart-event-rate', labels, datasets);
+    } else {
+      const data = eventStats.by_hour.map(h => h.total || h.count || 0);
+      renderLineChart('chart-event-rate', labels, [{ label: 'Events/hour', data, color: '#4a9eff' }]);
+    }
+  }
+
+  // Events by type stacked area chart
+  if (eventStats && eventStats.by_type_time && eventStats.by_type_time.length) {
+    const labels = eventStats.by_type_time.map(h => {
+      const d = new Date(h.hour);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    });
+    const types = eventStats.all_types_time || [];
+    const palette = ['#22c55e', '#4a9eff', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316', '#14b8a6', '#a855f7', '#eab308', '#3b82f6'];
+    if (types.length > 0) {
+      const datasets = types.map((t, i) => ({
+        label: t,
+        data: eventStats.by_type_time.map(h => h[t] || 0),
+        color: palette[i % palette.length],
+      }));
+      renderStackedAreaChart('chart-event-by-type', labels, datasets);
+    }
+  }
+
+  // Active sessions (top 5)
+  if (sessData && sessData.sessions) {
+    const top5 = sessData.sessions.slice(0, 5);
+    document.getElementById('overview-sessions').innerHTML = top5.length ? top5.map(s => `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+        ${statusDot(s.age_seconds, s.type)}
+        <span style="flex:1;font-size:0.8125rem">${escapeHtml(s.contact_name)}</span>
+        ${tierBadge(s.tier)}
+        <span style="color:var(--text-tertiary);font-family:var(--font-mono);font-size:0.75rem" data-age-iso="${escapeHtml(s.last_message_time)}">${formatAge(s.age_seconds)}</span>
+      </div>
+    `).join('') : '<div class="state-message">No active sessions</div>';
+  }
+
+  // Tool usage chart
+  if (sdkStats && sdkStats.by_tool) {
+    const top10 = sdkStats.by_tool.slice(0, 10);
+    const labels = top10.map(t => t.tool);
+    const data = top10.map(t => t.count);
+    const colors = top10.map(t => toolColor(t.tool));
+    renderBarChart('chart-tool-usage', labels, data, colors);
+  }
+
+  // SDK calls stacked area chart
+  if (sdkStats && sdkStats.by_hour && sdkStats.by_hour.length) {
+    const labels = sdkStats.by_hour.map(h => {
+      const d = new Date(h.hour);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    });
+    const eventTypes = sdkStats.all_event_types || [];
+    const palette = ['#4a9eff', '#15803d', '#c2410c', '#7c3aed', '#b45309', '#be185d', '#0e7490', '#4338ca', '#059669', '#dc2626', '#6366f1', '#d97706'];
+    if (eventTypes.length > 0) {
+      const datasets = eventTypes.map((et, i) => ({
+        label: et,
+        data: sdkStats.by_hour.map(h => h[et] || 0),
+        color: palette[i % palette.length],
+      }));
+      renderStackedAreaChart('chart-sdk-rate', labels, datasets);
+    }
+  }
+
+  // Chat activity stacked area chart
+  if (eventStats && eventStats.by_chat && eventStats.by_chat.length) {
+    const labels = eventStats.by_chat.map(h => {
+      const d = new Date(h.hour);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    });
+    const chats = eventStats.all_chats || [];
+    const palette = ['#4a9eff', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316', '#14b8a6', '#a855f7', '#eab308', '#3b82f6'];
+    if (chats.length > 0) {
+      const chatNames = eventStats.chat_names || {};
+      const datasets = chats.map((chat, i) => ({
+        label: chatNames[chat] || chat,
+        data: eventStats.by_chat.map(h => h[chat] || 0),
+        color: palette[i % palette.length],
+      }));
+      renderStackedAreaChart('chart-chat-activity', labels, datasets);
+    }
+  }
+
+  // Activity by person stacked area chart
+  if (eventStats && eventStats.by_person && eventStats.by_person.length) {
+    const labels = eventStats.by_person.map(h => {
+      const d = new Date(h.hour);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    });
+    const persons = eventStats.all_persons || [];
+    const palette = ['#4a9eff', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316', '#14b8a6', '#a855f7', '#eab308', '#3b82f6'];
+    if (persons.length > 0) {
+      const datasets = persons.map((person, i) => ({
+        label: person,
+        data: eventStats.by_person.map(h => h[person] || 0),
+        color: palette[i % palette.length],
+      }));
+      renderStackedAreaChart('chart-person-activity', labels, datasets);
+    }
+  }
+
+  // Active tasks
+  if (tasksData && tasksData.reminders) {
+    const reminders = tasksData.reminders;
+    document.getElementById('overview-tasks').innerHTML = reminders.length ? reminders.map(r => {
+      const statusColor = r.status === 'healthy' ? 'var(--accent-green)' : r.last_error ? 'var(--accent-red)' : 'var(--accent-amber)';
+      const nextFire = r.next_fire ? new Date(r.next_fire).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:0.8125rem">
+        <span style="width:6px;height:6px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.title)}</span>
+        <span style="color:var(--text-tertiary);font-family:var(--font-mono);font-size:0.6875rem;flex-shrink:0">${nextFire}</span>
+        <span style="color:var(--text-tertiary);font-family:var(--font-mono);font-size:0.6875rem;flex-shrink:0">×${r.fired_count || 0}</span>
+      </div>`;
+    }).join('') : '<div class="state-message">No active tasks</div>';
+  }
+}
+
+// ─────────────────────────────────────────────
+// Message Bus Page
+// ─────────────────────────────────────────────
+let busFiltersLoaded = false;
+
+async function loadBusFilters() {
+  if (busFiltersLoaded) return;
+  const stats = await api('/api/dashboard/events/stats');
+  if (!stats) return;
+
+  const typeSelect = document.getElementById('bus-filter-type');
+  (stats.types_list || []).forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    typeSelect.appendChild(opt);
+  });
+
+  const srcSelect = document.getElementById('bus-filter-source');
+  (stats.sources_list || []).forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s; opt.textContent = s;
+    srcSelect.appendChild(opt);
+  });
+
+  // Topics - populated from stats endpoint
+  const topicSelect = document.getElementById('bus-filter-topic');
+  if (stats.topics_list) {
+    stats.topics_list.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t; opt.textContent = t;
+      topicSelect.appendChild(opt);
+    });
+  }
+
+  // Render bus rate stacked area chart
+  if (stats.by_hour && stats.by_hour.length) {
+    const labels = stats.by_hour.map(h => {
+      const d = new Date(h.hour);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    });
+    const sources = stats.all_sources || [];
+    const palette = ['#4a9eff', '#c2410c', '#15803d', '#7c3aed', '#b45309', '#be185d', '#0e7490', '#4338ca', '#059669', '#dc2626', '#6366f1', '#d97706'];
+    if (sources.length > 0) {
+      const datasets = sources.map((src, i) => ({
+        label: src,
+        data: stats.by_hour.map(h => h[src] || 0),
+        color: palette[i % palette.length],
+      }));
+      renderStackedAreaChart('chart-bus-rate', labels, datasets);
+    }
+  }
+
+  busFiltersLoaded = true;
+}
+
+function renderStatCards(containerId, cards) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  if (!container.children.length || container.children.length !== cards.length) {
+    container.innerHTML = cards.map((c, i) => `
+      <div class="stat-card" style="--card-accent:${c.accent}">
+        <div class="stat-number" style="color:${c.accent}" id="${containerId}-val-${i}">0</div>
+        <div class="stat-label">${c.label}</div>
+        ${c.sublabel !== undefined ? `<div style="font-size:0.625rem;color:var(--text-tertiary);margin-top:4px;font-family:var(--font-mono)" id="${containerId}-sub-${i}">${c.sublabel}</div>` : ''}
+      </div>
+    `).join('');
+  }
+  cards.forEach((c, i) => {
+    const valEl = document.getElementById(`${containerId}-val-${i}`);
+    if (valEl) {
+      if (typeof c.value === 'number') animateNumber(valEl, c.value);
+      else valEl.textContent = c.value;
+    }
+    if (c.sublabel !== undefined) {
+      const subEl = document.getElementById(`${containerId}-sub-${i}`);
+      if (subEl) subEl.textContent = c.sublabel;
+    }
+  });
+}
+
+function togglePayload(row) {
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains('payload-row')) {
+    next.classList.toggle('collapsed');
+  }
+}
+
+function highlightJson(str) {
+  try {
+    const obj = JSON.parse(str);
+    // Use a replacer to build highlighted HTML token by token
+    const lines = [];
+    const indent = (depth) => '  '.repeat(depth);
+    function render(val, depth) {
+      if (val === null) return '<span class="json-null">null</span>';
+      if (typeof val === 'boolean') return `<span class="json-bool">${val}</span>`;
+      if (typeof val === 'number') return `<span class="json-number">${val}</span>`;
+      if (typeof val === 'string') return `<span class="json-string">"${escapeHtml(val)}"</span>`;
+      if (Array.isArray(val)) {
+        if (val.length === 0) return '[]';
+        const items = val.map(v => indent(depth + 1) + render(v, depth + 1));
+        return '[\n' + items.join(',\n') + '\n' + indent(depth) + ']';
+      }
+      // Object
+      const keys = Object.keys(val);
+      if (keys.length === 0) return '{}';
+      const entries = keys.map(k =>
+        indent(depth + 1) + '<span class="json-key">"' + escapeHtml(k) + '"</span>: ' + render(val[k], depth + 1)
+      );
+      return '{\n' + entries.join(',\n') + '\n' + indent(depth) + '}';
+    }
+    return render(obj, 0);
+  } catch {
+    // Truncated JSON — best-effort formatting with line breaks
+    let out = '';
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = 0; i < str.length; i++) {
+      const c = str[i];
+      if (esc) { out += escapeHtml(c); esc = false; continue; }
+      if (c === '\\' && inStr) { out += '\\'; esc = true; continue; }
+      if (c === '"') { inStr = !inStr; out += '"'; continue; }
+      if (inStr) { out += escapeHtml(c); continue; }
+      if (c === '{' || c === '[') { depth++; out += c + '\n' + '  '.repeat(depth); }
+      else if (c === '}' || c === ']') { depth = Math.max(0, depth - 1); out += '\n' + '  '.repeat(depth) + c; }
+      else if (c === ',') { out += ',\n' + '  '.repeat(depth); }
+      else if (c === ':') { out += ': '; }
+      else { out += escapeHtml(c); }
+    }
+    if (str.length >= 195) out += '\n<span class="json-null">… (truncated)</span>';
+    return out;
+  }
+}
+
+function renderBusRow(e) {
+  const payloadFull = e.payload_preview || '';
+  const highlighted = highlightJson(payloadFull);
+  return `<tr class="event-row" style="cursor:pointer" onclick="togglePayload(this)">
+      <td data-label=""><span class="event-dot" style="background:${eventColor(e.type)}"></span></td>
+      <td data-label="Age" style="font-size:0.75rem;color:var(--text-tertiary)" data-age-ts="${e.timestamp}">${formatAge(e.age_seconds)}</td>
+      <td data-label="Type"><span class="badge badge-type" style="font-size:0.625rem">${escapeHtml(e.type || '-')}</span></td>
+      <td data-label="Source">${sourceBadge(e.source)}</td>
+      <td data-label="Key" style="max-width:150px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(e.key || '-')}</td>
+      <td data-label="Offset" style="color:var(--text-tertiary);font-size:0.75rem">${e.offset}</td>
+    </tr>
+    <tr class="payload-row"><td colspan="6"><pre>${highlighted}</pre></td></tr>`;
+}
+
+async function loadBus() {
+  if (busLoading) return;
+  busLoading = true;
+  try {
+  const typeFilter = document.getElementById('bus-filter-type').value;
+  const sourceFilter = document.getElementById('bus-filter-source').value;
+  const topicFilter = document.getElementById('bus-filter-topic').value;
+  const searchQuery = document.getElementById('bus-filter-search').value.trim();
+
+  let url = '/api/dashboard/events?limit=200';
+  if (busStreamOffset !== null && !searchQuery) url += `&since_offset=${busStreamOffset}`;
+  if (typeFilter) url += `&type=${encodeURIComponent(typeFilter)}`;
+  if (sourceFilter) url += `&source=${encodeURIComponent(sourceFilter)}`;
+  if (topicFilter) url += `&topic=${encodeURIComponent(topicFilter)}`;
+  if (searchQuery) url += `&search=${encodeURIComponent(searchQuery)}`;
+
+  const data = await api(url);
+  if (!data) return;
+
+  const body = document.getElementById('bus-events-body');
+  const events = data.events || [];
+
+  if (busStreamOffset === null) {
+    // First load: replace everything
+    body.innerHTML = events.length ? events.map(renderBusRow).join('') : '<tr><td colspan="6"><div class="state-message">No events</div></td></tr>';
+  } else if (events.length > 0) {
+    // Subsequent loads: prepend new events
+    const newHtml = events.map(renderBusRow).join('');
+    body.insertAdjacentHTML('afterbegin', newHtml);
+    // Trim to max 200 rows (each event = 2 trs: data + payload)
+    const maxTrs = 200 * 2;
+    while (body.children.length > maxTrs) {
+      body.removeChild(body.lastElementChild);
+    }
+  }
+
+  document.getElementById('bus-total-info').textContent = `Total: ${formatNum(data.total_count)} events`;
+  const showingCount = Math.min(Math.floor(body.children.length / 2), 200);
+  document.getElementById('bus-showing-info').textContent = `Showing: ${showingCount} | ${busPaused ? 'Paused' : 'Live'}`;
+  busStreamOffset = data.max_offset;
+  } finally { busLoading = false; }
+}
+
+function toggleBusPause() {
+  busPaused = !busPaused;
+  document.getElementById('bus-pause-btn').textContent = busPaused ? 'Resume' : 'Pause';
+  document.getElementById('bus-pause-btn').classList.toggle('active', busPaused);
+  document.getElementById('bus-live-text').textContent = busPaused ? 'Paused' : 'Live - 3s';
+}
+
+let busSearchTimer = null;
+function debounceBusSearch() {
+  clearTimeout(busSearchTimer);
+  busSearchTimer = setTimeout(() => { busStreamOffset = null; loadBus(); }, 300);
+}
+
+// ─────────────────────────────────────────────
+// Sessions Page
+// ─────────────────────────────────────────────
+async function loadSessions() {
+  const data = await api('/api/dashboard/sessions');
+  if (!data) return;
+
+  // Stats
+  const statsEl = document.getElementById('session-stats');
+  const bt = data.by_tier || {};
+  const cards = [
+    { value: data.total, label: 'TOTAL', accent: 'var(--accent-blue)' },
+    { value: (data.sessions || []).filter(s => s.age_seconds !== null && s.age_seconds < 3600).length, label: 'ACTIVE (1H)', accent: 'var(--accent-green)' },
+    { value: bt.admin || 0, label: 'ADMIN', accent: 'var(--tier-admin)' },
+    { value: (bt.partner || 0) + (bt.wife || 0), label: 'PARTNER', accent: 'var(--tier-partner)' },
+    { value: bt.family || 0, label: 'FAMILY', accent: 'var(--tier-family)' },
+    { value: bt.favorite || 0, label: 'FAVORITE', accent: 'var(--tier-favorite)' },
+  ];
+
+  renderStatCards('session-stats', cards);
+
+  // Table
+  const sessions = data.sessions || [];
+  document.getElementById('sessions-body').innerHTML = sessions.length ? sessions.map(s => `
+    <tr>
+      <td data-label="">${statusDot(s.age_seconds, s.type)}</td>
+      <td data-label="Contact" style="font-family:var(--font-sans)">${escapeHtml(s.contact_name)}</td>
+      <td data-label="Tier">${tierBadge(s.tier)}</td>
+      <td data-label="Source">${sourceBadge(s.source)}</td>
+      <td data-label="Type" style="color:var(--text-secondary)">${escapeHtml(s.type)}</td>
+      <td data-label="Last Active" data-age-iso="${escapeHtml(s.last_message_time)}" style="color:var(--text-tertiary)">${formatAge(s.age_seconds)}</td>
+      <td data-label="Model" style="color:var(--text-secondary)">${escapeHtml(s.model || '-')}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="7"><div class="state-message">No sessions</div></td></tr>';
+}
+
+// ─────────────────────────────────────────────
+// SDK Events Page
+// ─────────────────────────────────────────────
+let sdkFiltersLoaded = false;
+
+async function loadSdkStats() {
+  const data = await api('/api/dashboard/sdk/stats');
+  if (!data) return;
+
+  // Tool stats table
+  const byTool = data.by_tool || [];
+  document.getElementById('sdk-stats-body').innerHTML = byTool.length ? byTool.map(t => `
+    <tr>
+      <td data-label="Tool" style="color:${toolColor(t.tool)}">${escapeHtml(t.tool)}</td>
+      <td data-label="Count">${formatNum(t.count)}</td>
+      <td data-label="Avg ms">${t.avg_ms != null ? t.avg_ms.toFixed(0) : '-'}</td>
+      <td data-label="Errors" style="color:${(t.error_rate || 0) > 0.05 ? 'var(--accent-red)' : 'var(--text-secondary)'}">${t.error_rate != null ? (t.error_rate * 100).toFixed(1) + '%' : '-'}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="4"><div class="state-message">No data</div></td></tr>';
+
+  // Donut chart
+  if (byTool.length) {
+    const top8 = byTool.slice(0, 8);
+    const labels = top8.map(t => t.tool);
+    const values = top8.map(t => t.count);
+    const colors = top8.map(t => toolColor(t.tool));
+    renderDonutChart('chart-sdk-donut', labels, values, colors);
+  }
+
+  // Populate filters
+  if (!sdkFiltersLoaded) {
+    const toolSelect = document.getElementById('sdk-filter-tool');
+    byTool.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.tool; opt.textContent = t.tool;
+      toolSelect.appendChild(opt);
+    });
+
+    const sessSelect = document.getElementById('sdk-filter-session');
+    (data.by_session || []).slice(0, 30).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.session; opt.textContent = s.session;
+      sessSelect.appendChild(opt);
+    });
+    sdkFiltersLoaded = true;
+  }
+}
+
+function renderSdkRow(e) {
+  return `<tr class="event-row" style="${e.is_error ? 'background:rgba(239,68,68,0.05)' : ''}">
+      <td data-label="Time" style="font-size:0.75rem;color:var(--text-tertiary)" data-age-ts="${e.timestamp}">${formatTs(e.timestamp)}</td>
+      <td data-label="Tool"><span style="color:${toolColor(e.tool_name)};font-weight:500">${escapeHtml(e.tool_name || e.event_type)}</span>${e.is_error ? ' <span style="color:var(--accent-red);font-size:0.625rem">ERR</span>' : ''}</td>
+      <td data-label="Session" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;color:var(--text-secondary);font-size:0.75rem">${escapeHtml(e.session_name || '-')}</td>
+      <td data-label="Duration" style="color:${e.duration_ms > 5000 ? 'var(--accent-amber)' : 'var(--text-secondary)'}">${e.duration_ms != null ? e.duration_ms.toFixed(0) + 'ms' : '-'}</td>
+      <td data-label="Payload" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;color:var(--text-tertiary);font-size:0.75rem">${escapeHtml((e.payload_preview || '').substring(0, 80))}</td>
+    </tr>`;
+}
+
+async function loadSdk() {
+  if (sdkLoading) return;
+  sdkLoading = true;
+  try {
+  const toolFilter = document.getElementById('sdk-filter-tool').value;
+  const sessionFilter = document.getElementById('sdk-filter-session').value;
+  const errorsOnly = document.getElementById('sdk-filter-errors').checked;
+  const searchQuery = document.getElementById('sdk-filter-search').value.trim();
+
+  let url = '/api/dashboard/sdk?limit=200';
+  if (sdkStreamId !== null && !searchQuery) url += `&since_id=${sdkStreamId}`;
+  if (toolFilter) url += `&tool_name=${encodeURIComponent(toolFilter)}`;
+  if (sessionFilter) url += `&session_name=${encodeURIComponent(sessionFilter)}`;
+  if (errorsOnly) url += '&is_error=1';
+  if (searchQuery) url += `&search=${encodeURIComponent(searchQuery)}`;
+
+  const data = await api(url);
+  if (!data) return;
+
+  const body = document.getElementById('sdk-events-body');
+  const sdkEvents = data.events || [];
+
+  if (sdkStreamId === null) {
+    // First load: replace everything
+    body.innerHTML = sdkEvents.length ? sdkEvents.map(renderSdkRow).join('') : '<tr><td colspan="5"><div class="state-message">No SDK events</div></td></tr>';
+  } else if (sdkEvents.length > 0) {
+    // Subsequent loads: prepend new events
+    const newHtml = sdkEvents.map(renderSdkRow).join('');
+    body.insertAdjacentHTML('afterbegin', newHtml);
+    // Trim to max 200 rows
+    while (body.children.length > 200) {
+      body.removeChild(body.lastElementChild);
+    }
+  }
+
+  sdkStreamId = data.max_id;
+  } finally { sdkLoading = false; }
+}
+
+function toggleSdkPause() {
+  sdkPaused = !sdkPaused;
+  document.getElementById('sdk-pause-btn').textContent = sdkPaused ? 'Resume' : 'Pause';
+  document.getElementById('sdk-pause-btn').classList.toggle('active', sdkPaused);
+}
+
+let sdkSearchTimer = null;
+function debounceSdkSearch() {
+  clearTimeout(sdkSearchTimer);
+  sdkSearchTimer = setTimeout(() => { sdkStreamId = null; loadSdk(); }, 300);
+}
+
+function togglePanelCollapse(panelId) {
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  const bodies = panel.querySelectorAll('.panel-body, .chart-container, .table-scroll-x');
+  const btn = panel.querySelector('.panel-collapse-btn');
+  const collapsed = bodies[0]?.classList.contains('panel-body-collapsed');
+  bodies.forEach(b => b.classList.toggle('panel-body-collapsed', !collapsed));
+  panel.classList.toggle('panel-collapsed', !collapsed);
+  if (btn) btn.textContent = collapsed ? '▼' : '▶';
+}
+
+// ─────────────────────────────────────────────
+// Performance Page
+// ─────────────────────────────────────────────
+function setPerfHours(h, el) {
+  perfHours = h;
+  document.querySelectorAll('.time-range-btns .btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+  loadPerf();
+}
+
+async function loadPerf() {
+  const data = await api(`/api/dashboard/perf?hours=${perfHours}`);
+  if (!data) return;
+
+  // Metric selector
+  const sel = document.getElementById('perf-metric-select');
+  const currentVal = sel.value;
+  if (data.available_metrics && data.available_metrics.length && !sel.options.length) {
+    data.available_metrics.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m; opt.textContent = m;
+      sel.appendChild(opt);
+    });
+    if (data.available_metrics.includes('poll_cycle_ms')) sel.value = 'poll_cycle_ms';
+  }
+
+  // Stat cards for key metrics
+  const keyMetrics = ['poll_cycle_ms', 'inject_ms', 'request_ms', 'poll_gap_ms'];
+  const labels = ['Poll Cycle p50', 'Inject p50', 'API p50', 'Poll Gap p50'];
+  const accents = ['var(--accent-blue)', 'var(--accent-purple)', 'var(--accent-green)', 'var(--accent-cyan)'];
+
+  const cardData = keyMetrics.map((m, i) => {
+    const md = data.metrics ? data.metrics[m] : null;
+    return {
+      value: md && md.p50 != null ? md.p50.toFixed(1) + 'ms' : '-',
+      label: labels[i],
+      accent: accents[i],
+      sublabel: md && md.p95 != null ? `p95: ${md.p95.toFixed(1)}ms | p99: ${(md.p99 || 0).toFixed(1)}ms` : '',
+    };
+  });
+  renderStatCards('perf-stats', cardData);
+
+  // Main timeseries chart
+  const selectedMetric = sel.value || (data.available_metrics && data.available_metrics[0]) || '';
+  if (selectedMetric && data.timeseries) {
+    const filtered = data.timeseries.filter(t => t.metric === selectedMetric);
+    const tsLabels = filtered.map(t => {
+      const d = new Date(t.ts);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    });
+    const avgData = filtered.map(t => t.avg);
+    const p95Data = filtered.map(t => t.p95);
+
+    renderLineChart('chart-perf-main', tsLabels, [
+      { label: 'avg', data: avgData, color: '#4a9eff' },
+      { label: 'p95', data: p95Data, color: '#f59e0b' },
+    ]);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Skills Page
+// ─────────────────────────────────────────────
+async function loadSkills() {
+  const data = await api('/api/dashboard/skills');
+  if (!data) return;
+  allSkills = data.skills || [];
+  renderSkills(allSkills);
+}
+
+function renderSkills(skills) {
+  document.getElementById('skills-grid').innerHTML = skills.length ? skills.map(s => `
+    <div class="skill-card">
+      <div class="skill-name">${escapeHtml(s.name)}</div>
+      <div class="skill-desc">${escapeHtml(s.description || 'No description')}</div>
+      <div class="skill-meta">${s.script_count} script${s.script_count !== 1 ? 's' : ''} | ${s.file_count} files</div>
+    </div>
+  `).join('') : '<div class="state-message">No skills found</div>';
+}
+
+let _skillFilterTimer = null;
+function filterSkills() {
+  clearTimeout(_skillFilterTimer);
+  _skillFilterTimer = setTimeout(() => {
+    const q = document.getElementById('skills-search').value.toLowerCase();
+    const filtered = allSkills.filter(s => s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q));
+    renderSkills(filtered);
+  }, 150);
+}
+
+// ─────────────────────────────────────────────
+// Tasks Page
+// ─────────────────────────────────────────────
+async function loadTasks() {
+  const data = await api('/api/dashboard/tasks');
+  if (!data) return;
+
+  const reminders = data.reminders || [];
+  document.getElementById('tasks-body').innerHTML = reminders.length ? reminders.map(r => `
+    <tr>
+      <td data-label="Title" style="font-family:var(--font-sans);max-width:250px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(r.title)}</td>
+      <td data-label="Schedule" style="font-size:0.75rem;font-family:var(--font-mono)">${escapeHtml(r.schedule)}${r.timezone ? ` <span style="color:var(--text-tertiary);font-size:0.625rem">${escapeHtml(r.timezone)}</span>` : ''}</td>
+      <td data-label="Next Fire" style="font-size:0.75rem;color:var(--text-secondary)">${formatIso(r.next_fire)}</td>
+      <td data-label="Last Fired" style="font-size:0.75rem;color:var(--text-tertiary)">${formatIso(r.last_fired)}</td>
+      <td data-label="Fired">${r.fired_count}</td>
+      <td data-label="Status"><span class="badge badge-${escapeHtml(r.status)}">${escapeHtml(r.status)}</span>${r.last_error ? ` <span style="color:var(--accent-red);font-size:0.625rem" title="${escapeHtml(r.last_error)}">ERR</span>` : ''}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="6"><div class="state-message">No tasks</div></td></tr>';
+
+  const taskEvents = data.recent_task_events || [];
+  document.getElementById('task-events-body').innerHTML = taskEvents.length ? taskEvents.map(e => `
+    <tr class="event-row">
+      <td data-label="Time" style="font-size:0.75rem;color:var(--text-tertiary)" data-age-ts="${e.timestamp}">${formatTs(e.timestamp)}</td>
+      <td data-label="Type"><span class="badge badge-type" style="font-size:0.625rem">${escapeHtml(e.type)}</span></td>
+      <td data-label="Task" style="color:var(--text-secondary)">${escapeHtml(e.title || e.task_id || '-')}</td>
+      <td data-label="Key" style="color:var(--text-tertiary);font-size:0.75rem">${escapeHtml(e.key || '-')}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="4"><div class="state-message">No task events</div></td></tr>';
+}
+
+// ─────────────────────────────────────────────
+// Facts Page
+// ─────────────────────────────────────────────
+async function loadFacts() {
+  const data = await api('/api/dashboard/facts');
+  if (!data) return;
+
+  const facts = data.facts || [];
+  document.getElementById('facts-body').innerHTML = facts.length ? facts.map(f => `
+    <tr>
+      <td data-label="Contact" style="font-family:var(--font-sans)">${escapeHtml(f.contact)}</td>
+      <td data-label="Type"><span class="badge badge-type" style="font-size:0.625rem">${escapeHtml(f.fact_type)}</span></td>
+      <td data-label="Summary" style="max-width:300px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f.details || '')}">${escapeHtml(f.summary)}</td>
+      <td data-label="Confidence" style="color:var(--text-secondary)">${f.confidence != null && !isNaN(Number(f.confidence)) ? (Number(f.confidence) * 100).toFixed(0) + '%' : escapeHtml(String(f.confidence ?? '-'))}</td>
+      <td data-label="Source" style="font-size:0.75rem;color:var(--text-tertiary)">${escapeHtml(f.source || '-')}</td>
+      <td data-label="Created" style="font-size:0.75rem;color:var(--text-tertiary)">${formatIso(f.created_at)}</td>
+      <td data-label="Status"><span class="badge ${f.active ? 'badge-active' : 'badge-inactive'}">${f.active ? 'active' : 'inactive'}</span></td>
+    </tr>
+  `).join('') : '<tr><td colspan="7"><div class="state-message">No facts</div></td></tr>';
+}
+
+// ─────────────────────────────────────────────
+// Logs Page
+// ─────────────────────────────────────────────
+async function loadLogFiles() {
+  const data = await api('/api/dashboard/logs?file=manager.log&lines=1');
+  if (!data) return;
+  const sel = document.getElementById('logs-file-select');
+  if (sel.options.length <= 1) {
+    sel.innerHTML = '';
+    (data.available_files || []).forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f; opt.textContent = f;
+      sel.appendChild(opt);
+    });
+    sel.value = 'manager.log';
+  }
+}
+
+function logLineClass(line) {
+  if (line.includes('| ERROR |') || line.includes('ERROR')) return 'log-line log-line-error';
+  if (line.includes('| WARN |') || line.includes('WARNING')) return 'log-line log-line-warn';
+  if (line.includes('| INFO |')) return 'log-line log-line-info';
+  if (line.includes('| DEBUG |')) return 'log-line log-line-debug';
+  return 'log-line';
+}
+
+async function loadLogs() {
+  if (logsLoading) return;
+  logsLoading = true;
+  try {
+  const file = document.getElementById('logs-file-select').value;
+  if (!file) { logsLoading = false; return; }
+
+  const viewer = document.getElementById('log-viewer');
+  const isInitial = logTotalLines === 0;
+
+  if (isInitial) {
+    // First load: get last 200 lines
+    const data = await api(`/api/dashboard/logs?file=${encodeURIComponent(file)}&lines=200`);
+    if (!data || !Array.isArray(data.lines)) return;
+    if (data.lines.length) {
+      viewer.innerHTML = data.lines.map(l => `<div class="${logLineClass(l)}">${escapeHtml(l)}</div>`).join('');
+    } else {
+      viewer.innerHTML = '<div class="state-message">No log lines</div>';
+    }
+    logTotalLines = data.total_lines || 0;
+    viewer.scrollTop = viewer.scrollHeight;
+  } else {
+    // Subsequent loads: only fetch new lines since last known total
+    const data = await api(`/api/dashboard/logs?file=${encodeURIComponent(file)}&lines=200&since_line=${logTotalLines}`);
+    if (!data || !Array.isArray(data.lines)) return;
+    if ((data.total_lines || 0) > logTotalLines && data.lines.length > 0) {
+      // Calculate how many new lines appeared
+      const newCount = data.total_lines - logTotalLines;
+      const newLines = data.lines.slice(-newCount);
+      if (newLines.length > 0) {
+        const wasScrolledToBottom = viewer.scrollTop >= viewer.scrollHeight - viewer.clientHeight - 20;
+        newLines.forEach(l => {
+          const div = document.createElement('div');
+          div.className = logLineClass(l);
+          div.textContent = l;
+          viewer.appendChild(div);
+        });
+        // Trim to max 500 lines
+        while (viewer.children.length > 500) {
+          viewer.removeChild(viewer.firstElementChild);
+        }
+        if (wasScrolledToBottom) viewer.scrollTop = viewer.scrollHeight;
+      }
+    }
+    logTotalLines = data.total_lines;
+  }
+  } finally { logsLoading = false; }
+}
+
+function switchLogFile() {
+  logTotalLines = 0;
+  loadLogs();
+}
+
+function toggleLogsPause() {
+  logsPaused = !logsPaused;
+  document.getElementById('logs-pause-btn').textContent = logsPaused ? 'Resume' : 'Pause';
+  document.getElementById('logs-pause-btn').classList.toggle('active', logsPaused);
+}
+
+// ─────────────────────────────────────────────
+// Chart Helpers
+// ─────────────────────────────────────────────
+const CHART_TOOLTIP = {
+  backgroundColor: '#1e1e32', titleColor: '#e8e8f0', bodyColor: '#8888a0',
+  borderColor: '#ffffff15', borderWidth: 1, padding: 10,
+  bodyFont: { family: 'Fira Code', size: 11 },
+};
+const CHART_TOOLTIP_SORTED = {
+  ...CHART_TOOLTIP,
+  itemSort: (a, b) => b.raw - a.raw,
+  filter: (item) => item.raw > 0,
+};
+const CHART_GRID = { color: '#ffffff08' };
+const CHART_BORDER = { color: '#ffffff08' };
+
+function renderLineChart(canvasId, labels, datasets) {
+  if (typeof Chart === 'undefined') return;
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+
+  if (chartInstances[canvasId]) {
+    // Update existing chart data without destroying (avoids flash)
+    const chart = chartInstances[canvasId];
+    chart.data.labels = labels;
+    datasets.forEach((ds, i) => {
+      if (chart.data.datasets[i]) {
+        chart.data.datasets[i].data = ds.data;
+      }
+    });
+    chart.update('none');
+    return;
+  }
+
+  chartInstances[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: datasets.map(ds => ({
+        label: ds.label,
+        data: ds.data,
+        borderColor: ds.color,
+        backgroundColor: ds.color + '15',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderWidth: 2,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: datasets.length > 1, labels: { color: '#8888a0', font: { size: 11, family: 'Fira Sans' } } },
+        tooltip: CHART_TOOLTIP,
+      },
+      scales: {
+        x: { ticks: { color: '#555570', font: { size: 10 }, maxTicksLimit: 12 }, grid: CHART_GRID, border: CHART_BORDER },
+        y: { ticks: { color: '#555570', font: { size: 10 } }, grid: CHART_GRID, border: CHART_BORDER, beginAtZero: true },
+      },
+    },
+  });
+}
+
+function renderBarChart(canvasId, labels, data, colors) {
+  if (typeof Chart === 'undefined') return;
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+
+  if (chartInstances[canvasId]) {
+    const chart = chartInstances[canvasId];
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data;
+    chart.data.datasets[0].backgroundColor = colors.map(c => c + '40');
+    chart.data.datasets[0].borderColor = colors;
+    chart.update('none');
+    return;
+  }
+
+  chartInstances[canvasId] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: colors.map(c => c + '40'),
+        borderColor: colors,
+        borderWidth: 1,
+        borderRadius: 0,
+      }],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: CHART_TOOLTIP,
+      },
+      scales: {
+        x: { ticks: { color: '#555570', font: { size: 10 } }, grid: CHART_GRID, border: CHART_BORDER },
+        y: { ticks: { color: '#e8e8f0', font: { size: 11, family: 'Fira Code' } }, grid: { display: false }, border: CHART_BORDER },
+      },
+    },
+  });
+}
+
+function renderStackedAreaChart(canvasId, labels, datasets) {
+  if (typeof Chart === 'undefined') return;
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+
+  // Build/update custom scrollable legend (placed outside chart-container, inside panel)
+  const legendId = canvasId + '-legend';
+  let legendEl = document.getElementById(legendId);
+  if (!legendEl) {
+    legendEl = document.createElement('div');
+    legendEl.id = legendId;
+    legendEl.className = 'chart-legend';
+    const chartContainer = ctx.closest('.chart-container');
+    chartContainer.parentElement.insertBefore(legendEl, chartContainer.nextSibling);
+  }
+  legendEl.innerHTML = datasets.map(ds =>
+    `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:0.6875rem;color:#8888a0;cursor:pointer" data-chart="${canvasId}" data-idx="${datasets.indexOf(ds)}" onclick="toggleChartDataset(this)">` +
+    `<span style="width:8px;height:8px;border-radius:2px;background:${ds.color};flex-shrink:0"></span>${escapeHtml(ds.label)}</span>`
+  ).join('');
+
+  if (chartInstances[canvasId]) {
+    const chart = chartInstances[canvasId];
+    chart.data.labels = labels;
+    datasets.forEach((ds, i) => {
+      if (chart.data.datasets[i]) {
+        chart.data.datasets[i].data = ds.data;
+      }
+    });
+    chart.update('none');
+    return;
+  }
+
+  chartInstances[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: datasets.map(ds => ({
+        label: ds.label,
+        data: ds.data,
+        backgroundColor: ds.color + '40',
+        borderColor: ds.color,
+        borderWidth: 1.5,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 3,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: CHART_TOOLTIP_SORTED,
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#555570', font: { size: 10 }, maxTicksLimit: 12 }, grid: CHART_GRID, border: CHART_BORDER },
+        y: { stacked: true, ticks: { color: '#555570', font: { size: 10 } }, grid: CHART_GRID, border: CHART_BORDER, beginAtZero: true },
+      },
+    },
+  });
+}
+
+function toggleChartDataset(el) {
+  const chartId = el.dataset.chart;
+  const idx = parseInt(el.dataset.idx);
+  const chart = chartInstances[chartId];
+  if (!chart) return;
+  const meta = chart.getDatasetMeta(idx);
+  meta.hidden = !meta.hidden;
+  el.style.opacity = meta.hidden ? '0.3' : '1';
+  chart.update('none');
+}
+
+function renderDonutChart(canvasId, labels, data, colors) {
+  if (typeof Chart === 'undefined') return;
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+
+  if (chartInstances[canvasId]) {
+    const chart = chartInstances[canvasId];
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data;
+    chart.data.datasets[0].backgroundColor = colors.map(c => c + '80');
+    chart.data.datasets[0].borderColor = colors;
+    chart.update('none');
+    return;
+  }
+
+  chartInstances[canvasId] = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: colors.map(c => c + '80'),
+        borderColor: colors,
+        borderWidth: 2,
+        hoverOffset: 8,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '60%',
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: { color: '#8888a0', font: { size: 11, family: 'Fira Sans' }, padding: 12, usePointStyle: true },
+        },
+        tooltip: CHART_TOOLTIP,
+      },
+    },
+  });
+}
+
+// ─────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────
+(function init() {
+  // Inject hamburger into each page-header for inline layout on mobile
+  document.querySelectorAll('.page-header').forEach(ph => {
+    const btn = document.createElement('button');
+    btn.className = 'nav-toggle';
+    btn.innerHTML = '&#9776;';
+    btn.onclick = toggleNav;
+    ph.insertBefore(btn, ph.firstChild);
+  });
+
+  // Route from hash
+  const hash = location.hash.replace('#', '') || 'overview';
+  navigate(hash);
+  updateClock();
+
+  // Listen for hash changes
+  window.addEventListener('hashchange', () => {
+    const h = location.hash.replace('#', '') || 'overview';
+    if (h !== currentPage) navigate(h);
+  });
+
+  // Also listen for filter changes on bus/sdk (reset streaming cursor on filter change)
+  ['bus-filter-type', 'bus-filter-source', 'bus-filter-topic'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', () => { busStreamOffset = null; loadBus(); });
+  });
+  ['sdk-filter-tool', 'sdk-filter-session', 'sdk-filter-errors'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => { sdkStreamId = null; loadSdk(); });
+  });
+
+  document.getElementById('perf-metric-select')?.addEventListener('change', loadPerf);
+})();
+</script>
+</body>
+</html>

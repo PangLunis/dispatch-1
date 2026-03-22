@@ -23,19 +23,19 @@ SEND_SMS = Path.home() / ".claude/skills/sms-assistant/scripts/send-sms"
 SEND_SIGNAL = Path.home() / ".claude/skills/signal/scripts/send-signal"
 SEND_SIGNAL_GROUP = Path.home() / ".claude/skills/signal/scripts/send-signal-group"
 SEND_DISCORD = Path.home() / ".claude/skills/discord/scripts/send-discord"
-REPLY_SVEN_APP = Path.home() / ".claude/skills/sven-app/scripts/reply-sven"
-REPLY_DISPATCH_API = Path.home() / ".claude/skills/sven-app/scripts/reply-dispatch-api"
+REPLY_APP = Path.home() / ".claude/skills/dispatch-app/scripts/reply-app"
+REPLY_DISPATCH_API = Path.home() / ".claude/skills/dispatch-app/scripts/reply-dispatch-api"
 
 def is_group_chat_id(chat_id: str) -> bool:
     bare = chat_id
-    for prefix in ["signal:", "test:", "discord:", "dispatch-api:", "sven-app:"]:
+    for prefix in ["signal:", "test:", "discord:", "dispatch-api:", "dispatch-app:", "sven-app:"]:
         if chat_id.startswith(prefix):
             bare = chat_id[len(prefix):]
             break
     return not bare.startswith("+")
 
 def strip_registry_prefix(chat_id: str) -> str:
-    for prefix in ["signal:", "test:", "discord:", "dispatch-api:", "sven-app:"]:
+    for prefix in ["signal:", "test:", "discord:", "dispatch-api:", "dispatch-app:", "sven-app:"]:
         if chat_id.startswith(prefix):
             return chat_id[len(prefix):]
     return chat_id
@@ -107,8 +107,8 @@ def main():
             cmd.extend(["--image", args.image])
         if args.file:
             cmd.extend(["--file", args.file])
-    elif backend == "sven-app":
-        cmd = [str(REPLY_SVEN_APP), bare_chat_id]
+    elif backend in ("dispatch-app", "sven-app"):
+        cmd = [str(REPLY_APP), bare_chat_id]
         if args.message:
             cmd.append(args.message)
     elif backend == "dispatch-api":

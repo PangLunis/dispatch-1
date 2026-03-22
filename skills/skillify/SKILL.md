@@ -10,6 +10,26 @@ Analyze recent conversations to:
 2. **Suggest improvements to existing skills** based on user corrections, workarounds, and back-and-forth that indicates a skill's instructions are incomplete
 3. **Suggest skill merges** when two or more existing skills overlap significantly or would be better as a single unified skill
 
+## PII Policy
+
+**NEVER suggest putting PII (names, phone numbers, emails, IPs, hostnames, URLs with hostnames, account usernames) directly into SKILL.md files, CLAUDE.md, or any checked-in code.** All identity and infrastructure values MUST be stored in `~/dispatch/config.local.yaml` (which is gitignored) and accessed via:
+
+- In markdown/skill files: `!``identity dotpath`` ` dynamic prompts (resolved at load time by Claude Code)
+- In Python: `from assistant.config import get; get("dotpath")`
+- In shell: `~/dispatch/bin/identity dotpath`
+
+When proposing fixes or new skills, if the proposal would include any PII or infrastructure-specific values (IPs, hostnames, URLs, usernames, real names), instead:
+1. Add the value to `config.local.yaml` under an appropriate key
+2. Reference it via `identity` in the skill/doc
+3. Update `config.example.yaml` with a placeholder template
+
+Examples of values that MUST go through identity:
+- IP addresses, Tailscale hostnames, local network IPs
+- Account emails, usernames, phone numbers
+- Service URLs with hostnames (Plex, Caddy proxy, etc.)
+- Real names of contacts or the system owner
+- API keys, tokens (use keychain or secrets.env instead)
+
 ## When to Use
 
 - User says "skillify", "propose skills", "what should we automate"

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import subprocess
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -38,6 +39,7 @@ from assistant.bus_helpers import (
     produce_event, produce_session_event,
     session_injected_payload, health_check_payload,
     vision_payload,
+    compaction_user_waiting_payload,
 )
 
 log = logging.getLogger(__name__)
@@ -337,7 +339,7 @@ class SDKBackend:
         # Circuit breaker: track restart timestamps per session to prevent crash loops
         self._restart_timestamps: Dict[str, list] = {}  # chat_id -> list of restart datetimes
         self.CIRCUIT_BREAKER_MAX_RESTARTS = 3  # max restarts allowed in window
-        self.CIRCUIT_BREAKER_WINDOW_SECONDS = 300  # 5-minute window
+        self.CIRCUIT_BREAKER_WINDOW_SECONDS = 1200  # 20-minute window (must exceed stuck detection's 10min)
 
     def _read_restart_initiator(self) -> str | None:
         """Read the restart initiator chat_id from the graceful restart marker.
@@ -801,8 +803,15 @@ class SDKBackend:
         perf.timing("inject_ms", inject_ms, component="daemon", source=source, tier=tier)
         log.info(f"Injected message for {chat_id} via {source}")
         produce_session_event(self._producer, normalized, "session.injected",
-            session_injected_payload(normalized, "message", contact_name, tier),
+            session_injected_payload(normalized, "message", contact_name, tier,
+                                     has_attachments=bool(attachments)),
             source="inject")
+
+        # Conditional compaction notification: if session is compacting and user
+        # hasn't been notified yet, send a one-time "compacting, one sec…" SMS.
+        # The message was still injected above (SDK buffers during compaction).
+        if session.check_compacting() and not session.compaction_notified:
+            self._send_compaction_notice(session, normalized, source)
 
         # Spawn async Gemini vision analysis for image attachments
         if attachments:
@@ -820,6 +829,149 @@ class SDKBackend:
                     )
 
         return True
+
+    def _send_compaction_notice(self, session, normalized: str, source: str):
+        """Send a one-time 'compacting, one sec…' notice when user messages during compaction.
+
+        Sends SMS directly (fire-and-forget with 30s subprocess timeout).
+        Produces compaction.user_waiting bus event for observability.
+        """
+        import threading
+        from assistant.backends import get_backend
+        from assistant import config
+        from assistant.common import get_session_name
+
+        session_name = get_session_name(session.chat_id, source)
+        assistant_name = config.get("assistant.name", "Assistant")
+
+        # Mark as notified BEFORE sending (prevents duplicate sends on rapid messages)
+        session.compaction_notified = True
+        session.compaction_notified_at = time.monotonic()
+
+        # Produce bus event for observability
+        produce_event(self._producer, "system", "compaction.user_waiting",
+            compaction_user_waiting_payload(session_name, session.chat_id,
+                session.contact_name, source, session.session_type,
+                compaction_epoch=session.compaction_epoch),
+            source="compaction")
+
+        # Send SMS directly (fire-and-forget with timeout)
+        try:
+            backend = get_backend(source)
+            if session.session_type == "group":
+                send_tpl = backend.send_group_cmd
+            else:
+                send_tpl = backend.send_cmd
+            script_path = str(Path(send_tpl.split()[0]).expanduser())
+            bare_chat_id = session.chat_id.removeprefix(backend.registry_prefix) if backend.registry_prefix else session.chat_id
+            msg = f"[{assistant_name.upper()}] compacting, one sec\u2026"
+            proc = subprocess.Popen(
+                [script_path, bare_chat_id, msg],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            def _reap_with_timeout(p, sname):
+                try:
+                    p.wait(timeout=30)
+                    if p.returncode != 0:
+                        log.warning(f"COMPACTION_NOTICE | send failed | session={sname} rc={p.returncode}")
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    log.warning(f"COMPACTION_NOTICE | send timed out (30s) | session={sname}")
+
+            threading.Thread(target=_reap_with_timeout, args=(proc, session_name),
+                           daemon=True, name="reap-compact-notice").start()
+            log.info(f"COMPACTION_NOTICE | sent | session={session_name}")
+        except Exception as e:
+            log.error(f"COMPACTION_NOTICE | send error | session={session_name} | {e}")
+
+    def handle_compaction_completed(self, session_name: str, bus_duration_s: float = 0,
+                                     compaction_epoch: int | None = None):
+        """Handle a compaction.completed bus event from post-compact-hook.
+
+        If the user was notified during compaction and enough time has passed (>3s),
+        sends a 'done compacting' SMS. Otherwise stays silent.
+        Called by the manager's bus consumer.
+
+        Args:
+            compaction_epoch: If provided, guards against stale events from a previous
+                compaction being applied to a newer one.
+        """
+        import threading
+        from assistant import config
+
+        # Find the session by session_name
+        session = None
+        for s in list(self.sessions.values()):
+            from assistant.common import get_session_name
+            if get_session_name(s.chat_id, s.source) == session_name:
+                session = s
+                break
+
+        if session is None:
+            log.debug(f"COMPACTION_DONE | no session found for {session_name}")
+            return
+
+        # Epoch guard: skip stale completed events from a previous compaction
+        if compaction_epoch is not None and compaction_epoch != session.compaction_epoch:
+            log.info(f"COMPACTION_DONE | stale epoch | session={session_name} event_epoch={compaction_epoch} session_epoch={session.compaction_epoch}")
+            return
+
+        # Capture duration BEFORE clearing flags (compacting_since will be None after clear)
+        duration_s = bus_duration_s
+        if session.compacting_since:
+            duration_s = time.monotonic() - session.compacting_since
+
+        was_notified = session.compaction_notified
+        notified_at = session.compaction_notified_at
+
+        # Always clear compaction flags
+        session._clear_compaction_flags()
+
+        if not was_notified:
+            log.info(f"COMPACTION_DONE | silent | session={session_name} duration={duration_s:.0f}s (no user messages during compaction)")
+            return
+
+        # 3s debounce: if user was notified <3s ago, skip "done" message.
+        # Two rapid-fire messages feel spammy; one slightly delayed reply is better.
+        if notified_at and (time.monotonic() - notified_at) <= 3.0:
+            log.info(f"COMPACTION_DONE | skipped done msg | session={session_name} (notified <3s ago)")
+            return
+
+        # Send "done compacting" SMS — self-contained message that makes sense
+        # even if user didn't see the "compacting" notice (e.g., SMS failed)
+        assistant_name = config.get("assistant.name", "Assistant")
+        from assistant.backends import get_backend
+        try:
+            backend = get_backend(session.source)
+            if session.session_type == "group":
+                send_tpl = backend.send_group_cmd
+            else:
+                send_tpl = backend.send_cmd
+            script_path = str(Path(send_tpl.split()[0]).expanduser())
+            bare_chat_id = session.chat_id.removeprefix(backend.registry_prefix) if backend.registry_prefix else session.chat_id
+            msg = f"[{assistant_name.upper()}] back \u2014 had to reorganize my memory (took {duration_s:.0f}s)"
+            proc = subprocess.Popen(
+                [script_path, bare_chat_id, msg],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            def _reap_with_timeout(p, sname):
+                try:
+                    p.wait(timeout=30)
+                    if p.returncode != 0:
+                        log.warning(f"COMPACTION_DONE | send failed | session={sname} rc={p.returncode}")
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    log.warning(f"COMPACTION_DONE | send timed out (30s) | session={sname}")
+
+            threading.Thread(target=_reap_with_timeout, args=(proc, session_name),
+                           daemon=True, name="reap-compact-done").start()
+            log.info(f"COMPACTION_DONE | sent | session={session_name} duration={duration_s:.0f}s")
+        except Exception as e:
+            log.error(f"COMPACTION_DONE | send error | session={session_name} | {e}")
 
     async def inject_reaction(
         self,
@@ -876,7 +1028,7 @@ class SDKBackend:
             session: The SDK session to inject into
             normalized_chat_id: Internal chat ID (normalized, for logging)
             image_path: Path to the image file
-            source: Backend source ("imessage", "signal", "sven-app")
+            source: Backend source ("imessage", "signal", "dispatch-app")
             chat_id: Original chat identifier for context lookup
             message_timestamp: Timestamp of the image message for context anchoring
         """
@@ -1126,7 +1278,8 @@ Gemini analyzed the attached image:
         self.registry.update_last_message_time(chat_id)
         produce_session_event(self._producer, chat_id, "session.injected",
             session_injected_payload(chat_id, "group", sender_name, sender_tier,
-                                     group_name=display_name),
+                                     group_name=display_name,
+                                     has_attachments=bool(attachments)),
             source="inject")
 
         # Spawn async Gemini vision analysis for image attachments
@@ -2204,7 +2357,7 @@ All other system documentation applies normally (see ~/.claude/CLAUDE.md via sym
 """
 
         # Substitute {chat_id} placeholder with actual chat ID from transcript dir name
-        # e.g., for sven-app backend, transcript_dir = ~/transcripts/sven-app/{chat_id}
+        # e.g., for dispatch-app backend, transcript_dir = ~/transcripts/dispatch-app/{chat_id}
         actual_chat_id = str(transcript_dir.name)
         content = content.replace('"{chat_id}"', f'"{actual_chat_id}"')
 

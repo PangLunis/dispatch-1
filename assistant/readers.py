@@ -7,14 +7,14 @@ the conversation context when analyzing images sent via any backend.
 
 Architecture:
 - MessageReader is a Protocol (structural subtyping)
-- Each backend (iMessage, Signal, sven-app) has its own reader implementation
+- Each backend (iMessage, Signal, dispatch-app) has its own reader implementation
 - Readers are created lazily via get_reader() to avoid import-time failures
 - All readers use datetime as the universal timestamp type
 
 Timestamp handling:
 - iMessage: macOS absolute time (seconds since 2001-01-01) → datetime
 - Signal: Unix milliseconds → datetime
-- sven-app: SQLite DATETIME string → datetime
+- dispatch-app: SQLite DATETIME string → datetime
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Database paths
 MESSAGES_DB = Path.home() / "Library" / "Messages" / "chat.db"
 SIGNAL_DB = Path.home() / "Library/Application Support/signal-cli/messages.db"
-SVEN_MESSAGES_DB = Path.home() / "dispatch" / "state" / "sven-messages.db"
+DISPATCH_MESSAGES_DB = Path.home() / "dispatch" / "state" / "dispatch-messages.db"
 
 # macOS absolute time epoch (2001-01-01 00:00:00 UTC)
 MACOS_EPOCH = datetime(2001, 1, 1)
@@ -261,16 +261,16 @@ class SignalReader:
 
 
 class DispatchAppReader:
-    """Reads message context from sven-app messages database.
+    """Reads message context from dispatch-app messages database.
 
-    The database is stored at ~/dispatch/state/sven-messages.db
+    The database is stored at ~/dispatch/state/dispatch-messages.db
     and uses SQLite DATETIME strings for timestamps.
 
-    Note: sven-app is a single-user voice assistant, so there's no chat_id
+    Note: dispatch-app is a single-user voice assistant, so there's no chat_id
     filtering - all messages belong to the same conversation context.
     """
 
-    def __init__(self, db_path: Path = SVEN_MESSAGES_DB):
+    def __init__(self, db_path: Path = DISPATCH_MESSAGES_DB):
         self.db_path = db_path
 
     def get_context_around(
@@ -280,16 +280,18 @@ class DispatchAppReader:
         before: int = 10,
         after: int = 1,
     ) -> list[ContextMessage]:
-        """Get messages around a timestamp from sven-app database."""
+        """Get messages around a timestamp from dispatch-app database."""
         if not self.db_path.exists():
             return []
 
-        # sven-app uses ISO format datetime strings
+        # dispatch-app uses ISO format datetime strings
         anchor_str = anchor_timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
         conn = None
         try:
             conn = sqlite3.connect(str(self.db_path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
             cursor = conn.cursor()
 
             # Get messages before the anchor
@@ -325,9 +327,13 @@ class DispatchAppReader:
                     is_from_me = role == "assistant"
                     attachments = [image_path] if image_path else []
 
+                    # Use assistant name from config for sender
+                    from assistant import config
+                    assistant_name = config.get("assistant.name", "Assistant")
+
                     messages.append(ContextMessage(
                         text=content.strip(),
-                        sender="Sven" if is_from_me else "User",
+                        sender=assistant_name if is_from_me else "User",
                         is_from_me=is_from_me,
                         timestamp=ts,
                         attachments=attachments,
@@ -343,23 +349,31 @@ class DispatchAppReader:
                 conn.close()
 
 
+# Registry mapping backend names to reader classes.
+# Using a dict avoids hardcoded if/elif chains for each backend.
+_READER_REGISTRY: dict[str, type] = {
+    "imessage": IMessageReader,
+    "signal": SignalReader,
+    "dispatch-app": DispatchAppReader,
+    "dispatch-api": DispatchAppReader,  # shares same DB as dispatch-app
+    "sven-app": DispatchAppReader,  # DEPRECATED backward compat
+}
+
+
 def get_reader(source: str) -> MessageReader | None:
     """Get a MessageReader for the given backend source.
 
     Uses lazy initialization to avoid import-time database connection failures.
 
     Args:
-        source: Backend source name ("imessage", "signal", "sven-app")
+        source: Backend source name ("imessage", "signal", "dispatch-app", etc.)
 
     Returns:
         MessageReader instance or None if backend doesn't support image context
     """
-    if source == "imessage":
-        return IMessageReader()
-    elif source == "signal":
-        return SignalReader()
-    elif source == "sven-app":
-        return DispatchAppReader()
+    reader_cls = _READER_REGISTRY.get(source)
+    if reader_cls is not None:
+        return reader_cls()
     return None
 
 

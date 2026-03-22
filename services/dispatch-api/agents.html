@@ -1,0 +1,1948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Agents — Dispatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --surface-base: #09090b;
+  --surface-raised: #0f0f11;
+  --surface-overlay: #18181b;
+  --surface-input: #0c0c0e;
+
+  --text-primary: #e4e4e7;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #52525b;
+  --text-muted: #3f3f46;
+
+  --border-standard: rgba(255,255,255,0.06);
+  --border-soft: rgba(255,255,255,0.03);
+  --border-emphasis: rgba(255,255,255,0.12);
+
+  --accent: #2563eb;
+  --accent-muted: rgba(37,99,235,0.15);
+
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+
+  --msg-incoming: rgba(55,65,81,0.7);
+  --msg-outgoing: rgb(52,120,247);
+  --msg-assistant: rgba(55,65,81,0.7);
+  --msg-admin: rgba(245,158,11,0.25);
+
+  --tier-admin: #f59e0b;
+  --tier-partner: #ec4899;
+  --tier-family: #22c55e;
+  --tier-favorite: #3b82f6;
+  --tier-bots: #8b5cf6;
+
+  --font-mono: 'Fira Code', 'SF Mono', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', system-ui, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-size: 14px;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Layout ── */
+.app {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* ── Header ── */
+.header {
+  height: 40px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-standard);
+  background: var(--surface-raised);
+  gap: 12px;
+}
+
+.header-back {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-decoration: none;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  transition: color 0.15s;
+}
+.header-back:hover { color: var(--accent); }
+
+.header-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.header-spacer { flex: 1; }
+
+.btn-new-agent {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: none;
+  border: 1px solid var(--border-standard);
+  padding: 8px 14px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  transition: all 0.15s;
+  border-radius: 4px;
+  min-height: 36px;
+  touch-action: manipulation;
+}
+.btn-new-agent:hover {
+  color: var(--text-primary);
+  border-color: var(--border-emphasis);
+  background: var(--accent-muted);
+}
+
+/* ── Connection Banner ── */
+.connection-banner {
+  display: none;
+  height: 28px;
+  min-height: 28px;
+  background: rgba(239,68,68,0.12);
+  border-bottom: 1px solid rgba(239,68,68,0.2);
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--error);
+  letter-spacing: 0.5px;
+  animation: pulse-banner 2s ease-in-out infinite;
+}
+.connection-banner.visible { display: flex; }
+
+@keyframes pulse-banner {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 280px;
+  min-width: 280px;
+  background: var(--surface-raised);
+  border-right: 1px solid var(--border-standard);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.sidebar-search input {
+  width: 100%;
+  background: var(--surface-input);
+  border: 1px solid var(--border-standard);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+  border-radius: 6px;
+}
+.sidebar-search input::placeholder { color: var(--text-muted); }
+.sidebar-search input:focus { border-color: var(--border-emphasis); }
+
+/* ── Filters ── */
+.sidebar-filters {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  transition: all 0.12s;
+}
+.filter-btn:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-standard);
+}
+.filter-btn.active {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+  border-color: rgba(37,99,235,0.3);
+}
+
+.filter-sep {
+  width: 1px;
+  background: var(--border-emphasis);
+  margin: 2px 4px;
+  align-self: stretch;
+}
+
+/* ── Create Agent Form ── */
+.create-form {
+  display: none;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-standard);
+  background: var(--surface-overlay);
+}
+.create-form.visible { display: block; }
+
+.create-form input {
+  width: 100%;
+  background: var(--surface-input);
+  border: 1px solid var(--border-emphasis);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+  border-radius: 6px;
+}
+.create-form input::placeholder { color: var(--text-muted); }
+
+.create-form-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  letter-spacing: 0.3px;
+}
+
+.create-form-error {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--error);
+  margin-top: 4px;
+  display: none;
+}
+.create-form-error.visible { display: block; }
+
+/* ── Session List ── */
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.session-list::-webkit-scrollbar { width: 4px; }
+.session-list::-webkit-scrollbar-track { background: transparent; }
+.session-list::-webkit-scrollbar-thumb { background: var(--border-standard); }
+
+/* Skeleton loading */
+.skeleton-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.skeleton-line {
+  height: 10px;
+  background: var(--surface-overlay);
+  margin-bottom: 6px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+.skeleton-line:first-child { width: 60%; }
+.skeleton-line:nth-child(2) { width: 85%; height: 8px; }
+.skeleton-line:last-child { width: 30%; height: 8px; margin-bottom: 0; }
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
+/* Session Item */
+.session-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background 0.1s;
+  display: flex;
+  gap: 8px;
+}
+.session-item:hover { background: rgba(255,255,255,0.02); }
+.session-item.selected {
+  background: var(--accent-muted);
+  border-left-color: var(--accent);
+}
+
+.session-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+  position: relative;
+}
+.session-avatar-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--surface-raised);
+}
+
+.session-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.session-dot.active {
+  background: var(--success);
+  box-shadow: 0 0 4px rgba(34,197,94,0.4);
+  animation: dot-pulse 3s ease-in-out infinite;
+}
+.session-dot.idle {
+  background: var(--warning);
+  box-shadow: 0 0 4px rgba(245,158,11,0.3);
+}
+.session-dot.error {
+  background: var(--error);
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.session-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.session-name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.session-name {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.session-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.session-type-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: rgba(255,255,255,0.18);
+  letter-spacing: 0.3px;
+}
+
+.session-tier {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+
+.session-preview {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+}
+.session-item.selected .session-preview {
+  color: var(--text-primary);
+  opacity: 0.9;
+}
+
+/* ── Main Area ── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-base);
+  overflow: hidden;
+}
+
+/* ── Empty State ── */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.empty-state-text {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+.empty-state-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Conversation Header ── */
+.conv-header {
+  height: 48px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border-standard);
+  background: var(--surface-raised);
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+.conv-header-name {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-header-name.editable { cursor: pointer; }
+.conv-header-name.editable:hover { color: var(--accent); }
+
+.btn-edit-session {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  transition: color 0.15s;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.conv-header:hover .btn-edit-session { opacity: 1; }
+.btn-edit-session:hover { color: var(--accent); }
+
+.conv-header-name-input {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-emphasis);
+  padding: 2px 6px;
+  outline: none;
+  border-radius: 0;
+  display: none;
+  max-width: 300px;
+}
+
+.conv-header-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.conv-header-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.conv-header-spacer { flex: 1; }
+
+.conv-header-age {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+
+.btn-delete-session {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  transition: color 0.15s;
+  opacity: 0;
+}
+.conv-header:hover .btn-delete-session { opacity: 1; }
+.btn-delete-session:hover { color: var(--error); }
+
+/* ── Delete Confirmation Bar ── */
+.delete-bar {
+  display: none;
+  height: 40px;
+  min-height: 40px;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  background: var(--surface-overlay);
+  border-bottom: 1px solid rgba(239,68,68,0.15);
+}
+.delete-bar.visible { display: flex; }
+
+.delete-bar-text {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-delete-confirm {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #fff;
+  background: var(--error);
+  border: none;
+  padding: 4px 10px;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  border-radius: 4px;
+}
+.btn-delete-confirm:hover { background: #dc2626; }
+
+.btn-delete-cancel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: none;
+  border: 1px solid var(--border-standard);
+  padding: 4px 10px;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  border-radius: 4px;
+}
+.btn-delete-cancel:hover { color: var(--text-primary); }
+
+/* ── Session Ended Badge ── */
+.session-ended-bar {
+  display: none;
+  height: 28px;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid var(--border-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+}
+.session-ended-bar.visible { display: flex; }
+
+/* ── Messages Area ── */
+.messages-container {
+  flex: 1 1 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0;
+  background: rgba(255,255,255,0.008);
+  -webkit-overflow-scrolling: touch;
+  position: relative;
+}
+
+.messages-container::-webkit-scrollbar { width: 5px; }
+.messages-container::-webkit-scrollbar-track { background: transparent; }
+.messages-container::-webkit-scrollbar-thumb { background: var(--border-standard); }
+
+.messages-inner {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+  min-height: 100%;
+  justify-content: flex-end;
+}
+
+/* Scroll sentinel for infinite scroll up */
+.scroll-sentinel {
+  height: 1px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+/* Loading spinner */
+.messages-loading {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.messages-loading.visible { display: flex; }
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-standard);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Empty messages */
+.messages-empty {
+  display: none;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+.messages-empty.visible { display: flex; }
+
+/* ── Message Items ── */
+.msg-group {
+  padding: 0 16px;
+  margin-bottom: 2px;
+  display: flex;
+  flex-direction: column;
+}
+
+.msg-sender {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 8px 4px 3px;
+  letter-spacing: 0;
+  width: 100%;
+}
+
+.msg-item {
+  padding: 6px 12px;
+  margin: 2px 0;
+  border-radius: 16px;
+  max-width: 85%;
+}
+
+.msg-item.incoming {
+  background: var(--msg-incoming);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+.msg-item.outgoing {
+  background: var(--msg-outgoing);
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+.msg-item.assistant {
+  background: var(--msg-assistant);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+.msg-item.admin {
+  background: var(--msg-admin);
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+  border: 1px solid rgba(245,158,11,0.3);
+}
+
+.msg-text {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.msg-text a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.msg-text a:hover { text-decoration: underline; }
+
+.msg-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.2px;
+  display: none;
+  margin-top: 2px;
+}
+.msg-item:hover .msg-time { display: block; }
+.msg-item.outgoing .msg-time { text-align: right; }
+.msg-item.admin .msg-time { text-align: right; }
+
+/* Optimistic message (pending confirmation) */
+.msg-item.optimistic {
+  opacity: 0.5;
+}
+
+/* Thinking indicator */
+.thinking-indicator {
+  display: none;
+  padding: 6px 16px 6px 28px;
+}
+.thinking-indicator.visible { display: block; }
+
+.thinking-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+  animation: thinking-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* ── Input Area ── */
+.input-area {
+  border-top: 1px solid var(--border-standard);
+  background: var(--surface-raised);
+  padding: 8px 16px;
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+}
+
+.input-context {
+  display: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+  padding: 3px 10px;
+  letter-spacing: 0.2px;
+  line-height: 1.4;
+  background: rgba(245,158,11,0.04);
+  border-radius: 4px;
+  border-left: 1px solid rgba(245,158,11,0.3);
+  opacity: 0.8;
+}
+.input-context.visible { display: block; }
+
+.input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.input-textarea {
+  flex: 1;
+  background: var(--surface-input);
+  border: 1px solid var(--border-standard);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  padding: 8px 14px;
+  outline: none;
+  resize: none;
+  border-radius: 18px;
+  line-height: 1.4;
+  min-height: 36px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.input-textarea::placeholder { color: var(--text-muted); }
+.input-textarea:focus { border-color: var(--border-emphasis); }
+.input-textarea:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-send {
+  width: 32px;
+  height: 32px;
+  background: var(--text-muted);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  border-radius: 50%;
+}
+.btn-send.active {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(37,99,235,0.3);
+}
+.btn-send:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.btn-send svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── Utility ── */
+.hidden { display: none !important; }
+
+/* ── Back button (mobile only) ── */
+.btn-back {
+  display: none;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px 2px 0;
+  flex-shrink: 0;
+}
+
+/* ── Mobile / narrow viewport ── */
+@media (max-width: 700px) {
+  .sidebar {
+    width: 100%;
+    min-width: 100%;
+  }
+  .main {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: var(--surface-base);
+  }
+  .app.conv-open .sidebar { display: none; }
+  .app.conv-open .main {
+    display: flex !important;
+  }
+  .btn-back { display: block; }
+  .conv-header { padding: 0 12px; }
+  .msg-group { padding: 0 12px; }
+  .msg-item { max-width: 80%; }
+  .input-area { padding: 8px 10px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="header">
+      <a href="/" class="header-back">&larr; Dispatch</a>
+      <span class="header-title">Agents</span>
+      <span class="header-spacer"></span>
+      <button class="btn-new-agent" id="btnNewAgent" title="New agent (Ctrl+N)">+ New</button>
+    </div>
+
+    <div class="sidebar-search">
+      <input type="text" id="searchInput" placeholder="Search sessions..." spellcheck="false">
+    </div>
+
+    <div class="sidebar-filters">
+      <button class="filter-btn active" data-filter="type" data-value="all">All</button>
+      <button class="filter-btn" data-filter="type" data-value="contact">Contact</button>
+      <button class="filter-btn" data-filter="type" data-value="dispatch-api">Agent</button>
+      <div class="filter-sep"></div>
+      <button class="filter-btn active" data-filter="source" data-value="all">All</button>
+      <button class="filter-btn" data-filter="source" data-value="imessage">iMessage</button>
+      <button class="filter-btn" data-filter="source" data-value="signal">Signal</button>
+      <button class="filter-btn" data-filter="source" data-value="dispatch-api">Agent</button>
+    </div>
+
+    <div class="create-form" id="createForm">
+      <input type="text" id="createInput" placeholder="Agent name..." maxlength="50" spellcheck="false">
+      <div class="create-form-hint">Enter to create &middot; Esc to cancel</div>
+      <div class="create-form-error" id="createError"></div>
+    </div>
+
+    <div class="session-list" id="sessionList">
+      <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="connection-banner" id="connectionBanner">Connection lost &mdash; retrying...</div>
+
+    <!-- No session selected -->
+    <div class="empty-state" id="emptyState">
+      <div class="empty-state-text">Select a conversation</div>
+      <div class="empty-state-hint">Ctrl+N to create a new agent</div>
+    </div>
+
+    <!-- Conversation view (hidden until session selected) -->
+    <div id="convView" class="hidden" style="display:none;flex:1;flex-direction:column;min-height:0;">
+      <div class="conv-header" id="convHeader">
+        <button class="btn-back" id="btnBack">&larr;</button>
+        <span class="conv-header-name" id="convName"></span>
+        <button class="btn-edit-session" id="btnEdit" title="Rename session">&#9998;</button>
+        <input class="conv-header-name-input" id="convNameInput" type="text" maxlength="50" spellcheck="false">
+        <span class="conv-header-meta" id="convMeta"></span>
+        <span class="conv-header-spacer"></span>
+        <span class="conv-header-age" id="convAge"></span>
+        <button class="btn-delete-session" id="btnDelete" title="Delete session">&times;</button>
+      </div>
+
+      <div class="delete-bar" id="deleteBar">
+        <span class="delete-bar-text" id="deleteBarText"></span>
+        <button class="btn-delete-confirm" id="btnDeleteConfirm">Delete</button>
+        <button class="btn-delete-cancel" id="btnDeleteCancel">Cancel</button>
+      </div>
+
+      <div class="session-ended-bar" id="sessionEndedBar">Session ended</div>
+
+      <div class="messages-container" id="messagesContainer">
+        <div class="messages-inner" id="messagesInner">
+          <div class="scroll-sentinel" id="scrollSentinel"></div>
+        </div>
+      </div>
+
+      <div class="messages-loading" id="messagesLoading"><div class="spinner"></div></div>
+      <div class="messages-empty" id="messagesEmpty">No messages yet</div>
+
+      <div class="thinking-indicator" id="thinkingIndicator">
+        <span class="thinking-text">thinking...</span>
+      </div>
+
+      <div class="input-area" id="inputArea" style="display:none;">
+        <div class="input-context" id="inputContext"></div>
+        <div class="input-row">
+          <textarea class="input-textarea" id="inputTextarea" placeholder="Select a session" disabled rows="1"></textarea>
+          <button class="btn-send" id="btnSend" disabled>
+            <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+'use strict';
+
+// ── State ──
+let sessions = [];
+let filteredSessions = [];
+let selectedSessionId = null;
+let selectedSession = null;
+let messages = [];
+let latestTimestampMs = 0;
+let oldestTimestampMs = Infinity;
+let hasMore = true;
+let loadingMessages = false;
+let loadingOlder = false;
+let isThinking = false;
+let sessionsLoaded = false;
+let connectionOk = true;
+let sidebarKeyIndex = -1;
+
+// Filters
+let filterType = 'all';
+let filterSource = 'all';
+let searchQuery = '';
+
+// Polling intervals
+let sessionPollTimer = null;
+let messagePollTimer = null;
+const SESSION_POLL_MS = 10000;
+const MESSAGE_POLL_MS = 5000;
+
+// ── DOM refs ──
+const $sessionList = document.getElementById('sessionList');
+const $searchInput = document.getElementById('searchInput');
+const $createForm = document.getElementById('createForm');
+const $createInput = document.getElementById('createInput');
+const $createError = document.getElementById('createError');
+const $emptyState = document.getElementById('emptyState');
+const $convView = document.getElementById('convView');
+const $convName = document.getElementById('convName');
+const $convNameInput = document.getElementById('convNameInput');
+const $convMeta = document.getElementById('convMeta');
+const $convAge = document.getElementById('convAge');
+const $convHeader = document.getElementById('convHeader');
+const $btnEdit = document.getElementById('btnEdit');
+const $btnDelete = document.getElementById('btnDelete');
+const $deleteBar = document.getElementById('deleteBar');
+const $deleteBarText = document.getElementById('deleteBarText');
+const $btnDeleteConfirm = document.getElementById('btnDeleteConfirm');
+const $btnDeleteCancel = document.getElementById('btnDeleteCancel');
+const $sessionEndedBar = document.getElementById('sessionEndedBar');
+const $messagesContainer = document.getElementById('messagesContainer');
+const $messagesInner = document.getElementById('messagesInner');
+const $messagesLoading = document.getElementById('messagesLoading');
+const $messagesEmpty = document.getElementById('messagesEmpty');
+const $thinkingIndicator = document.getElementById('thinkingIndicator');
+const $inputArea = document.getElementById('inputArea');
+const $inputContext = document.getElementById('inputContext');
+const $inputTextarea = document.getElementById('inputTextarea');
+const $btnSend = document.getElementById('btnSend');
+const $btnNewAgent = document.getElementById('btnNewAgent');
+const $btnBack = document.getElementById('btnBack');
+const $app = document.querySelector('.app');
+const $connectionBanner = document.getElementById('connectionBanner');
+const $scrollSentinel = document.getElementById('scrollSentinel');
+
+// ── Utilities ──
+
+function relativeTime(ts) {
+  if (!ts) return '';
+  const now = Date.now();
+  const ms = typeof ts === 'number' ? ts : new Date(ts).getTime();
+  const diff = now - ms;
+  if (diff < 0) return 'just now';
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  const d = Math.floor(h / 24);
+  if (d === 1) return 'yesterday';
+  if (d < 30) return d + 'd ago';
+  const mo = Math.floor(d / 30);
+  return mo + 'mo ago';
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return '';
+  const d = new Date(typeof ts === 'number' ? ts : new Date(ts).getTime());
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  const hours = d.getHours();
+  const mins = d.getMinutes().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'pm' : 'am';
+  const h12 = hours % 12 || 12;
+  const timeStr = h12 + ':' + mins + ampm;
+  if (isToday) return timeStr;
+  if (isYesterday) return 'yesterday ' + timeStr;
+  const month = (d.getMonth() + 1) + '/' + d.getDate();
+  return month + ' ' + timeStr;
+}
+
+function tierColor(tier) {
+  const map = {admin:'var(--tier-admin)',partner:'var(--tier-partner)',family:'var(--tier-family)',favorite:'var(--tier-favorite)',bots:'var(--tier-bots)'};
+  return map[tier] || 'var(--text-tertiary)';
+}
+
+function getInitials(name, isHexId) {
+  if (isHexId) return '#';
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length-1][0]).toUpperCase();
+  return name.substring(0, 2).toUpperCase();
+}
+
+function senderColor(name) {
+  if (!name) return 'var(--text-secondary)';
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  const hue = Math.abs(hash) % 360;
+  return 'hsl(' + hue + ', 60%, 65%)';
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function linkify(text) {
+  if (!text) return '';
+  const escaped = escapeHtml(text);
+  return escaped.replace(/(https?:\/\/[^\s<>"')\]]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+}
+
+function statusClass(status) {
+  if (status === 'active') return 'active';
+  if (status === 'error') return 'error';
+  return 'idle';
+}
+
+function sourceLabel(source) {
+  const map = {imessage:'iMessage',signal:'Signal','dispatch-api':'Agent'};
+  return map[source] || source;
+}
+
+// ── API ──
+
+async function api(url, opts) {
+  try {
+    const resp = await fetch(url, opts);
+    if (!resp.ok) {
+      const body = await resp.text();
+      let msg;
+      try { msg = JSON.parse(body).detail || JSON.parse(body).error || body; } catch(e) { msg = body; }
+      throw new Error(msg);
+    }
+    setConnection(true);
+    return await resp.json();
+  } catch(e) {
+    if (e.message && !e.message.includes('HTTP')) {
+      // Could be network error
+      if (e instanceof TypeError) setConnection(false);
+    }
+    throw e;
+  }
+}
+
+function setConnection(ok) {
+  connectionOk = ok;
+  $connectionBanner.classList.toggle('visible', !ok);
+}
+
+// ── Sessions ──
+
+async function fetchSessions() {
+  try {
+    const data = await api('/api/agents/sessions');
+    sessions = data.sessions || [];
+    sessionsLoaded = true;
+    setConnection(true);
+    applyFilters();
+  } catch(e) {
+    if (!sessionsLoaded) {
+      // Show empty on first load failure
+      $sessionList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-tertiary);font-size:12px;">Failed to load sessions</div>';
+    }
+  }
+}
+
+function applyFilters() {
+  filteredSessions = sessions.filter(s => {
+    if (filterType !== 'all' && s.type !== filterType) return false;
+    if (filterSource !== 'all' && s.source !== filterSource) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const name = (s.name || '').toLowerCase();
+      const id = (s.id || '').toLowerCase();
+      if (!name.includes(q) && !id.includes(q)) return false;
+    }
+    return true;
+  });
+  renderSessionList();
+}
+
+function renderSessionList() {
+  if (!sessionsLoaded) return;
+  if (filteredSessions.length === 0) {
+    $sessionList.innerHTML = '<div style="padding:20px 12px;text-align:center;color:var(--text-tertiary);font-family:var(--font-sans);font-size:12px;">' +
+      (sessions.length === 0 ? 'No sessions' : 'No matching sessions') + '</div>';
+    return;
+  }
+
+  let html = '';
+  for (const s of filteredSessions) {
+    const sel = s.id === selectedSessionId ? ' selected' : '';
+    const dotCls = statusClass(s.status);
+    const time = relativeTime(s.last_message_time);
+    const preview = s.last_message ? escapeHtml(s.last_message.substring(0, 80)) : '';
+    const tColor = tierColor(s.tier);
+    const src = sourceLabel(s.source);
+
+    let displayName = s.name || s.id;
+    if (s.chat_type === 'group' && s.participants && s.participants.length > 0) {
+      const names = s.participants.filter(p => p && !p.includes('@') && !p.startsWith('+')).join(', ');
+      if (names) displayName = names;
+    }
+    const isHexId = /^[0-9a-f]{8,}$/i.test(displayName) || /^[0-9a-f-]{20,}$/i.test(displayName);
+    const nameStyle = isHexId ? ' style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary)"' : '';
+
+    // Generate initials and avatar color
+    const initials = getInitials(displayName, isHexId);
+    const avatarBg = senderColor(s.id || displayName);
+    const dotBg = dotCls === 'active' ? 'var(--success)' : (dotCls === 'error' ? 'var(--error)' : 'var(--warning)');
+
+    html += '<div class="session-item' + sel + '" data-id="' + escapeHtml(s.id) + '">' +
+      '<div class="session-avatar" style="background:' + avatarBg + '">' +
+        escapeHtml(initials) +
+        '<div class="session-avatar-dot" style="background:' + dotBg + '"></div>' +
+      '</div>' +
+      '<div class="session-info">' +
+        '<div class="session-name-row">' +
+          '<span class="session-name"' + nameStyle + '>' + escapeHtml(displayName) + '</span>' +
+          '<span class="session-time">' + time + '</span>' +
+        '</div>' +
+        '<div class="session-meta">' +
+          '<span class="session-type-label">' + src + '</span>' +
+          (s.tier && s.tier !== 'unknown' ? '<span class="session-tier" style="color:' + tColor + '">' + escapeHtml(s.tier) + '</span>' : '') +
+          (s.chat_type === 'group' ? '<span class="session-type-label">group</span>' : '') +
+        '</div>' +
+        (preview ? '<div class="session-preview">' + (s.last_message_is_from_me ? '<span style="color:var(--text-tertiary)">you: </span>' : '') + preview + '</div>' : '') +
+      '</div></div>';
+  }
+  $sessionList.innerHTML = html;
+
+  // Attach click handlers
+  $sessionList.querySelectorAll('.session-item').forEach(el => {
+    el.addEventListener('click', () => selectSession(el.dataset.id));
+  });
+}
+
+function selectSession(id) {
+  if (id === selectedSessionId) return;
+  selectedSessionId = id;
+  selectedSession = sessions.find(s => s.id === id) || null;
+  sidebarKeyIndex = filteredSessions.findIndex(s => s.id === id);
+
+  // Update sidebar selection
+  $sessionList.querySelectorAll('.session-item').forEach(el => {
+    el.classList.toggle('selected', el.dataset.id === id);
+  });
+
+  // Hide delete bar
+  $deleteBar.classList.remove('visible');
+
+  // Show conversation view
+  $emptyState.style.display = 'none';
+  $convView.classList.remove('hidden');
+  $convView.style.display = 'flex';
+
+  // Reset messages state
+  messages = [];
+  latestTimestampMs = 0;
+  oldestTimestampMs = Infinity;
+  hasMore = true;
+  loadingMessages = false;
+  loadingOlder = false;
+  isThinking = false;
+
+  updateConvHeader();
+  updateInputArea();
+
+  // Clear messages
+  const sentinel = $scrollSentinel;
+  $messagesInner.innerHTML = '';
+  $messagesInner.appendChild(sentinel);
+  $messagesEmpty.classList.remove('visible');
+  $thinkingIndicator.classList.remove('visible');
+
+  // Load messages
+  loadMessages();
+
+  // Reset message polling
+  clearInterval(messagePollTimer);
+  messagePollTimer = setInterval(pollMessages, MESSAGE_POLL_MS);
+
+  // Mobile: show conversation view
+  $app.classList.add('conv-open');
+
+  // Focus input
+  if (selectedSession && (selectedSession.status === 'active' || selectedSession.type === 'dispatch-api')) {
+    $inputTextarea.focus();
+  }
+}
+
+function deselectSession() {
+  selectedSessionId = null;
+  selectedSession = null;
+  $app.classList.remove('conv-open');
+  sidebarKeyIndex = -1;
+
+  $sessionList.querySelectorAll('.session-item').forEach(el => el.classList.remove('selected'));
+
+  $emptyState.style.display = '';
+  $convView.classList.add('hidden');
+  $convView.style.display = 'none';
+
+  clearInterval(messagePollTimer);
+}
+
+function updateConvHeader() {
+  if (!selectedSession) return;
+  const s = selectedSession;
+
+  // For group chats, show participant names as the title
+  let displayName = s.name || s.id;
+  if (s.chat_type === 'group' && s.participants && s.participants.length > 0) {
+    const names = s.participants.filter(p => p && !p.includes('@') && !p.startsWith('+')).join(', ');
+    if (names) displayName = names;
+  }
+  $convName.textContent = displayName;
+  $convName.classList.toggle('editable', s.type === 'dispatch-api');
+  $btnEdit.style.display = s.type === 'dispatch-api' ? '' : 'none';
+  $convNameInput.style.display = 'none';
+  $convName.style.display = '';
+
+  const dotColor = s.status === 'active' ? 'var(--success)' : (s.status === 'error' ? 'var(--error)' : 'var(--warning)');
+  const sourceColors = { imessage: '#34C759', signal: '#3A76F0', discord: '#5865F2', 'dispatch-api': 'var(--accent)' };
+  const srcColor = sourceColors[s.source] || 'var(--text-tertiary)';
+  $convMeta.innerHTML =
+    '<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:' + srcColor + ';color:#fff;letter-spacing:0.3px;margin-right:6px;">' + sourceLabel(s.source).toUpperCase() + '</span>' +
+    '<span class="session-tier" style="color:' + tierColor(s.tier) + '">' + escapeHtml(s.tier || '') + '</span>' +
+    ' <span class="conv-header-dot" style="background:' + dotColor + '"></span>';
+
+  $convAge.textContent = s.last_message_time ? relativeTime(s.last_message_time) : '';
+
+  // Delete button only for agent sessions
+  $btnDelete.style.display = s.type === 'dispatch-api' ? '' : 'none';
+
+  // Session ended bar
+  $sessionEndedBar.classList.toggle('visible', s.status === 'ended' || s.status === 'error');
+}
+
+function updateInputArea() {
+  if (!selectedSession) {
+    $inputTextarea.disabled = true;
+    $inputTextarea.placeholder = 'Select a session';
+    $btnSend.disabled = true;
+    $inputContext.classList.remove('visible');
+    return;
+  }
+
+  const s = selectedSession;
+  const ended = (s.status === 'ended' || s.status === 'error');
+  const isContact = s.type === 'contact';
+
+  // Only show input area for dispatch-api (agent) sessions
+  if (s.type !== 'dispatch-api') {
+    $inputArea.style.display = 'none';
+    return;
+  }
+
+  $inputArea.style.display = '';
+  $inputTextarea.disabled = ended;
+  $btnSend.disabled = ended;
+
+  if (ended) {
+    $inputTextarea.placeholder = 'Session ended';
+  } else {
+    $inputTextarea.placeholder = 'Send a message...';
+  }
+
+  $inputContext.classList.remove('visible');
+}
+
+// ── Messages ──
+
+async function loadMessages() {
+  if (loadingMessages || !selectedSessionId) return;
+  loadingMessages = true;
+  $messagesLoading.classList.add('visible');
+
+  try {
+    const data = await api('/api/agents/messages?session_id=' + encodeURIComponent(selectedSessionId) + '&limit=100');
+    const msgs = data.messages || [];
+    hasMore = data.has_more;
+
+    if (msgs.length === 0) {
+      $messagesEmpty.classList.add('visible');
+    } else {
+      $messagesEmpty.classList.remove('visible');
+      messages = msgs;
+      updateTimestampBounds(msgs);
+      renderMessages();
+    }
+  } catch(e) {
+    $messagesInner.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-tertiary);font-size:12px;">Failed to load messages</div>';
+    $messagesInner.appendChild($scrollSentinel);
+  } finally {
+    loadingMessages = false;
+    $messagesLoading.classList.remove('visible');
+  }
+}
+
+async function loadOlderMessages() {
+  if (loadingOlder || !hasMore || !selectedSessionId || oldestTimestampMs === Infinity) return;
+  loadingOlder = true;
+
+  try {
+    const data = await api('/api/agents/messages?session_id=' + encodeURIComponent(selectedSessionId) + '&limit=50&before_ts=' + oldestTimestampMs);
+    const msgs = data.messages || [];
+    hasMore = data.has_more;
+
+    if (msgs.length > 0) {
+      // Prepend older messages to start of array
+      messages = msgs.concat(messages);
+      updateTimestampBounds(msgs);
+      renderMessages();
+    }
+  } catch(e) {
+    // Silently fail, will retry
+  } finally {
+    loadingOlder = false;
+  }
+}
+
+async function pollMessages() {
+  if (!selectedSessionId || !document.hasFocus() && document.hidden) return;
+
+  try {
+    const afterParam = latestTimestampMs ? '&after_ts=' + latestTimestampMs : '';
+    const data = await api('/api/agents/messages?session_id=' + encodeURIComponent(selectedSessionId) + '&limit=50' + afterParam);
+    const msgs = data.messages || [];
+    setConnection(true);
+
+    if (msgs.length > 0) {
+      // Remove optimistic messages
+      messages = messages.filter(m => !m._optimistic);
+      messages = messages.concat(msgs);
+      updateTimestampBounds(msgs);
+
+      // Check if we were thinking and got an assistant response
+      if (isThinking) {
+        const gotResponse = msgs.some(m => m.role === 'assistant' || (!m.is_from_me && m.sender !== 'you'));
+        if (gotResponse) {
+          isThinking = false;
+          $thinkingIndicator.classList.remove('visible');
+        }
+      }
+
+      $messagesEmpty.classList.remove('visible');
+      const wasAtBottom = isScrolledToBottom();
+      renderMessages();
+      if (wasAtBottom) scrollToBottom();
+    }
+  } catch(e) {
+    // Will retry on next interval
+  }
+}
+
+function updateTimestampBounds(msgs) {
+  for (const m of msgs) {
+    if (m._optimistic) continue;
+    const ts = m.timestamp_ms || 0;
+    if (ts > latestTimestampMs) latestTimestampMs = ts;
+    if (ts < oldestTimestampMs) oldestTimestampMs = ts;
+  }
+}
+
+function isScrolledToBottom() {
+  const el = $messagesContainer;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+}
+
+function scrollToBottom() {
+  $messagesContainer.scrollTop = $messagesContainer.scrollHeight;
+}
+
+function renderMessages() {
+  const sentinel = $scrollSentinel;
+  $messagesInner.innerHTML = '';
+
+  // Group consecutive messages by sender
+  let groups = [];
+  let currentGroup = null;
+
+  for (const m of messages) {
+    const senderKey = m.is_admin ? 'admin' : (m.sender || m.role || 'unknown');
+    if (!currentGroup || currentGroup.senderKey !== senderKey) {
+      currentGroup = { senderKey: senderKey, sender: m.sender, role: m.role, is_from_me: m.is_from_me, is_admin: m.is_admin, messages: [] };
+      groups.push(currentGroup);
+    }
+    currentGroup.messages.push(m);
+  }
+
+  for (const g of groups) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'msg-group';
+
+    // Sender header
+    const senderEl = document.createElement('div');
+    senderEl.className = 'msg-sender';
+
+    let senderName = g.sender || g.role || '';
+    let msgClass = 'incoming';
+
+    if (g.is_admin || g.senderKey === 'admin') {
+      msgClass = 'admin';
+      senderName = 'admin';
+      senderEl.style.color = 'var(--tier-admin)';
+      groupEl.style.alignItems = 'flex-end';
+      senderEl.style.textAlign = 'right';
+    } else if (g.role === 'assistant' || (!g.is_from_me && g.senderKey !== 'you')) {
+      msgClass = 'assistant';
+      senderName = senderName || 'assistant';
+      senderEl.style.color = 'rgb(168,85,247)';
+      groupEl.style.alignItems = 'flex-start';
+    } else if (g.is_from_me || g.role === 'user') {
+      msgClass = 'outgoing';
+      senderName = senderName || 'you';
+      senderEl.style.color = 'rgb(34,197,94)';
+      groupEl.style.alignItems = 'flex-end';
+      senderEl.style.textAlign = 'right';
+    } else {
+      groupEl.style.alignItems = 'flex-start';
+      senderEl.style.color = senderColor(senderName);
+    }
+
+    senderEl.textContent = senderName;
+    groupEl.appendChild(senderEl);
+
+    for (const m of g.messages) {
+      const itemEl = document.createElement('div');
+      itemEl.className = 'msg-item ' + msgClass;
+      if (m._optimistic) itemEl.classList.add('optimistic');
+
+      const textEl = document.createElement('div');
+      textEl.className = 'msg-text';
+      textEl.innerHTML = linkify((m.text || '').trim());
+      itemEl.appendChild(textEl);
+
+      const timeEl = document.createElement('div');
+      timeEl.className = 'msg-time';
+      timeEl.textContent = formatTimestamp(m.timestamp_ms);
+      itemEl.appendChild(timeEl);
+
+      groupEl.appendChild(itemEl);
+    }
+
+    $messagesInner.appendChild(groupEl);
+  }
+
+  // Sentinel at top for loading older messages
+  $messagesInner.insertBefore(sentinel, $messagesInner.firstChild);
+}
+
+// ── IntersectionObserver for infinite scroll up ──
+
+const scrollObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.isIntersecting && hasMore && !loadingOlder && messages.length > 0) {
+      loadOlderMessages();
+    }
+  }
+}, { root: $messagesContainer, threshold: 0.1 });
+
+scrollObserver.observe($scrollSentinel);
+
+// ── Send Message ──
+
+async function sendMessage() {
+  const text = $inputTextarea.value.trim();
+  if (!text || !selectedSessionId) return;
+  // Block sending for contact sessions (read-only)
+  if (selectedSession && selectedSession.type === 'contact') return;
+
+  $inputTextarea.value = '';
+  autoResizeTextarea();
+  updateSendButton();
+
+  // Optimistic UI
+  const optimisticMsg = {
+    id: '_opt_' + Date.now(),
+    role: 'user',
+    text: text,
+    sender: 'you',
+    is_from_me: true,
+    timestamp_ms: Date.now(),
+    _optimistic: true
+  };
+  messages.push(optimisticMsg);
+  $messagesEmpty.classList.remove('visible');
+  renderMessages();
+  scrollToBottom();
+
+  // Show thinking for agent sessions
+  if (selectedSession && selectedSession.type === 'dispatch-api') {
+    isThinking = true;
+    $thinkingIndicator.classList.add('visible');
+  }
+
+  try {
+    await api('/api/agents/messages', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ session_id: selectedSessionId, text: text })
+    });
+    // Keep _optimistic = true so poll's filter removes it and replaces with real msg
+    // Just trigger a poll immediately to get the real message
+    pollMessages();
+  } catch(e) {
+    // Remove optimistic message on failure
+    messages = messages.filter(m => m.id !== optimisticMsg.id);
+    renderMessages();
+    isThinking = false;
+    $thinkingIndicator.classList.remove('visible');
+    // Could show error inline, but for now silent
+  }
+}
+
+// ── Create Agent ──
+
+function showCreateForm() {
+  $createForm.classList.add('visible');
+  $createInput.value = '';
+  $createError.classList.remove('visible');
+  $createInput.focus();
+}
+
+function hideCreateForm() {
+  $createForm.classList.remove('visible');
+  $createInput.value = '';
+  $createError.classList.remove('visible');
+}
+
+async function createAgent() {
+  const name = 'Agent ' + new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+  try {
+    const data = await api('/api/agents/sessions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: name })
+    });
+    hideCreateForm();
+    // Refresh sessions and select the new one
+    await fetchSessions();
+    selectSession(data.id);
+  } catch(e) {
+    $createError.textContent = e.message || 'Failed to create agent';
+    $createError.classList.add('visible');
+  } finally {
+    $createInput.disabled = false;
+  }
+}
+
+// ── Rename Session ──
+
+let renameCancelled = false;
+
+function startRename() {
+  if (!selectedSession || selectedSession.type !== 'dispatch-api') return;
+  $convName.style.display = 'none';
+  $btnEdit.style.display = 'none';
+  $convNameInput.style.display = '';
+  $convNameInput.value = selectedSession.name || '';
+  $convNameInput.focus();
+  $convNameInput.select();
+}
+
+async function finishRename() {
+  const newName = $convNameInput.value.trim();
+  $convNameInput.style.display = 'none';
+  $convName.style.display = '';
+  $btnEdit.style.display = '';
+
+  if (!newName || !selectedSession || newName === selectedSession.name) return;
+
+  try {
+    await api('/api/agents/sessions/' + encodeURIComponent(selectedSessionId), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: newName })
+    });
+    selectedSession.name = newName;
+    $convName.textContent = newName;
+    // Update in sessions list
+    const s = sessions.find(s => s.id === selectedSessionId);
+    if (s) s.name = newName;
+    renderSessionList();
+  } catch(e) {
+    // Revert
+    $convName.textContent = selectedSession.name || selectedSession.id;
+  }
+}
+
+function cancelRename() {
+  renameCancelled = true;
+  $convNameInput.style.display = 'none';
+  $convName.style.display = '';
+  if (selectedSession && selectedSession.type === 'dispatch-api') $btnEdit.style.display = '';
+}
+
+// ── Delete Session ──
+
+function showDeleteConfirm() {
+  if (!selectedSession || selectedSession.type !== 'dispatch-api') return;
+  $deleteBarText.textContent = "Delete '" + (selectedSession.name || selectedSession.id) + "'?";
+  $deleteBar.classList.add('visible');
+}
+
+function hideDeleteConfirm() {
+  $deleteBar.classList.remove('visible');
+}
+
+async function deleteSession() {
+  if (!selectedSessionId) return;
+  const id = selectedSessionId;
+
+  try {
+    await api('/api/agents/sessions/' + encodeURIComponent(id) + '?delete_messages=true', {
+      method: 'DELETE'
+    });
+    hideDeleteConfirm();
+    deselectSession();
+    await fetchSessions();
+  } catch(e) {
+    // Could show error
+  }
+}
+
+// ── Input Handling ──
+
+function autoResizeTextarea() {
+  $inputTextarea.style.height = 'auto';
+  const maxH = 180;
+  const scrollH = $inputTextarea.scrollHeight;
+  $inputTextarea.style.height = Math.min(scrollH, maxH) + 'px';
+}
+
+function updateSendButton() {
+  const hasText = $inputTextarea.value.trim().length > 0;
+  $btnSend.classList.toggle('active', hasText);
+  $btnSend.disabled = !hasText || $inputTextarea.disabled;
+}
+
+// ── Event Listeners ──
+
+// Search
+$searchInput.addEventListener('input', () => {
+  searchQuery = $searchInput.value;
+  applyFilters();
+});
+
+// Filters
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const group = btn.dataset.filter;
+    const value = btn.dataset.value;
+
+    // Deactivate siblings in same group
+    document.querySelectorAll('.filter-btn[data-filter="' + group + '"]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    if (group === 'type') filterType = value;
+    if (group === 'source') filterSource = value;
+    applyFilters();
+  });
+});
+
+// Create agent
+$btnNewAgent.addEventListener('click', createAgent);
+
+$createInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    createAgent();
+  } else if (e.key === 'Escape') {
+    hideCreateForm();
+  }
+});
+
+// Rename
+$btnEdit.addEventListener('click', startRename);
+$convName.addEventListener('click', () => {
+  if (selectedSession && selectedSession.type === 'dispatch-api') startRename();
+});
+
+$convNameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    renameCancelled = true;
+    finishRename();
+  } else if (e.key === 'Escape') {
+    cancelRename();
+  }
+});
+
+$convNameInput.addEventListener('blur', () => {
+  if (renameCancelled) { renameCancelled = false; return; }
+  finishRename();
+});
+
+// Delete
+$btnDelete.addEventListener('click', showDeleteConfirm);
+$btnDeleteConfirm.addEventListener('click', deleteSession);
+$btnDeleteCancel.addEventListener('click', hideDeleteConfirm);
+$btnBack.addEventListener('click', deselectSession);
+
+// Input textarea
+$inputTextarea.addEventListener('input', () => {
+  autoResizeTextarea();
+  updateSendButton();
+});
+
+$inputTextarea.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!$btnSend.disabled) sendMessage();
+  }
+});
+
+// Send button
+$btnSend.addEventListener('click', sendMessage);
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  const isMac = navigator.platform.indexOf('Mac') !== -1;
+  const mod = isMac ? e.metaKey : e.ctrlKey;
+
+  // Ctrl/Cmd+N: New agent
+  if (mod && e.key === 'n') {
+    e.preventDefault();
+    showCreateForm();
+    return;
+  }
+
+  // Escape: deselect / close form
+  if (e.key === 'Escape') {
+    if ($createForm.classList.contains('visible')) {
+      hideCreateForm();
+    } else if ($deleteBar.classList.contains('visible')) {
+      hideDeleteConfirm();
+    } else if ($convNameInput.style.display !== 'none' && $convNameInput.style.display !== '') {
+      cancelRename();
+    } else if (selectedSessionId) {
+      deselectSession();
+    }
+    return;
+  }
+
+  // Arrow keys for sidebar navigation (only when not focused in input)
+  const active = document.activeElement;
+  const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+  if (!isInput && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    if (filteredSessions.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      sidebarKeyIndex = Math.min(sidebarKeyIndex + 1, filteredSessions.length - 1);
+    } else {
+      sidebarKeyIndex = Math.max(sidebarKeyIndex - 1, 0);
+    }
+    selectSession(filteredSessions[sidebarKeyIndex].id);
+
+    // Scroll sidebar item into view
+    const items = $sessionList.querySelectorAll('.session-item');
+    if (items[sidebarKeyIndex]) items[sidebarKeyIndex].scrollIntoView({ block: 'nearest' });
+  }
+});
+
+// Visibility-aware polling
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(sessionPollTimer);
+    clearInterval(messagePollTimer);
+  } else {
+    // Immediately poll, then restart intervals
+    fetchSessions();
+    if (selectedSessionId) pollMessages();
+    startPolling();
+  }
+});
+
+// ── Polling ──
+
+function startPolling() {
+  clearInterval(sessionPollTimer);
+  clearInterval(messagePollTimer);
+  sessionPollTimer = setInterval(fetchSessions, SESSION_POLL_MS);
+  if (selectedSessionId) {
+    messagePollTimer = setInterval(pollMessages, MESSAGE_POLL_MS);
+  }
+}
+
+// ── iOS keyboard viewport fix ──
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    const vv = window.visualViewport;
+    // When iOS keyboard opens, visualViewport.height shrinks
+    document.documentElement.style.height = vv.height + 'px';
+    // Scroll input into view
+    const inputArea = document.getElementById('inputArea');
+    if (inputArea && document.activeElement && inputArea.contains(document.activeElement)) {
+      setTimeout(() => document.activeElement.scrollIntoView({ block: 'nearest' }), 50);
+    }
+  });
+}
+
+// ── Init ──
+
+fetchSessions().then(() => {
+  startPolling();
+
+  // Check URL hash for session selection
+  if (window.location.hash) {
+    const id = decodeURIComponent(window.location.hash.substring(1));
+    if (sessions.find(s => s.id === id)) {
+      selectSession(id);
+    }
+  }
+});
+
+})();
+</script>
+</body>
+</html>

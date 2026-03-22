@@ -22,6 +22,10 @@ class BackendConfig(BaseModel, frozen=True):
     send_group_cmd: str    # same or different for groups
     history_cmd: str       # CLI template or "" if unavailable
 
+    # Reply hint shown to the LLM in message wrapping.
+    # Tells the session how to send responses for this backend.
+    reply_hint: str = '~/.claude/skills/sms-assistant/scripts/reply "message" [--image PATH] [--file PATH]'
+
     # Whether this backend supports image context for Gemini vision analysis.
     # If True, a MessageReader implementation must exist for this backend.
     supports_image_context: bool = False
@@ -68,13 +72,14 @@ BACKENDS: dict[str, BackendConfig] = {
         history_cmd="",  # No history CLI yet (could add later via Discord REST API)
         supports_image_context=False,  # Discord CDN URLs, not local files
     ),
-    "sven-app": BackendConfig(
-        name="sven-app",
-        label="SVEN_APP",
-        session_suffix="-sven-app",
-        registry_prefix="sven-app:",
-        send_cmd='~/.claude/skills/sven-app/scripts/reply-sven "{chat_id}"',
-        send_group_cmd='~/.claude/skills/sven-app/scripts/reply-sven "{chat_id}"',
+    "dispatch-app": BackendConfig(
+        name="dispatch-app",
+        label="DISPATCH_APP",
+        session_suffix="-dispatch-app",
+        registry_prefix="dispatch-app:",
+        send_cmd='~/.claude/skills/dispatch-app/scripts/reply-app "{chat_id}"',
+        send_group_cmd='~/.claude/skills/dispatch-app/scripts/reply-app "{chat_id}"',
+        reply_hint='~/.claude/skills/dispatch-app/scripts/reply-app "{chat_id}" "message"',
         history_cmd="",
         supports_image_context=True,
     ),
@@ -83,14 +88,36 @@ BACKENDS: dict[str, BackendConfig] = {
         label="DISPATCH-API",
         session_suffix="-dispatch-api",
         registry_prefix="dispatch-api:",
-        send_cmd='~/.claude/skills/sven-app/scripts/reply-dispatch-api "{chat_id}"',
-        send_group_cmd='~/.claude/skills/sven-app/scripts/reply-dispatch-api "{chat_id}"',
+        send_cmd='~/.claude/skills/dispatch-app/scripts/reply-dispatch-api "{chat_id}"',
+        send_group_cmd='~/.claude/skills/dispatch-app/scripts/reply-dispatch-api "{chat_id}"',
+        reply_hint='~/.claude/skills/dispatch-app/scripts/reply-dispatch-api "{chat_id}" "message"',
         history_cmd="",
         supports_image_context=True,
     ),
 }
 
+# Backward compatibility: "sven-app" was the old name for "dispatch-app".
+# Needs its own config with "sven-app:" prefix so sanitize_chat_id/normalize_chat_id
+# can strip the prefix from existing sessions.json entries.
+# DEPRECATED: "sven-app" was the old name for "dispatch-app".
+# Kept for backward compatibility with existing sessions.json entries.
+# TODO: Remove after running migration script to rewrite sven-app: → dispatch-app: prefixes.
+BACKENDS["sven-app"] = BackendConfig(
+    name="dispatch-app",  # canonical name
+    label="DISPATCH_APP",
+    session_suffix="-dispatch-app",
+    registry_prefix="sven-app:",  # preserve old prefix for existing sessions
+    send_cmd='~/.claude/skills/dispatch-app/scripts/reply-app "{chat_id}"',
+    send_group_cmd='~/.claude/skills/dispatch-app/scripts/reply-app "{chat_id}"',
+    reply_hint='~/.claude/skills/dispatch-app/scripts/reply-app "{chat_id}" "message"',
+    history_cmd="",
+    supports_image_context=True,
+)
+
 
 def get_backend(source: str) -> BackendConfig:
-    """Get backend config by source name. Defaults to imessage."""
+    """Get backend config by source name. Defaults to imessage with warning."""
+    if source and source not in BACKENDS:
+        import logging
+        logging.getLogger(__name__).warning(f"Unknown backend source '{source}', falling back to imessage")
     return BACKENDS.get(source, BACKENDS["imessage"])

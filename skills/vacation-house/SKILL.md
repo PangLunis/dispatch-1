@@ -507,13 +507,8 @@ Use the **bus dashboard design pattern** — the same warm papery aesthetic from
 - **Other sources**: Extract all `<img src>` URLs that look like property photos (filter out logos, icons, agent headshots by size/path patterns)
 - HTML carousel must show ALL photos with counter (e.g. "3/20"), lazy-load for performance, swipeable on mobile
 
-**Parcel + Terrain Maps** (via MapLibre GL JS):
-- Include MapLibre GL JS v4 (`unpkg.com/maplibre-gl@4.1.2`) in HTML `<head>`
-- For each listing with `vcgi_geometry`, render TWO side-by-side map containers (200px height each):
-  1. **Satellite + Parcel**: ESRI satellite tiles via `sven-plot-proxy.nicklaudethorat.workers.dev/satellite/{z}/{y}/{x}`
-  2. **Terrain + Parcel**: AWS Terrarium terrain tiles via `sven-plot-proxy.nicklaudethorat.workers.dev/terrain/{z}/{x}/{y}.png`
-- Add parcel boundary as GeoJSON source with fill (#3b82f6, opacity 0.2) and line (#3b82f6, width 2)
-- Auto-fit bounds to parcel geometry with padding
+**Parcel + Terrain Maps** (static tile images — NOT MapLibre):
+- Use static `<img>` tile images, NOT interactive MapLibre maps (WebGL context limit ~16 is exceeded with 40+ maps)
 - Show VCGI info below maps: assessed value, official acreage, SPAN
 6. Publish to sven-pages:
    ```bash

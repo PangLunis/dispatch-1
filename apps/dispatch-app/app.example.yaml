@@ -1,0 +1,32 @@
+# App Configuration — copy to app.yaml and customize
+# app.yaml is gitignored; this example shows all available options.
+
+# Display name shown in the app and on the home screen
+appName: MyApp
+displayName: MyApp
+
+# iOS bundle identifier (must be unique to your Apple Developer account)
+bundleIdentifier: com.example.myapp
+
+# API server host (IP:port or hostname:port of your dispatch-api server)
+# On-device, this can also be changed at runtime from the Settings screen.
+apiHost: 192.168.1.100:9091
+
+# Accent color (hex) used for buttons, tab bar, and highlights
+accentColor: "#2563eb"
+
+# URL scheme for deep links (e.g. myapp://...)
+scheme: myapp
+
+# Speech recognition name corrections (optional)
+# Maps common misrecognitions to the correct name.
+# The app name is often misheard by speech recognition — add variants here.
+speechCorrections:
+  myapp: MyApp
+  # my app: MyApp
+  # myap: MyApp
+
+# Icon and splash paths (relative to project root)
+iconPath: ./assets/images/icon.png
+adaptiveIconPath: ./assets/images/adaptive-icon.png
+splashColor: "#09090b"

@@ -1,5 +1,7 @@
 # Push Notifications for Sven App
 
+> **Note:** The native SwiftUI Sven app has been deprecated. It has been moved to `~/dispatch/apps/sven-ios-deprecated/`. The active app is the Expo/React Native app at `~/dispatch/apps/dispatch-app/`.
+
 Implementation plan for adding push notifications so Nikhil gets notified when Sven responds.
 
 ## Overview
@@ -19,7 +21,7 @@ User speaks → Sven processes → reply-sven stores message
 
 ## Components to Modify
 
-### 1. iOS App (~/dispatch/apps/sven-ios)
+### 1. iOS App (~/dispatch/apps/dispatch-app)
 
 #### A. Enable Push Notifications Capability
 - Open Xcode project

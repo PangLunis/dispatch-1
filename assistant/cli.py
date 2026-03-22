@@ -665,7 +665,14 @@ def cmd_inject_prompt(args):
     if getattr(args, 'attachment', None):
         attachment_path = Path(args.attachment).expanduser()
         if attachment_path.exists():
-            attachment = {"path": str(attachment_path)}
+            import mimetypes
+            mime_type = mimetypes.guess_type(str(attachment_path))[0] or "application/octet-stream"
+            attachment = {
+                "path": str(attachment_path),
+                "name": attachment_path.name,
+                "mime_type": mime_type,
+                "size": attachment_path.stat().st_size,
+            }
         else:
             print(f"Warning: Attachment file not found: {attachment_path}", file=sys.stderr)
 
@@ -675,7 +682,7 @@ def cmd_inject_prompt(args):
         "prompt": prompt,
         "sms": args.sms,
         "admin": args.admin,
-        "sven_app": getattr(args, 'sven_app', False),
+        "app": getattr(args, 'app', False),
         "contact_name": contact_name,
         "tier": tier,
         "source": source,
@@ -1068,7 +1075,7 @@ def main():
     inject_parser.add_argument("prompt", nargs="?", default="", help="Prompt text")
     inject_parser.add_argument("--sms", action="store_true", help="Wrap in SMS format")
     inject_parser.add_argument("--admin", action="store_true", help="Wrap in ADMIN OVERRIDE tags")
-    inject_parser.add_argument("--sven-app", action="store_true", help="Message from Sven iOS app (adds 🎤 prefix and echo instruction)")
+    inject_parser.add_argument("--app", "--sven-app", action="store_true", dest="app", help="Message from dispatch app (adds 🎤 prefix for voice messages)")
     inject_parser.add_argument("--file", "-f", help="Read prompt from file")
     inject_parser.add_argument("--reply-to", help="GUID of message being replied to (for reply chain context)")
     inject_parser.add_argument("--attachment", help="Path to image attachment for Gemini vision analysis")

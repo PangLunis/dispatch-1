@@ -107,3 +107,12 @@ The old `deploy` script still works for simple Cloudflare Pages deployments (no 
 ```bash
 ~/.claude/skills/sven-pages/scripts/deploy ./folder
 ```
+
+
+## Google Analytics (GA4)
+
+svenflow.ai has GA4 tracking on all pages. The gtag snippet is in `client/index.html` `<head>`.
+
+- **Measurement ID**: Use `identity ga4.measurement_id` (stored in `config.local.yaml`, not checked in)
+- **Dashboard**: https://analytics.google.com (Chrome profile 0)
+- **Tracks**: Page views, scrolls, outbound clicks (enhanced measurement enabled)

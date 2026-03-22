@@ -172,12 +172,12 @@ def wrap_sms(
   chat_id: str,
   reply_to_guid: str | None = None,
   source: str = "imessage",
-  sven_app: bool = False,
+  app: bool = False,
 ) -> str:
   """Wrap prompt in SMS format with reminder to send via CLI.
 
   If reply_to_guid is provided, walks the full reply chain and includes it as context.
-  If sven_app is True, adds 🎤 prefix and echo instruction for Sven iOS app messages.
+  If app is True, adds 🎤 prefix for dispatch app voice messages.
   """
   reply_context = ""
   if reply_to_guid:
@@ -196,18 +196,11 @@ def wrap_sms(
 
   backend = get_backend(source)
 
-  # Add 🎤 prefix for Sven app messages
-  display_prompt = f"🎤 {prompt}" if sven_app else prompt
+  # Add 🎤 prefix for dispatch app voice messages
+  display_prompt = f"🎤 {prompt}" if app else prompt
 
-  # Determine the reply command based on backend
-  if source == "sven-app":
-    reply_cmd = f'~/.claude/skills/sven-app/scripts/reply-sven "{chat_id}" "message"'
-  elif source == "discord":
-    reply_cmd = '~/.claude/skills/sms-assistant/scripts/reply "message" [--image PATH] [--file PATH]'
-  elif source == "signal":
-    reply_cmd = '~/.claude/skills/sms-assistant/scripts/reply "message" [--image PATH] [--file PATH]'
-  else:
-    reply_cmd = '~/.claude/skills/sms-assistant/scripts/reply "message" [--image PATH] [--file PATH]'
+  # Use backend's reply hint (no special-casing per backend)
+  reply_cmd = backend.reply_hint.format(chat_id=chat_id)
 
   # Format timestamp in local timezone (US Eastern)
   now = datetime.now(ZoneInfo("America/New_York"))
@@ -383,7 +376,7 @@ def ensure_transcript_dir(session_name: str) -> Path:
   - .claude/CLAUDE.md -> ~/.claude/CLAUDE.md
   - .claude/SOUL.md -> ~/.claude/SOUL.md
   - .claude/skills -> ~/.claude/skills
-  - .claude/settings.json with PreCompact hook for session restart
+  - .claude/settings.json with PostCompact hook for compaction telemetry
   """
 
   transcript_dir = TRANSCRIPTS_DIR / session_name

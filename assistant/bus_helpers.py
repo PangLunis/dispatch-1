@@ -29,7 +29,8 @@ Topic/type taxonomy (v6):
                 reminder.fired, reminder.failed,
                 healme.triggered, healme.completed,
                 vision.analyzed, vision.failed,
-                compaction.triggered,
+                compaction.triggered, compaction.completed,
+                compaction.user_waiting, compaction.auto_cleared,
                 master.triggered,
                 signal.connection_state,
                 sdk.turn_complete, session.heartbeat (keyed by component/session_name)
@@ -258,6 +259,22 @@ def compaction_triggered_payload(session_name: str, chat_id: str,
         "chat_id": chat_id,
         "contact_name": contact_name,
         "turn_count": turn_count,
+    }
+    payload.update(extra)
+    return payload
+
+
+
+def compaction_user_waiting_payload(session_name: str, chat_id: str,
+                                     contact_name: str, source: str,
+                                     session_type: str, **extra) -> dict:
+    """Build a compaction.user_waiting payload."""
+    payload = {
+        "session_name": session_name,
+        "chat_id": chat_id,
+        "contact_name": contact_name,
+        "source": source,
+        "session_type": session_type,
     }
     payload.update(extra)
     return payload

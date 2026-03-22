@@ -10,7 +10,7 @@ partner:
   name: "Partner Name"  # Remove section if not applicable
 
 assistant:
-  name: "Dispatch"
+  name: "Dispatch"  # Used by dispatch-api for session prefix ({name}-app) and display name
   email: "assistant@example.com"
 
 signal:
@@ -26,13 +26,26 @@ hue:
 lutron:
   bridge_ip: "10.10.10.X"
 
+tailscale:
+  hostname: "your-device.tail123456.ts.net"
+  ip: "100.x.x.x"
+
+network:
+  local_ip: "10.10.10.x"
+
+plex:
+  tailscale_url: "http://your-device.tail123456.ts.net:8443/web"
+  tailscale_ip_url: "http://100.x.x.x:8443/web"
+  local_url: "http://10.10.10.x:32400/web"
+  cloud_url: "https://app.plex.tv/desktop"
+
 podcast:
   bucket: "your-podcast-bucket"
   title: "Your Audio Articles"
   email: "you@example.com"
 
 hooks:
-  pre_compact_notify: true  # Send SMS when context window compacts (set false to silence)
+  compact_notify: true  # Send SMS for both pre-compact ("Compacting…") and post-compact ("Done compacting ✓")
 
 chrome:
   profiles:

@@ -1,12 +1,14 @@
 # Moving Sven iOS App to Dispatch Repo
 
+> **Note:** The native SwiftUI Sven app has been deprecated. It has been moved to `~/dispatch/apps/sven-ios-deprecated/`. The active app is the Expo/React Native app at `~/dispatch/apps/dispatch-app/`.
+
 **STATUS: COMPLETED (2026-02-11)**
 
 Plan for consolidating the Sven iOS app into the dispatch repository.
 
 ## Current State
 
-- **Sven iOS app**: `~/dispatch/apps/sven-ios/` ✅ (moved from ~/code/ios-apps/Sven/)
+- **Sven iOS app (deprecated)**: `~/dispatch/apps/sven-ios-deprecated/` (moved from ~/code/ios-apps/Sven/, now deprecated in favor of `~/dispatch/apps/dispatch-app/`)
 - **Dispatch repo**: `~/dispatch/` (GitHub: nicklaude/dispatch)
 - **Sven backend skill**: `~/.claude/skills/sven-app/` (symlinked into dispatch)
 

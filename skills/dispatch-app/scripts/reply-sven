@@ -1,0 +1,18 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""
+reply-sven - DEPRECATED: backward-compat wrapper for reply-app.
+
+Use reply-app instead. This script exists only for backward compatibility
+with existing session configs that reference reply-sven.
+"""
+import os
+import sys
+from pathlib import Path
+
+# Delegate to reply-app with same arguments
+reply_app = Path(__file__).resolve().parent / "reply-app"
+os.execv(str(reply_app), [str(reply_app)] + sys.argv[1:])

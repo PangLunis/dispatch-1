@@ -1,5 +1,7 @@
 # iOS Development with Dispatch
 
+> **Note:** The native SwiftUI Sven app has been deprecated. It has been moved to `~/dispatch/apps/sven-ios-deprecated/`. The active app is the Expo/React Native app at `~/dispatch/apps/dispatch-app/`.
+
 This guide covers setting up iOS development capabilities for Dispatch, enabling Claude to build, test, and deploy iOS apps to TestFlight.
 
 ## Overview
@@ -117,14 +119,14 @@ xcrun simctl io booted screenshot ~/Desktop/sim-test.png
 
 iOS apps live in two locations:
 
-**Sven app (consolidated into dispatch repo):**
+**Dispatch app (active, Expo/React Native):**
 ```
-~/dispatch/apps/sven-ios/
-├── Sven.xcodeproj/
-├── Sven/
-│   ├── SvenApp.swift
-│   └── ...
-└── build/
+~/dispatch/apps/dispatch-app/
+```
+
+**Sven SwiftUI app (deprecated):**
+```
+~/dispatch/apps/sven-ios-deprecated/
 ```
 
 **Other iOS apps:**

@@ -52,7 +52,7 @@ def mock_args_admin():
         file=None,
         sms=True,
         admin=True,
-        sven_app=True,
+        app=True,
         bg=False,
         reply_to=None,
     )
@@ -68,7 +68,7 @@ def mock_args_no_admin():
         file=None,
         sms=True,
         admin=False,
-        sven_app=True,
+        app=True,
         bg=False,
         reply_to=None,
     )
@@ -155,7 +155,7 @@ class TestAdminFlagOverride:
             file=None,
             sms=True,
             admin=True,
-            sven_app=False,
+            app=False,
             bg=False,
             reply_to=None,
         )

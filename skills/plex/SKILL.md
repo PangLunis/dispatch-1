@@ -7,6 +7,19 @@ description: Manage Plex Media Server - libraries, metadata, playback. Trigger w
 
 Local Plex Media Server running on this Mac Mini.
 
+## Quick Access
+
+Access URLs are stored in `config.local.yaml` and resolved via the identity CLI:
+
+```bash
+~/dispatch/bin/identity plex.tailscale_url      # Tailscale hostname (no auth, via Caddy proxy)
+~/dispatch/bin/identity plex.tailscale_ip_url    # Tailscale IP (no auth, via Caddy proxy)
+~/dispatch/bin/identity plex.local_url           # Local network (requires Plex sign-in)
+~/dispatch/bin/identity plex.cloud_url           # Plex cloud (app.plex.tv)
+```
+
+Use the Tailscale URLs for remote access — they bypass Plex sign-in via Caddy proxy.
+
 ## Credentials
 
 - **Account:** stored in keychain as `plex` / `email`
@@ -108,8 +121,8 @@ See `/kometa` skill for full details. Kometa updates:
 Plex Web requires sign-in even on local/Tailscale networks. A Caddy reverse proxy on port 8443 bypasses this by injecting the auth token into every request.
 
 **Access URLs:**
-- Local: `http://10.10.10.59:32400/web` (requires Plex sign-in)
-- Tailscale (no auth): `http://100.127.42.15:8443/web` or `http://svens-mac-mini.tail6669f2.ts.net:8443/web`
+- Local: `identity plex.local_url` (requires Plex sign-in)
+- Tailscale (no auth): `identity plex.tailscale_ip_url` or `identity plex.tailscale_url`
 
 **How it works:**
 - Caddy listens on `:8443`, proxies to `localhost:32400`, injects `X-Plex-Token` header

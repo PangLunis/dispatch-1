@@ -422,7 +422,7 @@ class TestStartupCheck:
             # Should have warned about missing reminders
             mock_log.warning.assert_called()
             warning_msg = mock_log.warning.call_args[0][0]
-            assert "nightly-consolidation" in warning_msg or "Missing" in warning_msg
+            assert "nightly" in warning_msg.lower()
 
     def test_no_warning_when_reminders_present(self):
         """Should log info (not warning) when reminders are configured."""

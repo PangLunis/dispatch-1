@@ -167,10 +167,7 @@ claude-assistant remind add "Check something" --in 10m \
 
 > **DEPRECATED:** `scripts/setup-nightly-tasks.py` was the old way to manage nightly tasks. Do NOT use it for new tasks. All task management should go through `claude-assistant remind add --event`.
 
-**Current scheduled tasks:**
-- `nightly-consolidation` (2:00am ET, script) — person-facts + chat-context consolidation
-- `nightly-skillify` (2:00am ET, agent) — skill opportunity analysis
-- `nightly-bugfinder` (2:00am ET, agent) — codebase bug scanning
+**Current scheduled tasks:** Run `claude-assistant remind list` to see all registered nightly tasks. Tasks use the `nightly-*` task_id convention.
 
 **Key files:**
 - `assistant/manager.py` — `_run_task_consumer()`, `_handle_task_requested()`, `_run_script_task()`, `_supervise_ephemeral_tasks()`
@@ -344,7 +341,7 @@ claude-assistant remind add "Task name" --cron "0 2 * * *" \
 claude-assistant remind list
 ```
 
-Current nightly tasks (all 2am ET): memory consolidation (incl. fact extraction), skillify, bug finder, vacation house scraper.
+Current nightly tasks: run `claude-assistant remind list` to see all registered tasks. Tasks use the `nightly-*` task_id prefix convention.
 
 ## Structured Facts
 

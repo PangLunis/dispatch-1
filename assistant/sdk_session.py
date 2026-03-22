@@ -173,6 +173,10 @@ class SDKSession:
         self._producer = producer
         self.resume_id = resume_id
 
+        # Cached session_name using get_session_name (properly strips registry prefix)
+        from assistant.common import get_session_name
+        self._session_name = get_session_name(self.chat_id, self.source)
+
         self._client: Optional[ClaudeSDKClient] = None
         self._message_queue: asyncio.Queue[QueueItem] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
@@ -192,6 +196,13 @@ class SDKSession:
 
         # Heartbeat tracking
         self._last_heartbeat_at: float = time.time()
+
+        # Compaction state — conditional notification (only notify if user messages during compaction)
+        self.compacting_since: Optional[float] = None       # time.monotonic() when compaction started
+        self.compaction_notified: bool = False               # whether we sent "compacting…" notice
+        self.compaction_notified_at: Optional[float] = None  # time.monotonic() when notice was sent (for 3s debounce)
+        self.compaction_count: int = 0                       # per-process-lifetime counter for diagnostics
+        self.compaction_epoch: int = 0                       # increments each compaction, guards stale bus events
 
         # Deferred system prompt injection (set by sdk_backend, consumed by _inject_system_prompt_if_needed)
         self._needs_system_prompt: bool = False
@@ -213,8 +224,43 @@ class SDKSession:
         from assistant.health import _find_transcript
         return _find_transcript(self.cwd, self.session_id)
 
+    def check_compacting(self) -> bool:
+        """Check if session is compacting, with 5-min safety auto-clear.
+
+        NOTE: This is a method, not a property, because it has side effects
+        (logging, bus event) on auto-clear. Called from inject_message path
+        to determine if user should be notified about ongoing compaction.
+        """
+        if self.compacting_since is not None:
+            elapsed = time.monotonic() - self.compacting_since
+            if elapsed > 300:
+                from assistant.common import get_session_name
+                session_name = get_session_name(self.chat_id, self.source)
+                self._log.warning(f"COMPACTION_AUTO_CLEAR | session={session_name} | stale flag ({elapsed:.0f}s >5min)")
+                log.warning(f"[{self.contact_name}] Compaction auto-cleared after {elapsed:.0f}s")
+                produce_event(self._producer, "system", "compaction.auto_cleared",
+                    {"session_name": session_name, "chat_id": self.chat_id,
+                     "contact_name": self.contact_name, "elapsed_s": round(elapsed, 1)},
+                    source="compaction")
+                self._clear_compaction_flags()
+                return False
+            return True
+        return False
+
+    def _clear_compaction_flags(self):
+        """Reset compaction timing/notification state.
+
+        Preserves compaction_epoch intentionally — epoch persists across
+        compactions for stale bus event rejection.
+        """
+        self.compacting_since = None
+        self.compaction_notified = False
+        self.compaction_notified_at = None
+
     async def start(self, resume_session_id: Optional[str] = None):
         """Connect ClaudeSDKClient and start the message processing loop."""
+        # Clear compaction flags on start — monotonic timestamps don't survive restarts
+        self._clear_compaction_flags()
         options = self._build_options(resume_session_id)
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
@@ -383,7 +429,7 @@ class SDKSession:
                     now = time.time()
                     if now - self._last_heartbeat_at >= 120:
                         produce_event(self._producer, "system", "session.heartbeat", {
-                            "session_name": f"{self.source}/{self.chat_id}",
+                            "session_name": self._session_name,
                             "chat_id": self.chat_id,
                             "contact_name": self.contact_name,
                             "queue_depth": self._message_queue.qsize(),
@@ -391,7 +437,7 @@ class SDKSession:
                             "turn_count": self.turn_count,
                             "is_busy": self.is_busy,
                             "idle_seconds": round((datetime.now() - self.last_activity).total_seconds()),
-                        }, key=f"{self.source}/{self.chat_id}", source="sdk")
+                        }, key=self._session_name, source="sdk")
                         self._last_heartbeat_at = now
                     continue  # Check receiver health every 30s
 
@@ -404,6 +450,10 @@ class SDKSession:
                 self.last_activity = datetime.now()
                 self._log.info(f"IN | {msg}")
                 self._pending_queries += 1
+                if self._producer and self._pending_queries == 1:  # 0→1 transition
+                    self._producer.set_session_busy(
+                        self._session_name, True
+                    )
 
                 try:
                     assert self._client is not None
@@ -424,6 +474,10 @@ class SDKSession:
                     raise
                 except Exception as e:
                     self._pending_queries = max(0, self._pending_queries - 1)
+                    if self._producer and self._pending_queries == 0:
+                        self._producer.set_session_busy(
+                            self._session_name, False
+                        )
                     self._error_count += 1
                     self._log.error(f"ERROR #{self._error_count} | {e}")
                     log.error(f"[{self.contact_name}] Query error #{self._error_count}: {e}")
@@ -437,6 +491,11 @@ class SDKSession:
             self._log.info("LOOP_CANCELLED")
             raise
         finally:
+            # Clear busy state on session shutdown
+            if self._producer:
+                self._producer.set_session_busy(
+                    self._session_name, False
+                )
             receiver.cancel()
             try:
                 await receiver
@@ -456,8 +515,16 @@ class SDKSession:
             assert self._client is not None
             async for message in self._client.receive_messages():
                 await self._handle_message(message)
+                # Refresh busy flag periodically so updated_at stays fresh
+                # during long operations (prevents staleness guard false negatives)
+                if self._producer and self.is_busy:
+                    self._producer.set_session_busy(self._session_name, True)
                 if isinstance(message, ResultMessage):
                     self._pending_queries = 0  # Reset: merged queries produce 1 ResultMessage
+                    if self._producer:
+                        self._producer.set_session_busy(
+                            self._session_name, False
+                        )
                     self._error_count = 0
                     # Note: _consecutive_error_turns is tracked in _handle_message
                     # Cleanup stale pending tools (edge case: tool call never got result)
@@ -471,7 +538,7 @@ class SDKSession:
             # Populate sdk_events for error tracing
             if self._producer and hasattr(self._producer, 'send_sdk_event'):
                 self._producer.send_sdk_event(
-                    session_name=f"{self.source}/{self.chat_id}",
+                    session_name=self._session_name,
                     chat_id=self.chat_id,
                     event_type="error",
                     is_error=True,
@@ -569,8 +636,10 @@ class SDKSession:
                 "PreToolUse": [HookMatcher(matcher="Read", hooks=[self._resize_image_hook])],  # type: ignore[list-item]
                 "Stop": [HookMatcher(hooks=[self._stop_hook])],  # type: ignore[list-item]
                 "PreCompact": [HookMatcher(hooks=[self._pre_compact_hook])],  # type: ignore[list-item]
-                # PostCompact is handled by settings.json command hook (bin/post-compact-hook)
-                # because the Python SDK doesn't have a PostCompact hook type yet.
+                # PostCompact: handled by settings.json command hook (bin/post-compact-hook)
+                # which produces compaction.completed bus event. Manager consumes that event
+                # and handles conditional "done" notification. SDK doesn't support PostCompact
+                # as a Python hook type.
             }
         )
 
@@ -706,56 +775,55 @@ class SDKSession:
             return {}
 
     async def _pre_compact_hook(self, input_data: "HookInputType", tool_use_id: str | None, context: "HookContext") -> "SyncHookJSONOutput":
-        """PreCompact hook: notify and let Claude Code compact natively.
+        """PreCompact hook: set compaction flag and let Claude Code compact natively.
 
         Fires when the CLI's context window is about to be compacted.
-        We send an SMS notification and log the event, then return empty
-        to let the native compaction proceed. The Notification hook will
-        handle post-compaction logging.
+        Sets session compaction state so the manager can conditionally notify
+        users who message during the compaction window. No SMS is sent here —
+        notifications are handled by the manager on message arrival.
         """
         from assistant.common import get_session_name
         session_name = get_session_name(self.chat_id, self.source)
-        self._log.info(f"PRECOMPACT | triggered | session={session_name} turns={self.turn_count}")
+
+        # Guard: if already compacting (shouldn't happen), preserve notification state
+        # so we don't lose a pending "done compacting" message
+        if self.compacting_since is not None:
+            self._log.warning(f"PRECOMPACT | double compaction detected | session={session_name} | preserving notified={self.compaction_notified}")
+            # Keep compaction_notified and compaction_notified_at as-is
+            self.compacting_since = time.monotonic()
+            self.compaction_count += 1
+            self.compaction_epoch += 1
+        else:
+            # Fresh compaction — reset all state
+            self.compacting_since = time.monotonic()
+            self.compaction_notified = False
+            self.compaction_notified_at = None
+            self.compaction_count += 1
+            self.compaction_epoch += 1
+
+        self._log.info(f"PRECOMPACT | triggered | session={session_name} turns={self.turn_count} count={self.compaction_count}")
         log.info(f"[{self.contact_name}] PreCompact hook fired (turns={self.turn_count})")
         produce_event(self._producer, "system", "compaction.triggered",
-            compaction_triggered_payload(session_name, self.chat_id, self.contact_name, self.turn_count),
+            compaction_triggered_payload(session_name, self.chat_id, self.contact_name, self.turn_count,
+                                        compaction_count=self.compaction_count, compaction_epoch=self.compaction_epoch),
             source="compaction")
 
-        # Log to compactions.log for visibility
+        # Write epoch to transcript dir so bash post-compact-hook can include it in bus event
+        if self.cwd:
+            epoch_file = Path(self.cwd) / ".compaction_epoch"
+            try:
+                epoch_file.write_text(str(self.compaction_epoch))
+            except OSError:
+                pass  # Non-critical
+
+        # Log to compactions.log for visibility (always, regardless of notification)
         compaction_log = Path.home() / "dispatch/logs/compactions.log"
+        compaction_log.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(compaction_log, "a") as f:
             f.write(f"{timestamp} | HOOK | PreCompact fired for {session_name}\n")
 
-        # Send compaction notice to the chat (fire-and-forget but reap the process)
-        # Controlled by hooks.pre_compact_notify config (default: true)
-        from assistant import config
-        if config.get("hooks.pre_compact_notify", True):
-            try:
-                from assistant.backends import get_backend
-                assistant_name = config.get("assistant.name", "Assistant")
-                backend = get_backend(self.source)
-                if self.session_type == "group":
-                    send_tpl = backend.send_group_cmd
-                else:
-                    send_tpl = backend.send_cmd
-                # Template is like '~/.claude/skills/.../send-sms "{chat_id}"'
-                # Extract the script path (before the first space) and expand ~
-                script_path = str(Path(send_tpl.split()[0]).expanduser())
-                proc = subprocess.Popen(
-                    [script_path, self.chat_id, f"[{assistant_name.upper()}] Compacting conversation\u2026"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                # Reap in a background thread to prevent zombie processes
-                import threading
-                threading.Thread(target=proc.wait, daemon=True, name="reap-compact-sms").start()
-            except Exception as e:
-                self._log.error(f"PRECOMPACT | send notice failed: {e}")
-        else:
-            self._log.info(f"PRECOMPACT | notify disabled by config")
-
-        # Let native compaction proceed (no more summarize-and-restart)
+        # Let native compaction proceed — no SMS here, manager handles notifications
         return {}
 
     # PostCompact is handled by settings.json command hook (bin/post-compact-hook).
@@ -789,6 +857,46 @@ class SDKSession:
             )
         }
 
+    @staticmethod
+    def _summarize_tool_input(tool_name: str, tool_input: dict) -> str | None:
+        """Build a short human-readable summary of tool input for sdk_events payload."""
+        if not tool_input:
+            return None
+        try:
+            if tool_name == "Bash":
+                cmd = tool_input.get("command", "")
+                desc = tool_input.get("description", "")
+                return desc or (cmd[:120] + ("…" if len(cmd) > 120 else ""))
+            elif tool_name in ("Read", "Write"):
+                path = tool_input.get("file_path", "")
+                # Show just filename
+                return path.rsplit("/", 1)[-1] if "/" in path else path
+            elif tool_name in ("Edit",):
+                path = tool_input.get("file_path", "")
+                return path.rsplit("/", 1)[-1] if "/" in path else path
+            elif tool_name in ("Grep",):
+                pattern = tool_input.get("pattern", "")
+                path = tool_input.get("path", "")
+                short_path = path.rsplit("/", 1)[-1] if "/" in path else (path or ".")
+                return f'"{pattern}" in {short_path}'
+            elif tool_name in ("Glob",):
+                return tool_input.get("pattern", "")
+            elif tool_name == "Agent":
+                return tool_input.get("description", "")
+            elif tool_name == "WebSearch":
+                return tool_input.get("query", "")
+            elif tool_name == "WebFetch":
+                url = tool_input.get("url", "")
+                return url[:120] if url else None
+            else:
+                # Generic: show first string value
+                for v in tool_input.values():
+                    if isinstance(v, str) and v:
+                        return v[:120]
+                return None
+        except Exception:
+            return None
+
     async def _handle_message(self, message):
         """Handle messages from client.receive_response().
 
@@ -801,6 +909,16 @@ class SDKSession:
             for block in message.content:
                 if isinstance(block, TextBlock):
                     self._log.info(f"OUT | {block.text}")
+                    # Emit text event so thinking indicator shows "Responding"
+                    if self._producer and hasattr(self._producer, 'send_sdk_event'):
+                        # Use first 120 chars as payload preview
+                        preview = block.text[:120] if block.text else None
+                        self._producer.send_sdk_event(
+                            session_name=self._session_name,
+                            chat_id=self.chat_id,
+                            event_type="text",
+                            payload=preview,
+                        )
                 elif isinstance(block, ToolUseBlock):
                     self._log.info(f"TOOL_USE | {block.name}")
                     # Track tool start time for performance logging
@@ -811,12 +929,16 @@ class SDKSession:
                     )
                     # Populate sdk_events for tool-level tracing
                     if self._producer and hasattr(self._producer, 'send_sdk_event'):
+                        # Build a short summary of tool input for the payload
+                        tool_input = block.input if isinstance(block.input, dict) else {}
+                        input_summary = self._summarize_tool_input(block.name, tool_input)
                         self._producer.send_sdk_event(
-                            session_name=f"{self.source}/{self.chat_id}",
+                            session_name=self._session_name,
                             chat_id=self.chat_id,
                             event_type="tool_use",
                             tool_name=block.name,
                             tool_use_id=block.id,
+                            payload=input_summary,
                         )
 
         elif isinstance(message, UserMessage):
@@ -828,7 +950,7 @@ class SDKSession:
                     if tool_use_id in self._pending_tools:
                         start_time, tool_input, tool_name = self._pending_tools.pop(tool_use_id)
                         duration_ms = (time.perf_counter() - start_time) * 1000
-                        session_name = f"{self.source}/{self.chat_id}"
+                        session_name = self._session_name
                         perf.log_tool_execution(
                             session=session_name,
                             tool=tool_name,
@@ -877,7 +999,7 @@ class SDKSession:
                 f"duration={message.duration_ms}ms | error={message.is_error} | "
                 f"sid={message.session_id}"
             )
-            session_name = f"{self.source}/{self.chat_id}"
+            session_name = self._session_name
             produce_event(self._producer, "system", "sdk.turn_complete", {
                 "session_name": session_name,
                 "chat_id": self.chat_id,

@@ -63,11 +63,14 @@ class TestBackendConfig:
             b.name = "changed"
 
     def test_all_backends_have_unique_names(self):
-        names = [b.name for b in BACKENDS.values()]
+        """Canonical backends (key == name) must have unique names."""
+        # Only check canonical entries (key matches name), skip backward-compat aliases
+        canonical = {k: b for k, b in BACKENDS.items() if k == b.name}
+        names = [b.name for b in canonical.values()]
         assert len(names) == len(set(names))
 
     def test_all_backends_have_unique_prefixes(self):
-        """Non-empty prefixes must be unique."""
+        """All non-empty prefixes must be unique across all entries (including aliases)."""
         prefixes = [b.registry_prefix for b in BACKENDS.values() if b.registry_prefix]
         assert len(prefixes) == len(set(prefixes))
 

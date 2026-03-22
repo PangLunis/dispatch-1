@@ -1,0 +1,65 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""
+reply-dispatch-api - Store assistant response for dispatch-api sessions.
+
+Called by Claude SDK sessions to send responses to the /agents web UI.
+Stores message in SQLite database (dispatch-messages.db).
+No TTS, no push notifications — lightweight version of reply-app.
+
+Usage:
+    reply-dispatch-api <chat_id> <message> [--image <path>]
+"""
+
+import argparse
+import sys
+import uuid
+from pathlib import Path
+
+# Add scripts dir to path for shared module import
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dispatch_db import init_db, store_message, copy_image_to_canonical
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Store dispatch-api session response")
+    parser.add_argument("chat_id", help="Chat ID (e.g., 'dispatch-api:debug-signal')")
+    parser.add_argument("message", help="Message text to send")
+    parser.add_argument("--image", help="Path to image file to attach", default=None)
+    args = parser.parse_args()
+
+    if not args.message.strip():
+        print("Empty message, skipping", file=sys.stderr)
+        sys.exit(1)
+
+    # Fix escaped exclamation marks from shell
+    message = args.message.replace("\\!", "!")
+
+    # Ensure chat_id has the dispatch-api: prefix for DB consistency
+    chat_id = args.chat_id
+    if not chat_id.startswith("dispatch-api:"):
+        chat_id = f"dispatch-api:{chat_id}"
+
+    init_db()
+
+    message_id = str(uuid.uuid4())
+
+    # Handle optional image attachment
+    image_path = None
+    if args.image:
+        image_path = copy_image_to_canonical(args.image, message_id, chat_id)
+        if image_path:
+            print(f"Image copied: {image_path}")
+        else:
+            print(f"Warning: image not found: {args.image}", file=sys.stderr)
+
+    store_message(message_id, "assistant", message, chat_id, image_path=image_path)
+
+    print(f"Message stored: {message_id}")
+
+
+if __name__ == "__main__":
+    main()

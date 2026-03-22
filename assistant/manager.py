@@ -1481,7 +1481,7 @@ class IPCServer:
         prompt = req.get("prompt", "")
         is_sms = req.get("sms", False)
         is_admin = req.get("admin", False)
-        is_sven_app = req.get("sven_app", False)
+        is_app = req.get("app", False)
         contact_name = req.get("contact_name")
         tier = req.get("tier")
         source = req.get("source", "imessage")
@@ -1494,7 +1494,7 @@ class IPCServer:
         # Wrap prompt if needed
         final_prompt = prompt
         if is_sms and contact_name and tier:
-            final_prompt = wrap_sms(final_prompt, contact_name, tier, chat_id, reply_to_guid=reply_to, source=source, sven_app=is_sven_app)
+            final_prompt = wrap_sms(final_prompt, contact_name, tier, chat_id, reply_to_guid=reply_to, source=source, app=is_app)
         if is_admin:
             final_prompt = wrap_admin(final_prompt)
 
@@ -1675,6 +1675,16 @@ class Manager:
                 error_action=actions.dead_letter(self._bus, "dead-letters"),
                 commit_interval_s=5,
             ),
+            # Compaction consumer: handles conditional "done compacting" notifications.
+            # When post-compact-hook produces compaction.completed, the manager checks
+            # if the user was notified during compaction and sends "done" if applicable.
+            ConsumerConfig(
+                topic="system",
+                group="compaction-handler",
+                filter=lambda r: r.type == "compaction.completed",
+                action=actions.call_function(self._handle_compaction_completed_records),
+                commit_interval_s=5,
+            ),
         ]
         return ConsumerRunner(self._bus, configs)
 
@@ -1697,6 +1707,24 @@ class Manager:
         thread.start()
         return thread
 
+    def _handle_compaction_completed_records(self, records):
+        """Bus consumer handler for compaction.completed events.
+
+        Delegates to SDKBackend.handle_compaction_completed() which checks
+        session state and conditionally sends 'done compacting' SMS.
+        """
+        for record in records:
+            try:
+                payload = json.loads(record.value) if isinstance(record.value, str) else record.value
+                session_name = payload.get("session_name", "")
+                duration_s = payload.get("duration_s", 0)
+                compaction_epoch = payload.get("compaction_epoch")
+                if session_name:
+                    self.sessions.handle_compaction_completed(session_name, duration_s,
+                                                              compaction_epoch=compaction_epoch)
+            except Exception as e:
+                log.error(f"COMPACTION_CONSUMER | error processing record: {e}")
+
     @staticmethod
     def _is_transient_error(error: Exception) -> bool:
         """Classify whether an error is transient (worth retrying) or permanent.
@@ -1713,7 +1741,7 @@ class Manager:
         permanent_patterns = [
             "keyerror", "valueerror", "typeerror", "attributeerror",
             "json", "decode", "malformed", "missing required",
-            "size",
+            "exceeds maximum size", "payload too large", "size limit",
         ]
         # Check permanent first — if it matches, don't retry
         for pattern in permanent_patterns:
@@ -1806,7 +1834,8 @@ class Manager:
                         # not per-offset (offsets change when re-produced for retry)
                         event_id = record.payload.get("_original_offset", record.offset)
                         retry_key = f"{record.topic}:{record.key}:{event_id}"
-                        retry_count = self._dlq_retry_counts.get(retry_key, 0)
+                        retry_count = self._dlq_retry_counts.get(retry_key, record.payload.get('_retry_count', 0))
+                        retry_count = min(retry_count, 10)  # Hard cap to prevent infinite retries
 
                         # Classify error using structured classifier
                         is_transient = self._is_transient_error(e)
@@ -2493,7 +2522,7 @@ class Manager:
         killed_any = False
         try:
             import subprocess as _sp
-            result = _sp.run(["lsof", "-ti", "tcp:9091"], capture_output=True, text=True)
+            result = _sp.run(["lsof", "-ti", "tcp:9091", "-sTCP:LISTEN"], capture_output=True, text=True)
             for pid_str in result.stdout.strip().split('\n'):
                 if pid_str.strip():
                     try:
@@ -3497,15 +3526,14 @@ You have 15 minutes. Work efficiently.
                 tid = payload.get("task_id")
                 if tid:
                     task_ids.add(tid)
-            expected = {"nightly-consolidation", "nightly-skillify", "nightly-bugfinder", "nightly-latencyfinder", "nightly-vacation-scraper"}
-            missing = expected - task_ids
-            if missing:
+            nightly_tasks = {tid for tid in task_ids if tid.startswith("nightly-")}
+            if not nightly_tasks:
                 log.warning(
-                    f"STARTUP_CHECK | Missing nightly task reminders: {missing}. "
-                    f"Run 'claude-assistant remind add --cron --event' to configure."
+                    "STARTUP_CHECK | No nightly task reminders found. "
+                    "Run 'claude-assistant remind add --cron --event' to configure."
                 )
             else:
-                log.info("STARTUP_CHECK | Nightly task reminders verified ✓")
+                log.info(f"STARTUP_CHECK | Nightly task reminders verified ✓ ({len(nightly_tasks)} tasks: {', '.join(sorted(nightly_tasks))})")
         except Exception as e:
             log.warning(f"STARTUP_CHECK | Could not verify nightly reminders: {e}")
 

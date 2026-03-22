@@ -1,0 +1,12 @@
+{
+  "appName": "DispatchApp",
+  "displayName": "Dispatch",
+  "accentColor": "#2563eb",
+  "iconPath": "./assets/images/icon.png",
+  "adaptiveIconPath": "./assets/images/adaptive-icon.png",
+  "splashColor": "#09090b",
+  "bundleIdentifier": "com.dispatch.app",
+  "scheme": "dispatch",
+  "apiHost": "",
+  "sessionPrefix": "dispatch-app"
+}

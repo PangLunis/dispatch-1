@@ -1,0 +1,910 @@
+---
+name: webgpu-forge
+description: Convert any ML model (ONNX, GGUF, TFLite) into a standalone browser project with hand-written WGSL compute shaders. No runtime dependencies, no ONNX Runtime, no transformers.js. Produces a zero-dependency TypeScript package that runs inference entirely via WebGPU. 9 phases guide you from model inspection through correctness validation to iPhone-optimized production and npm publish. Trigger words - webgpu, forge, model to webgpu, hand-written shaders, browser ml, convert model.
+---
+
+# WebGPU Forge
+
+Convert any ML model into a standalone browser project with hand-written WGSL compute shaders. No runtime framework, no ONNX Runtime, no transformers.js. The output is a zero-dependency TypeScript package that runs inference entirely via WebGPU compute dispatches.
+
+## What This Skill Produces
+
+Given a model file (ONNX, GGUF, or TFLite), this skill guides you through generating a complete standalone repo:
+
+```
+{model-name}-webgpu/
+  src/
+    types.ts           # Config interfaces, buffer types, bind group cache types
+    engine.ts          # Forward pass orchestrator — chains shader dispatches
+    shaders.ts         # All WGSL compute shaders as string literals
+    weights.ts         # Weight loader — format-specific parser + dequantization
+    tokenizer.ts       # Preprocessing (BPE tokenizer, phonemizer, image resize)
+    index.ts           # Public API (loadModel, generate/infer)
+  scripts/
+    inspect_model.py   # Graph inspector — maps ops, weights, quantization
+    dump_activations.py # Reference activation dumper — ground truth for validation
+    extract_weights.py  # Weight extraction + format conversion (ONNX/TFLite only)
+  tests/
+    activation-match.spec.ts  # Playwright test — WebGPU vs reference comparison
+  models/
+    activations/       # Reference .npy files from dump_activations.py
+    weights/           # Extracted weight binaries + JSON manifests
+  package.json         # Zero dependencies, tsup build
+  tsconfig.json
+  CLAUDE.md            # Architecture doc for future iteration sessions
+```
+
+The output is NOT a generic runtime. Every generated file is model-specific, readable, and modifiable. The shaders are hand-written WGSL — not auto-generated from a graph compiler. Claude writes each shader understanding the exact tensor shapes, strides, and data flow for this specific model.
+
+## When to Use
+
+- User wants to run an ML model in the browser via WebGPU
+- User wants to port an existing model (PyTorch, ONNX, TFLite, GGUF) to pure WebGPU
+- User mentions "hand-written shaders", "no ONNX Runtime", "zero dependencies", "browser ML"
+- User references the existing projects: webgpu-gemma, kitten-tts-webgpu, micro-handpose
+
+## Reference Implementations
+
+These three completed projects serve as the canonical examples. Read their source code when implementing corresponding phases:
+
+| Project | Model Type | Source Format | Shaders | Bundle | Perf (M4 Pro) |
+|---------|-----------|---------------|---------|--------|---------------|
+| `~/code/webgpu-gemma/` | LLM (Gemma 3 1B) | GGUF Q8_0 | 18 | 12KB gz | 59.8 t/s |
+| `~/code/kitten-tts-webgpu/` | TTS (Kitten TTS 80M) | ONNX (quantized) | 29 | 753KB gz | 3.3x RT |
+| `~/code/micro-handpose/` | Vision (Hand landmarks) | TFLite | 28 | 8KB gz | 2.2ms |
+
+Each project has full architecture documentation. Key reference files:
+- `~/code/webgpu-gemma/src/` — GGUF parsing, Q8 tiled matmul, KV cache, tokenizer, conversation
+- `~/code/kitten-tts-webgpu/CLAUDE.md` — ONNX pipeline architecture, 29 shader descriptions
+- `~/code/micro-handpose/CLAUDE.md` — TFLite multi-model pipeline, f16 validation
+
+---
+
+## Phases
+
+This skill operates in 9 sequential phases. Each phase has clear inputs, outputs, and success criteria. You can enter any phase independently — just ensure its prerequisites are met.
+
+### Phase 1: Inspect
+
+**Goal:** Understand the model's graph topology, operations inventory, weight layout, and quantization scheme. Build a mental model of the full inference pipeline before writing any code.
+
+**Inputs:** A model file (`.onnx`, `.gguf`, `.tflite`) or a HuggingFace model ID.
+
+**Steps:**
+
+1. **Download the model** if given a HuggingFace ID. For GGUF, prefer Q8_0 quantization. For ONNX, prefer the quantized variant if available.
+
+   > **WARNING (TFLite):** Check if the model is inside a `.task` zip bundle (MediaPipe convention — extract the `.tflite` from the zip). Also: MediaPipe models come in LITE and FULL variants with **completely different architectures, weight counts, layer names, and even activation functions.** Always verify which variant the reference runtime uses. Picking the wrong one wastes days — you'll get plausible but wrong output and spend hours debugging "accuracy issues" that are actually a different model.
+
+2. **Write `scripts/inspect_model.py`** — a Python script using `uv run` that:
+   - Parses the model file (onnxruntime for ONNX, struct/custom parser for GGUF, tensorflow for TFLite)
+   - Lists all operations/nodes grouped by type with counts
+   - Lists all weight tensors with: name, shape, dtype, quantization type, byte size
+   - Identifies the model's named components/blocks (encoder, decoder, attention layers, etc.)
+   - Maps the forward-pass data flow: input → ... → output
+   - Detects quantization scheme: which ops are quantized, what format (INT8, UINT8, Q8_0, Q4_0, float16)
+   - **For multi-model architectures** (e.g., detector + landmark model): inspect EACH model separately and document the inter-model data flow (what detector output becomes landmark input)
+   - Outputs a structured summary
+
+   **Starter template for ONNX inspection:**
+   ```python
+   #!/usr/bin/env -S uv run --script
+   # /// script
+   # requires-python = ">=3.11"
+   # dependencies = ["onnx", "onnxruntime", "numpy"]
+   # ///
+   import onnx, sys, json
+   from collections import Counter
+
+   model = onnx.load(sys.argv[1])
+   graph = model.graph
+
+   # Op inventory
+   ops = Counter(n.op_type for n in graph.node)
+   print("## Operations")
+   for op, count in ops.most_common():
+       print(f"  {op}: {count}")
+
+   # Weight inventory
+   print("\n## Weights")
+   for init in graph.initializer:
+       shape = list(init.dims)
+       dtype = onnx.TensorProto.DataType.Name(init.data_type)
+       size_bytes = len(init.raw_data) if init.raw_data else 0
+       print(f"  {init.name}: {shape} {dtype} ({size_bytes:,} bytes)")
+
+   # Graph I/O
+   print("\n## Inputs")
+   for inp in graph.input:
+       shape = [d.dim_value or d.dim_param for d in inp.type.tensor_type.shape.dim]
+       print(f"  {inp.name}: {shape}")
+   print("\n## Outputs")
+   for out in graph.output:
+       shape = [d.dim_value or d.dim_param for d in out.type.tensor_type.shape.dim]
+       print(f"  {out.name}: {shape}")
+   ```
+
+3. **Identify the preprocessing pipeline:**
+   - LLM: tokenizer type (BPE, SentencePiece, etc.), special tokens, chat template format
+   - TTS: phonemizer (espeak-ng, dictionary lookup), text normalization rules
+   - Vision: input resolution, normalization (mean/std or [0,1]), letterboxing/cropping strategy
+   - Note whether preprocessing can be done in pure JS or requires WASM (important for Safari compatibility)
+
+4. **Document findings** in the project's `CLAUDE.md` under "## Model Architecture":
+   - Total parameter count and weight size
+   - Named components with their op composition
+   - Quantization strategy
+   - Input/output tensor shapes and semantics
+   - Preprocessing pipeline requirements
+   - Any non-standard ops that will need special shaders (DynamicQuantizeLSTM, Snake activation, PReLU, etc.)
+   - For multi-model: full pipeline diagram showing model A → glue logic → model B
+   - Tied weights (e.g., Gemma's embedding = LM head) — note these to avoid duplicating GPU buffers
+
+**Success criteria:**
+- Every operation type in the model is identified and mapped to a component
+- Weight tensor count, shapes, and quantization types are fully catalogued
+- Forward-pass data flow is documented as a pipeline diagram
+- Non-standard ops are flagged with notes on how to implement them
+- Preprocessing requirements are documented
+- For multi-model: inter-model data flow is documented
+
+**Key lessons from reference projects:**
+- ONNX models may use quantized ops (`ConvInteger`, `MatMulInteger`, `DynamicQuantizeLSTM`) that look different from standard ops — inspect carefully
+- GGUF bundles config metadata AND tokenizer vocabulary in the file — extract both
+- TFLite batch normalization may be fused into conv bias at export time — check for `FusedBatchNormV3`
+- micro-handpose uses TWO models (palm detection + hand landmark) with NMS and affine-crop glue between them. Not all projects are single-model.
+
+---
+
+### Phase 2: Extract Weights + Preprocessing
+
+**Goal:** Extract all model weights from the source format, apply necessary transformations, and build the preprocessing pipeline (tokenizer, phonemizer, or image preprocessor).
+
+**Inputs:** Model file from Phase 1. Model architecture knowledge from Phase 1's `CLAUDE.md`.
+
+**Steps:**
+
+1. **Weight extraction** — two approaches depending on source format:
+
+   **For ONNX and TFLite: Python extraction to binary blob**
+
+   Write `scripts/extract_weights.py` using `uv run` that:
+   - Loads the model via its native runtime
+   - Iterates all weight tensors
+   - Applies format-specific transformations:
+
+   **ONNX transformations:**
+   - Dequantize INT8/UINT8 weights to float32: `f32 = (int_val - zero_point) * scale`
+   - Handle per-axis quantization (e.g., LSTM weights with `scale[num_directions]`)
+   - Convert float16 weights to float32
+   - Watch for varint-encoded packed fields in the protobuf — raw int32 arrays may need varint parsing
+   - Key lesson: dequantize at load time, use standard f32 matmul/conv shaders. Don't try to implement dynamic quantization on GPU.
+
+   **TFLite transformations:**
+   - Transpose NHWC weights to NCHW: regular conv `[O,H,W,I]→[O,I,H,W]`, depthwise `[1,H,W,C]→[C,1,H,W]`
+   - Handle fused BatchNorm: if BN params are folded into conv bias at export, each conv layer just needs weight + fused_bias (not 4 separate BN params)
+   - Watch for LITE vs FULL model variants — they have completely different weight naming
+   - Float16 storage with optional f32 conversion
+
+   Output: binary blob + JSON manifest with keys, shapes, byte offsets, and dtype.
+
+   **For GGUF: TypeScript runtime parser (no Python extraction)**
+
+   GGUF models are parsed at runtime in the browser. Write `src/gguf.ts` that:
+   - Reads the GGUF binary header (magic bytes, version, tensor count, KV metadata)
+   - Extracts model config from metadata keys (hidden_size, num_layers, head_count, etc.)
+   - Extracts tokenizer vocabulary from `tokenizer.ggml.tokens` metadata
+   - Builds a tensor info table mapping name → {shape, quantization_type, byte_offset}
+   - Loads weights via HTTP Range requests: fetch first 20MB for header, then per-layer Range requests
+   - Packs Q8_0 blocks for GPU: 34-byte block (2B f16 scale + 32B int8) → 9 uint32 (1 f32 scale + 8 packed int8)
+   - Packs Q4_0 similarly: 18-byte block → 5 uint32
+   - **Keep embedding in quantized format on GPU** — dequantizing a 262K-token embedding to f32 uses 671MB and crashes iPhones. Use a `embeddingLookupQ8` shader that dequantizes per-token on the fly.
+
+2. **Build the preprocessing pipeline** — write `src/tokenizer.ts` (or `src/phonemizer.ts`, `src/preprocessor.ts`):
+
+   **For LLMs:**
+   - Extract tokenizer from GGUF metadata or separate tokenizer.json
+   - Implement BPE or longest-prefix-match tokenization in pure JS
+   - Handle special tokens: BOS, EOS, turn markers
+   - Build chat template formatter (model-family specific — Gemma uses `<start_of_turn>user\n{text}<end_of_turn>\n<start_of_turn>model\n`)
+   - Multi-turn conversation manager with KV cache position tracking
+
+   **For TTS:**
+   - Port phonemizer to pure JS if possible (avoids WASM/Safari issues)
+   - Build a pronunciation dictionary (e.g., 234K-word CMU-style dictionary)
+   - Implement text normalization (numbers, abbreviations, punctuation)
+   - **Safari doesn't support `ReadableStream[Symbol.asyncIterator]`** — if using any streaming/WASM, use manual `getReader()` loop with `while(true) { const {done, value} = await reader.read(); ... }` pattern
+
+   **For Vision:**
+   - Implement letterbox resize on GPU (`letterboxResizeShader`) matching the exact coordinate formula the reference model uses
+   - Implement affine crop on GPU for multi-model pipelines (detector → crop → landmark model)
+   - Match the reference model's exact normalization (e.g., [0,1] vs [-1,1] vs ImageNet mean/std)
+
+3. **Validation:** Compare extracted weight values against the source model: `np.allclose(extracted, original, atol=1e-3)`.
+
+**Success criteria:**
+- All weight tensors extracted/parseable and GPU-ready
+- Preprocessing pipeline produces output matching the reference runtime
+- `CLAUDE.md` updated with weight format and preprocessing documentation
+
+**Key lessons from reference projects:**
+- ONNX protobuf varint parsing is subtle — packed int32 fields use varint encoding. Getting this wrong causes zero_point=0 instead of zero_point=129, making ALL dequantized weights wrong.
+- TFLite weight names differ between LITE and FULL variants — build explicit name-mapping tables.
+- Weight key collisions happen (e.g., `conv_landmarks` appearing twice with different shapes) — disambiguate with shape suffix.
+- For models >100MB, split weights per-layer for HTTP Range request loading (critical for mobile).
+- Safari doesn't support `ReadableStream[Symbol.asyncIterator]` — this breaks any streaming weight loader or WASM preprocessor that uses async iteration. Always use manual `getReader()` loop.
+
+---
+
+### Phase 3: Reference Activations
+
+**Goal:** Generate ground-truth intermediate activations for every pipeline stage by running the model through its native runtime. These are the "oracle" for Phase 6 validation.
+
+**Inputs:** Weights from Phase 2. A representative test input.
+
+**Steps:**
+
+1. **Choose a test input** appropriate for the model type:
+   - LLM: A short prompt like `"Hello, how are you?"`
+   - TTS: A short sentence like `"Hello, this is a test."`
+   - Vision: A test image (solid color or simple pattern for determinism)
+   - Record the exact input — it must be reproduced identically in WebGPU
+
+2. **Write `scripts/dump_activations.py`** — a Python script using `uv run` that:
+   - Loads the model via its native runtime (ONNX Runtime, TF Lite, transformers)
+   - Runs inference on the test input
+   - Hooks into every intermediate computation and saves the output tensor as a `.npy` file
+   - Names files by pipeline stage: `01_embedding.npy`, `02_encoder_output.npy`, etc.
+   - Saves to `models/activations/`
+   - **Save both input AND output** of each component — this helps identify whether a bug is in the component itself or its input preparation
+
+   **For ONNX:** Use ONNX Runtime's `InferenceSession` with intermediate node outputs.
+
+   **For GGUF/transformers:** Hook into the model's forward pass with PyTorch hooks (`register_forward_hook`).
+
+   **For TFLite:** Use `tf.lite.Interpreter` with `get_tensor()` to read intermediate tensor values by index.
+
+   **Starter template for ONNX activation dumping:**
+   ```python
+   #!/usr/bin/env -S uv run --script
+   # /// script
+   # requires-python = ">=3.11"
+   # dependencies = ["onnxruntime", "numpy"]
+   # ///
+   import onnxruntime as ort, numpy as np, sys, os
+
+   model_path = sys.argv[1]
+   out_dir = "models/activations"
+   os.makedirs(out_dir, exist_ok=True)
+
+   # Get all intermediate node output names
+   sess = ort.InferenceSession(model_path)
+   model = ort.InferenceSession.__init__  # for type hint only
+
+   import onnx
+   onnx_model = onnx.load(model_path)
+   intermediate_names = [n.output[0] for n in onnx_model.graph.node if n.output[0]]
+
+   # Add intermediate outputs to model
+   for name in intermediate_names:
+       onnx_model.graph.output.append(onnx.helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, None))
+
+   # Run with all intermediates
+   import tempfile
+   tmp = tempfile.NamedTemporaryFile(suffix='.onnx', delete=False)
+   onnx.save(onnx_model, tmp.name)
+   sess = ort.InferenceSession(tmp.name)
+
+   # Create dummy input matching model's expected shape
+   inputs = {}
+   for inp in sess.get_inputs():
+       shape = [d if isinstance(d, int) else 1 for d in inp.shape]
+       inputs[inp.name] = np.zeros(shape, dtype=np.float32)
+
+   results = sess.run(intermediate_names, inputs)
+   for i, (name, arr) in enumerate(zip(intermediate_names, results)):
+       safe_name = name.replace("/", "_").replace(":", "_")
+       np.save(f"{out_dir}/{i:03d}_{safe_name}.npy", arr)
+       print(f"  {i:03d} {safe_name}: {arr.shape} {arr.dtype}")
+   ```
+
+   **For multi-model pipelines:** Dump activations for EACH model separately. Also dump the glue logic outputs (e.g., NMS results, crop coordinates).
+
+3. **Document the activation checkpoint map** in `CLAUDE.md`: which `.npy` file corresponds to which pipeline stage, with expected shapes.
+
+4. **Verify determinism:** Run the dumper twice and confirm all activations are bitwise identical.
+
+**Success criteria:**
+- Every major pipeline stage has a corresponding `.npy` activation file
+- Activation shapes documented and consistent with model architecture
+- Deterministic across runs
+- At least 20+ checkpoints for complex models (kitten-tts needed 37)
+
+---
+
+### Phase 4: Shader Library
+
+**Goal:** Write all WGSL compute shaders needed for this model's forward pass.
+
+**Inputs:** Operation inventory from Phase 1. Model architecture from `CLAUDE.md`.
+
+**Steps:**
+
+1. **Map each model operation to a shader.** Prioritize in this order:
+
+   **Essential (almost every model needs these):**
+   - `matmul` — tiled 16x16 with workgroup shared memory
+   - `add` — element-wise addition (residual connections)
+   - Normalization: `layerNorm` or `rmsNorm` or `instanceNorm` (pick based on model)
+   - Activation: `gelu` or `relu` or model-specific (Snake, PReLU, etc.)
+   - `embeddingLookup` — token/input to vector
+
+   **Add as needed (model-specific):**
+   - Attention: `rope`, `kvCacheStore`, `attnScore`, `softmax`, `attnOutput`
+   - Convolution: `conv1d`, `conv2d`, `depthwise`, `conv1x1`, `convTranspose1d`
+   - Quantized: `linearQ8`, `linearQ4`, `embeddingLookupQ8`
+   - Recurrent: `lstm` (bidirectional, one workgroup per direction)
+   - Style: `adain` (both channel-first and row-major variants)
+   - Reshape: `transpose`, `concat`, `expand`, `pad`, `upsample`
+   - I/O: `canvasInput`, `letterboxResize`, `affineCrop`, `argmax`, `topk`
+   - Audio: `snake` activation, `istft`, `sinGenerator`
+   - Fused: `matmulGelu`, `geluMul`, `fusedNormAdd`, `fusedPerHeadNormRope`
+
+2. **Write `src/shaders.ts`** — all shaders as exported TypeScript string literals.
+
+   **Every shader MUST follow this template:**
+
+   ```wgsl
+   // Bind group layout:
+   // @group(0) @binding(0) input: array<f32>   [N elements]
+   // @group(0) @binding(1) weight: array<f32>  [M x N elements]
+   // @group(0) @binding(2) output: array<f32>  [M elements]
+   // @group(0) @binding(3) params: Params       {M: u32, N: u32}
+
+   struct Params {
+     M: u32,
+     N: u32,
+   }
+
+   @group(0) @binding(0) var<storage, read> input: array<f32>;
+   @group(0) @binding(1) var<storage, read> weight: array<f32>;
+   @group(0) @binding(2) var<storage, read_write> output: array<f32>;
+   @group(0) @binding(3) var<uniform> params: Params;
+
+   @compute @workgroup_size(256)
+   fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+     let idx = gid.x;
+     if (idx >= params.M) { return; }  // bounds check
+
+     // ... shader logic here ...
+
+     output[idx] = result;
+   }
+   ```
+
+   **Key patterns:**
+   - Workgroup size 256 (optimal for Apple GPUs)
+   - ALL dimensions via uniform buffer (never hardcoded)
+   - Bounds check at top of main function
+   - Document bind group layout in comment header
+
+   **Tiled matmul template** (the workhorse — copy this for any matmul):
+
+   ```wgsl
+   // 16x16 tiled matmul with shared memory
+   // output[row] = sum(weight[row, k] * input[k]) for k in 0..N
+
+   const TILE = 16u;
+   var<workgroup> tile_a: array<f32, 256>;  // 16x16
+   var<workgroup> tile_b: array<f32, 256>;
+
+   @compute @workgroup_size(16, 16)
+   fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+           @builtin(local_invocation_id) lid: vec3<u32>) {
+     let row = gid.x;
+     let col = gid.y;  // only col=0 for matvec
+     if (row >= params.M) { return; }
+
+     var acc = 0.0;
+     let num_tiles = (params.N + TILE - 1u) / TILE;
+
+     for (var t = 0u; t < num_tiles; t++) {
+       let k = t * TILE + lid.y;
+       tile_a[lid.x * TILE + lid.y] = select(0.0, weight[row * params.N + k], k < params.N);
+       tile_b[lid.y] = select(0.0, input[k], k < params.N);
+       workgroupBarrier();
+
+       for (var i = 0u; i < TILE; i++) {
+         acc += tile_a[lid.x * TILE + i] * tile_b[i];
+       }
+       workgroupBarrier();
+     }
+
+     output[row] = acc;  // add + bias[row] if model has bias (requires @binding(3) bias: array<f32>)
+   }
+   ```
+
+3. **Apply numerical stability patterns:**
+   - **Clamp tanh/sigmoid inputs** to [-44, 44] — `exp(88)` overflows f32 → NaN propagates through entire inference
+   - **Clamp all exp() inputs** — any shader using `exp()` needs clamping
+   - **Use vec4 dot products** where possible for 4x fewer iterations
+
+4. **Float16 support** (recommended for vision, optional for others):
+   - Write `applyF16Weights()` transformer: converts `array<f32>` weight declarations to `array<f16>`
+   - Add f16 validation test at initialization (two-pass compute with realistic buffers)
+   - Automatic fallback to f32 when f16 silently fails (iOS Safari)
+
+**Success criteria:**
+- Every model operation has a corresponding shader
+- Shaders compile via `device.createShaderModule()`
+- No hardcoded dimensions
+- Numerical stability guards on all exp/tanh/sigmoid
+- Matmul uses tiled shared-memory variant
+
+**Key lessons from reference projects:**
+- The matmul shader dominates performance. Get tiling right early.
+- For GGUF: matmul must dequantize on-the-fly using `extractBits()` on packed u32 values
+- Snake activation is easy to miss — looks like a residual but has a sin^2 term critical for audio quality
+- AdaIN needs both channel-first and row-major variants depending on data layout
+- **Group/depthwise convolution:** kitten-tts has `group=1090` in a ConvTranspose1d. Getting the group parameter wrong produces correct-shaped but wrong-valued output. Implement per-group weight slicing in the conv shader.
+
+---
+
+### Phase 5: Engine (Forward Pass)
+
+**Goal:** Write the TypeScript inference engine that orchestrates the full forward pass.
+
+**Inputs:** Shaders from Phase 4. Weight format from Phase 2. Pipeline architecture from Phase 1.
+
+**Steps:**
+
+1. **Write `src/weights.ts`** — the weight loader:
+   - For ONNX: custom minimal protobuf parser (not google-protobuf library)
+   - For GGUF: the `gguf.ts` from Phase 2 with Range request streaming
+   - For TFLite: fetch JSON manifest + binary blob
+   - Upload each weight tensor to `GPUBuffer` with `GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC`
+   - **CRITICAL: Always include `COPY_SRC` flag** on ALL storage buffers — without it, `copyBufferToBuffer` silently no-ops and debug readbacks return all zeros
+   - For tied weights (embedding = LM head): share the same GPUBuffer, not duplicate. Duplicating doubles memory and causes OOM on mobile.
+   - For large models (>100MB): Range request streaming — fetch per-layer, upload, free JS buffer. Peak JS memory stays ~50MB instead of model-size.
+   - **After all weight uploads:** call `await device.queue.onSubmittedWorkDone()` — this sync point ensures all weight data is committed to GPU before proceeding to pipeline creation.
+
+2. **Write `src/engine.ts`** — the forward pass orchestrator:
+
+   **Write `src/types.ts`** first — define all config interfaces, buffer types, and bind group cache types:
+   ```typescript
+   // Model config (extracted from GGUF metadata or ONNX graph)
+   interface ModelConfig {
+     hiddenSize: number;
+     numLayers: number;
+     numHeads: number;
+     // ... model-specific fields
+   }
+
+   // Pre-allocated GPU buffers for intermediate values
+   interface WorkBuffers {
+     hidden: GPUBuffer;
+     normed: GPUBuffer;
+     residual: GPUBuffer;
+     // ... all work buffers
+   }
+
+   // Per-layer weight buffers
+   interface LayerBuffers {
+     attnNormWeight: GPUBuffer;
+     qWeight: GPUBuffer;
+     // ... all weight buffers for one layer
+   }
+
+   // Pre-created bind groups for one layer
+   interface LayerBindGroups {
+     attnNorm: GPUBindGroup;
+     qProj: GPUBindGroup;
+     // ... all bind groups for one layer
+   }
+   ```
+
+   **Initialization pattern:**
+   ```typescript
+   // 1. Request device
+   const adapter = await navigator.gpu.requestAdapter();
+   const device = await adapter.requestDevice({
+     requiredFeatures: useF16 ? ['shader-f16'] : [],
+     // Request larger buffer limits for big models
+     requiredLimits: {
+       maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+       maxBufferSize: adapter.limits.maxBufferSize,
+     }
+   });
+
+   // Handle device loss (common on mobile — triggers on background/OOM)
+   device.lost.then((info) => {
+     console.error(`Device lost: ${info.message}`);
+   });
+
+   // 2. Create ALL shader modules
+   const modules = {
+     matmul: device.createShaderModule({ code: matmulShader }),
+     rmsNorm: device.createShaderModule({ code: rmsNormShader }),
+     // ... all shaders
+   };
+
+   // 3. Create ALL compute pipelines (layout: 'auto')
+   const pipelines = {
+     matmul: device.createComputePipeline({
+       layout: 'auto',
+       compute: { module: modules.matmul, entryPoint: 'main' }
+     }),
+     // ...
+   };
+
+   // 4. Allocate work buffers
+   const buffers = {
+     hidden: device.createBuffer({
+       size: hiddenSize * 4,
+       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+     }),
+     // ...
+   };
+
+   // 5. Pre-create ALL bind groups (one per dispatch per layer)
+   const bindGroups = layers.map(layer => ({
+     attnNorm: device.createBindGroup({
+       layout: pipelines.rmsNorm.getBindGroupLayout(0),
+       entries: [
+         { binding: 0, resource: { buffer: buffers.hidden } },
+         { binding: 1, resource: { buffer: layer.attnNormWeight } },
+         { binding: 2, resource: { buffer: buffers.normed } },
+         { binding: 3, resource: { buffer: layer.normParams } },
+       ]
+     }),
+     // ... all bind groups for this layer
+   }));
+   ```
+
+   **Forward pass with command encoder batching:**
+   ```typescript
+   // beginBatch(): create single command encoder
+   let encoder = device.createCommandEncoder();
+
+   // Each dispatch: begin compute pass, set pipeline + bind group, dispatch, end
+   function dispatch(pipeline, bindGroup, workgroups) {
+     const pass = encoder.beginComputePass();
+     pass.setPipeline(pipeline);
+     pass.setBindGroup(0, bindGroup);
+     pass.dispatchWorkgroups(...workgroups);
+     pass.end();
+   }
+
+   // flushBatchEncoder(): submit current encoder, create new one
+
+   // Workgroup count calculation:
+   // 1D (elementwise, reduce): Math.ceil(numElements / 256)
+   // 2D tiled matmul (16x16): [Math.ceil(M / 16), Math.ceil(N / 16)]
+   // Conv1D: Math.ceil(outputLength / 256)
+   // Conv2D: [Math.ceil(outH / 16), Math.ceil(outW / 16), outChannels]
+   // Call at stage boundaries for iOS Safari (max ~20-30 dispatches per submit)
+   function flushBatch() {
+     device.queue.submit([encoder.finish()]);
+     encoder = device.createCommandEncoder();
+   }
+
+   // endBatch(): final submit
+   device.queue.submit([encoder.finish()]);
+   ```
+
+   **Buffer lifecycle — deferDestroy pattern:**
+   ```typescript
+   const pendingDestroys: GPUBuffer[] = [];
+   function deferDestroy(buffer: GPUBuffer) {
+     pendingDestroys.push(buffer);
+   }
+   // After encoder submit + completion:
+   function flushDestroys() {
+     for (const buf of pendingDestroys) buf.destroy();
+     pendingDestroys.length = 0;
+   }
+   ```
+
+   **Debug support:**
+   - `debugCapture` flag enables GPU buffer readbacks at each pipeline stage
+   - `readBuffer()` helper: creates staging buffer with `MAP_READ`, copies, maps, returns Float32Array
+   - Store in `debugActivations: Map<string, Float32Array>`
+
+3. **Write `src/index.ts`** — the public API:
+   - `loadModel(url, options?)` with progress callback
+   - Model-specific inference: `generate()` / `synthesize()` / `detect()`
+   - Cleanup/destroy method
+
+4. **For multi-model pipelines** (e.g., detector + landmark):
+   - Separate `compileModel()` for each model
+   - CPU-side glue between models: NMS (non-maximum suppression), ROI computation, coordinate transforms
+   - GPU affine crop shader to extract regions for the second model
+   - One Euro filter or similar temporal smoothing for video streams
+
+**Success criteria:**
+- Engine compiles and runs without GPU errors
+- Forward pass produces output of correct shape
+- All buffer flags include `COPY_SRC`
+- Command encoder batching implemented
+- No per-inference bind group or pipeline creation
+- Debug capture mode works
+
+**Key lessons from reference projects:**
+- Missing `COPY_SRC` is a silent killer — `readBuffer()` returns zeros with no error
+- Individual `queue.submit()` per dispatch causes 5-7x slowdown AND crashes iOS Safari
+- `mappedAtCreation` for uniform buffers avoids `writeBuffer` overhead
+- ONNX `DynamicQuantizeLSTM` stores weights transposed vs standard LSTM — swap `W[gate * IS + j]` to `W[j * H4 + gate]`
+- For LLMs: `forwardPassOnly()` during prefill skips unnecessary GPU readbacks between tokens
+
+---
+
+### Phase 6: Activation Matching
+
+**Goal:** Validate correctness by comparing every intermediate WebGPU activation against Phase 3 references. This is where 90% of debugging happens.
+
+**Inputs:** Engine from Phase 5. Reference activations from Phase 3.
+
+**Steps:**
+
+1. **Write `tests/activation-match.spec.ts`** — a Playwright test:
+
+   **Playwright config for WebGPU:**
+   ```typescript
+   // playwright.config.ts
+   export default defineConfig({
+     use: {
+       browserName: 'chromium',
+       launchOptions: {
+         args: [
+           '--enable-unsafe-webgpu',
+           '--enable-features=Vulkan',
+           // On macOS, alternatively:
+           // '--use-angle=metal',
+         ]
+       }
+     }
+   });
+   ```
+
+   The test:
+   - Loads model with `debugCapture: true`
+   - Runs inference on the EXACT same input as reference dumping
+   - For each checkpoint: compare with `|a - b| <= atol + rtol * |b|`
+   - Report: max absolute error, mean absolute error, pass/fail per checkpoint
+
+2. **Run and iterate.** The first run WILL fail. Debug using the known bug database:
+
+   **Known Bug Database:**
+
+   | Bug Pattern | Symptom | Root Cause | Fix |
+   |-------------|---------|------------|-----|
+   | Wrong weight layout | Early layer diverges by large factor | Weight tensor indexed with wrong stride/dimension order. ONNX DynamicQuantizeLSTM transposes W. TFLite uses NHWC. | Check source format's weight layout docs. Swap indexing. |
+   | Missing dequantization | All outputs ~100x too large/small | INT8/UINT8 weights uploaded without `(val - zero_point) * scale` | Apply dequant formula during weight extraction |
+   | Varint parsing error | Specific layers have wrong bias/zero_point | ONNX protobuf packed int32 fields use varint encoding, not raw 4-byte values | Parse varints inside packed repeated fields |
+   | Missing normalization factor | Error grows multiplicatively through layers | Residual connections missing `/ sqrt(2)`, or embedding missing `* sqrt(hidden_size)` | Check model source for residual scaling conventions |
+   | Wrong activation function | Shape correct, values systematically wrong | Using ReLU where model uses Snake, or LeakyReLU where model uses PReLU | Trace ONNX graph carefully — names can mislead |
+   | NaN propagation | All-NaN output after a few layers | `exp()` overflow in GELU/sigmoid/tanh when input >88 | Clamp: tanh/sigmoid to [-44,44], exp to [-88,88] |
+   | Buffer flag missing | Debug readbacks return all zeros | GPUBuffer without `COPY_SRC` — `copyBufferToBuffer` silently no-ops | Add `COPY_SRC` to ALL storage buffer creation |
+   | Wrong tensor input | Correct shape, wrong values | Feeding wrong intermediate tensor to a component | Trace ONNX graph to confirm exact input tensor |
+   | Padding asymmetry | Small consistent error in conv layers | TFLite stride-2 SAME padding is asymmetric | Compute asymmetric padding per TFLite's formula |
+   | Style vector split | Two components produce swapped outputs | Split index wrong (e.g., `[0:128]` vs `[128:256]` swapped) | Check source model's split dimension |
+   | BN param handling | Conv outputs systematically biased | Using 4 BN params when TFLite fused them into single bias | Check for FusedBatchNormV3 — use fused bias only |
+   | f16 silent failure | All outputs zero on iOS Safari | `shader-f16` available but complex pipelines produce zeros | Add f16 validation self-test, fallback to f32 |
+   | Weight key collision | One layer always wrong | Two tensors share same key, Map overwrite | Disambiguate with shape suffix |
+   | Group conv wrong | Correct shape, wrong channel values | Group/depthwise conv parameter wrong or not implemented | Check group count, implement per-group weight slicing |
+   | Tied weight duplication | OOM on mobile, 2x expected memory | Embedding and LM head using separate copies of same weights | Share GPUBuffer, don't upload twice |
+   | workgroupBarrier in branch | Random wrong values, non-deterministic | `workgroupBarrier()` inside divergent `if` block — undefined behavior per WGSL spec | Move ALL barriers outside conditionals, ensure all invocations reach them |
+   | u32 index overflow | Wrong values for large tensors only | `row * N + col` overflows u32 when tensor has >4B elements | Cast to i32 arithmetic or split into multiple dispatches |
+
+3. **Debugging strategy:**
+   - Start from the FIRST failing checkpoint
+   - Read back the INPUT to that stage — if input is wrong, bug is upstream
+   - Compare shapes first, then values
+   - Error magnitude guide: >100x = wrong weights/missing dequant. ~2x = missing sqrt(2). Small systematic = wrong activation or padding
+
+4. **Tighten tolerances** as bugs are fixed:
+   - f32: `atol=0.01, rtol=0.01`
+   - f16: `atol=0.1, rtol=0.05`
+   - Final output: model-dependent (audio ~1.0, landmarks ~0.01)
+
+**Success criteria:**
+- ALL activation checkpoints pass within tolerance
+- Final output matches reference (correct text, recognizable audio, accurate landmarks)
+- No NaN or Inf values anywhere
+- Fix bugs in pipeline order — don't fix downstream while upstream is broken
+
+---
+
+### Phase 7: Optimize
+
+**Goal:** Maximize inference speed. Target: competitive with or faster than framework alternatives.
+
+**Inputs:** Correct engine from Phase 6 (all checkpoints passing).
+
+**Steps:**
+
+1. **Benchmark baseline** with `performance.now()` per stage. Identify bottleneck (>20% of total).
+
+2. **Command encoder batching** (5-7x improvement if not done in Phase 5):
+   - Reference: kitten-tts 830ms → 146ms from batching alone
+
+3. **Fused shaders** — combine sequential ops on same data:
+   - `fusedNormAdd`, `fusedPerHeadNormRope`, `matmulGelu`, `geluMul`
+
+4. **Tiled matmul with shared memory** — 2-3x for attention/FFN:
+   - Reference: webgpu-gemma encoder 33ms → 16.1ms
+
+5. **GPU migration** of remaining CPU ops:
+   - Reference: kitten-tts LSTM to GPU (146→124ms), iSTFT to GPU (11.9→0.7ms)
+
+6. **Buffer lifecycle**: `mappedAtCreation` for uniforms, buffer reuse, drop CPU weight cache after upload
+
+7. **Model-specific:**
+   - **LLMs:** KV cache reuse, batched prefill, GPU top-K sampling
+   - **TTS:** Per-section HiFi-GAN flushes, cached sin generator weights
+   - **Vision:** GPU letterbox/crop, pipelined inference, vec4 dot products, 2-output-channel parallelism
+
+8. **Re-run activation matching** after each optimization.
+
+**Success criteria:**
+- ≥2x speedup from Phase 5 baseline
+- All checkpoints still pass
+- No CPU bottlenecks remaining
+- Peak JS memory under 100MB for models under 1GB
+
+---
+
+### Phase 8: Mobile Hardening
+
+**Goal:** Reliable iPhone Safari (iOS 26+) via WebGPU. Every project hit iOS-specific issues.
+
+**Inputs:** Optimized engine from Phase 7. LambdaTest account.
+
+**Steps:**
+
+1. **Test on LambdaTest** (see `/lambdatest` skill): iPhone 17 Pro Max, iOS 26, Safari.
+
+   **LambdaTest workflow:**
+   - Use the `/lambdatest` skill to launch a real device session
+   - Deploy your demo page via `/sven-pages` or localhost tunnel
+   - Open Safari DevTools (via LambdaTest remote inspector) to check console for WebGPU errors
+   - Run inference 10+ times consecutively to check for memory leaks and thermal throttling
+   - Test with the screen locked/unlocked cycle — iOS kills WebGPU contexts on background
+
+   **Backgrounding / thermal:**
+   - iOS Safari destroys GPU device when the tab is backgrounded or screen locks
+   - The `device.lost` handler (Phase 5) must trigger full re-initialization: re-request adapter+device, re-upload weights, re-create pipelines
+   - After 30+ seconds of continuous inference, A-series chips thermal-throttle — expect 20-40% perf drop
+   - Never auto-retry on device loss — show user a "tap to restart" button instead
+
+2. **Apply known iOS fixes:**
+
+   **Memory:**
+   - Keep large embeddings quantized on GPU (don't dequantize to f32)
+   - Drop CPU weight cache after upload
+   - Range request streaming for models >100MB
+   - Cap context length / max sequence length
+
+   **GPU submission:**
+   - Stage-boundary `flushBatchEncoder()` — iOS can't handle 100+ dispatches per submit
+   - Per-section flushes within large stages
+   - `deferDestroy()` — never destroy a buffer pending command encoders reference
+
+   **f16:**
+   - Two-pass validation test at init (not just feature detection)
+   - Auto fallback to f32 on validation failure
+
+   **Safari compat:**
+   - No `ReadableStream[Symbol.asyncIterator]` — use manual `getReader()` loop
+   - Add timeouts on WASM preprocessing with fallbacks
+   - Disable autostart on mobile (prevents crash loops)
+
+3. **Performance targets (Apple A18/M4):**
+   - <50M params: real-time (2.2ms hand detection)
+   - 50-100M params: 1-5x RT (1.3x for TTS)
+   - 100M-1B params: usable (34 t/s LLM)
+   - >1B: too large for mobile — use smaller variant
+
+**Success criteria:**
+- Inference completes without crashing
+- No silent f16 failures
+- Peak JS memory under 100MB
+- Crash-free across 10 consecutive runs
+
+---
+
+### Phase 9: Package and Publish
+
+**Goal:** Build and publish as a zero-dependency npm package with CDN-hosted weights.
+
+**Inputs:** Hardened engine from Phase 8.
+
+**Steps:**
+
+1. **Configure `tsup` build:**
+   ```typescript
+   // tsup.config.ts
+   export default defineConfig({
+     entry: ['src/index.ts'],
+     format: ['esm'],
+     dts: true,
+     clean: true,
+     minify: true,
+   });
+   ```
+
+2. **Configure `package.json`:**
+   ```json
+   {
+     "name": "{model-name}-webgpu",
+     "version": "0.1.0",
+     "type": "module",
+     "main": "dist/index.js",
+     "types": "dist/index.d.ts",
+     "exports": {
+       ".": {
+         "import": "./dist/index.js",
+         "types": "./dist/index.d.ts"
+       }
+     },
+     "files": ["dist"],
+     "scripts": {
+       "build": "tsup",
+       "test": "playwright test"
+     }
+   }
+   ```
+   - Zero `dependencies` — everything is bundled
+   - `devDependencies` only: tsup, typescript, playwright
+
+3. **Host weights:**
+   - For npm-published packages: weights auto-served via jsdelivr CDN (`https://cdn.jsdelivr.net/npm/{package}@{version}/models/...`)
+   - For larger models: separate hosting with Range request support
+   - Default weight URL in code points to CDN; API allows custom URL override
+
+4. **Create demo `index.html`:**
+   - Standalone HTML page that imports from the built package
+   - Shows model loading progress
+   - Interactive inference with the model
+   - Mobile-responsive layout
+   - Benchmark display (time, tokens/sec or RT factor)
+
+5. **Write README.md:**
+   - API documentation with usage examples
+   - Performance benchmarks (desktop + mobile)
+   - Model variants and sizes
+   - Browser requirements (WebGPU, Chrome 113+, Safari iOS 26+)
+
+6. **Build and verify:** `npm run build` must pass before publishing.
+
+7. **Publish:** `npm publish` (or `npm publish --access public` for scoped packages)
+
+**Success criteria:**
+- `npm run build` produces clean output with no errors
+- Package installs and works from npm: `import { loadModel } from '{package}'`
+- Weights load from CDN without CORS issues
+- Demo page works on desktop Chrome and mobile Safari
+- README has complete API docs and benchmarks
+
+---
+
+## Known Patterns Across All Reference Projects
+
+### Bundle Size Achievement
+- Zero runtime dependencies
+- Shaders as inline string literals (no .wgsl files to fetch)
+- Custom minimal parsers (not google-protobuf, not ggml.js)
+- Tree-shakeable ESM exports
+- `tsup` for building
+
+### Weight Serving Strategy
+- **<50MB:** Single blob, one fetch
+- **50-200MB:** Single blob + progress callback
+- **>200MB:** Range request streaming (per-layer fetch + upload + free)
+- **CDN:** jsdelivr for npm packages, or any static server with Range support
+
+### Development Timeline
+Each project took 3-4 days:
+- Day 1: Phases 1-3 (inspect, extract, reference)
+- Day 2: Phases 4-6 (shaders, engine, activation matching + debugging)
+- Day 3: Phases 7-9 (optimize, mobile harden, publish)

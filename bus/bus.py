@@ -281,6 +281,12 @@ class Bus:
                 ON sdk_events_archive(tool_name) WHERE tool_name IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_sdk_archive_archived_at
                 ON sdk_events_archive(archived_at);
+
+            CREATE TABLE IF NOT EXISTS session_states (
+                session_name TEXT PRIMARY KEY,
+                is_busy INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            ) WITHOUT ROWID;
         """)
 
         # Migration: add archive column to topics table (defaults to 1 = enabled)
@@ -840,6 +846,8 @@ class Producer:
                         self._write_record_item(item)
                     elif item["table"] == "sdk_events":
                         self._write_sdk_event_item(item)
+                    elif item["table"] == "session_states":
+                        self._write_session_state_item(item)
                 self._conn.execute("COMMIT")
             except Exception:
                 self._offset_cache.clear()  # Invalidate on error too
@@ -1043,6 +1051,15 @@ class Producer:
         )
         logger.debug("SDK event: %s/%s tool=%s", item["session_name"], item["event_type"], item["tool_name"])
 
+    def _write_session_state_item(self, item: dict):
+        """Upsert session busy state within an active transaction."""
+        self._conn.execute(
+            "INSERT INTO session_states (session_name, is_busy, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(session_name) DO UPDATE SET is_busy=excluded.is_busy, updated_at=excluded.updated_at",
+            (item["session_name"], 1 if item["is_busy"] else 0, item["updated_at"]),
+        )
+
     def send(
         self,
         topic: str,
@@ -1157,6 +1174,15 @@ class Producer:
             "is_error": is_error,
             "payload": payload,
             "num_turns": num_turns,
+        })
+
+    def set_session_busy(self, session_name: str, is_busy: bool) -> None:
+        """Update session busy state in session_states table. Fire-and-forget."""
+        self._write_queue.put({
+            "table": "session_states",
+            "session_name": session_name,
+            "is_busy": is_busy,
+            "updated_at": _now_ms(),
         })
 
     def flush(self, timeout: float = 5.0) -> bool:

@@ -15,7 +15,8 @@ allowed-tools:
 Build, test, and deploy iOS apps from the command line.
 
 **Project locations:**
-- **Sven app**: `~/dispatch/apps/sven-ios/` (consolidated into dispatch repo)
+- **Dispatch app (active)**: `~/dispatch/apps/dispatch-app/` (Expo/React Native)
+- **Sven SwiftUI app (deprecated)**: `~/dispatch/apps/sven-ios-deprecated/`
 - **Other apps**: `~/code/ios-apps/`
 
 ## Development Workflow (MUST FOLLOW)
@@ -117,14 +118,14 @@ xcrun simctl io booted screenshot /tmp/cuj-main-screen.png
 
 ## Project Structure
 
-**Sven app (in dispatch repo):**
+**Dispatch app (active, Expo/React Native):**
 ```
-~/dispatch/apps/sven-ios/
-├── Sven.xcodeproj/
-├── Sven/
-│   ├── SvenApp.swift
-│   └── ...
-└── build/
+~/dispatch/apps/dispatch-app/
+```
+
+**Sven SwiftUI app (deprecated):**
+```
+~/dispatch/apps/sven-ios-deprecated/
 ```
 
 **Other apps:**
@@ -1037,7 +1038,7 @@ The project file needs:
 3. PBXResourcesBuildPhase in the target's build phases
 4. Assets.xcassets in the HelloWorld group's children
 
-See the Sven project at `~/dispatch/apps/sven-ios/` for a working example.
+See the deprecated Sven SwiftUI project at `~/dispatch/apps/sven-ios-deprecated/` for a working example. The active app is at `~/dispatch/apps/dispatch-app/`.
 
 ### Generate Custom Icons with Gemini (nano-banana skill)
 

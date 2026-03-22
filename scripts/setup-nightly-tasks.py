@@ -2,12 +2,13 @@
 """
 Set up nightly ephemeral tasks via the reminder/scheduler system.
 
-Creates five cron reminders that fire task.requested events:
+Creates six cron reminders that fire task.requested events:
 1. Vacation house scraper (agent mode, 1:45am) - runs nightly-scraper + builds HTML report
 2. Memory consolidation (script mode, 2:00am) - runs consolidate_3pass + consolidate_chat
 3. Skillify analysis (agent mode, 2:10am) - runs /skillify --nightly
 4. Bug finder scan (agent mode, 2:20am) - runs /bug-finder --nightly
 5. Latency finder scan (agent mode, 2:30am) - runs /latency-finder --nightly
+6. Sven Times gazette (agent mode, 2:40am) - generates daily gazette from system activity
 
 These replace the hardcoded 2am consolidation in manager.py.
 
@@ -44,8 +45,9 @@ CONSOLIDATION_TASK_ID = "nightly-consolidation"
 SKILLIFY_TASK_ID = "nightly-skillify"
 BUGFINDER_TASK_ID = "nightly-bugfinder"
 LATENCYFINDER_TASK_ID = "nightly-latencyfinder"
+SVENTIMES_TASK_ID = "nightly-sventimes"
 
-NIGHTLY_TASK_IDS = {VACATION_SCRAPER_TASK_ID, CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID, BUGFINDER_TASK_ID, LATENCYFINDER_TASK_ID}
+NIGHTLY_TASK_IDS = {VACATION_SCRAPER_TASK_ID, CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID, BUGFINDER_TASK_ID, LATENCYFINDER_TASK_ID, SVENTIMES_TASK_ID}
 
 # Vacation house scraper prompt
 VACATION_SCRAPER_PROMPT = (
@@ -75,6 +77,53 @@ LATENCYFINDER_PROMPT = (
     "Use the full discovery→refinement pipeline with opus subagents. "
     "Send the report to admin via SMS only if there are ACCEPT or REFINE verdicts. "
     "If clean scan (all metrics within baselines), log silently."
+)
+
+# Sven Times daily gazette prompt
+SVENTIMES_PROMPT = (
+    "Generate today's edition of The Sven Times — a daily gazette of system activity.\n\n"
+    "TONE & STYLE: Professional newspaper voice with understated wit. Third-person perspective. "
+    "Write as if reporting on a complex technical system for an audience of engineers. "
+    "Example lead: 'The messaging subsystem processed 400 inbound messages across eight active sessions "
+    "yesterday, while a nightly consolidation pass merged conversation context for all contacts.'\n\n"
+    "Steps:\n"
+    "1. GATHER DATA: Run: uv run ~/code/svenflow.ai/scripts/gather-daily-data (defaults to today). "
+    "This script already applies OPSEC filtering (blocklist, PII regex, IP/UUID redaction).\n\n"
+    "2. READ TEMPLATE: Read ~/code/svenflow.ai/pages/times/index.html — replicate its exact HTML structure, CSS, and class names. "
+    "Do NOT invent new structure; match what exists.\n\n"
+    "3. READ BLOCKLIST: Read ~/code/svenflow.ai/scripts/opsec-blocklist.txt — this is the AUTHORITATIVE source of blocked terms. "
+    "In addition to those terms, these CATEGORIES are always denied:\n"
+    "   - Infrastructure identifiers: IP addresses, ports, hostnames, API keys, session IDs, commit SHAs\n"
+    "   - Media services: streaming, downloading, media automation, media management\n"
+    "   - Real estate: property searches, listings, addresses, house hunting\n"
+    "   - PII: phone numbers, email addresses, real names of ANY contacts or people (except the system builder in the about section)\n"
+    "   - Contact info: chat IDs, group IDs, phone numbers\n"
+    "   When in doubt, OMIT. Never mention what was filtered — just skip it entirely.\n\n"
+    "4. PLAN CONTENT: Before writing HTML, plan the gazette as structured notes:\n"
+    "   Lead article: kicker, headline, 1-sentence summary, 150-250 word body with a pull-quote\n"
+    "   2 dispatch articles: kicker, headline, 60-100 word summary\n"
+    "   3-4 briefing items: headline + 1-2 sentence description\n"
+    "   Editor's desk: 2-3 sentences, 50-80 words\n"
+    "   Valid kickers: INFRASTRUCTURE, MESSAGING, SESSION MANAGEMENT, HEALTH, DEVELOPMENT, AUTOMATION, OPERATIONS\n"
+    "   SPARSE DATA: If total messages.received < 10 AND tasks list is empty AND git_commits is empty, "
+    "generate a 'quiet day' edition — focus on uptime/stability themes, system health metrics, shorter content.\n"
+    "   ERROR: If gather-daily-data exits non-zero or returns {\"error\": ...}, generate a minimal edition "
+    "noting data was unavailable with a brief system status.\n\n"
+    "5. WRITE HTML: Fill the template structure with the planned content.\n"
+    "   Dateline format: 'Vol. 1 · [Full weekday], [Month] [Day], [Year]' (e.g., 'Vol. 1 · Friday, March 21, 2026')\n"
+    "   Use drop-cap class on the lead article's first paragraph.\n"
+    "   Include a pull-quote in the lead article.\n"
+    "   Use ABSOLUTE font paths: /pages/times/fonts/source-serif-4.woff2\n\n"
+    "6. OPSEC VERIFICATION (MANDATORY): Run the deterministic verifier:\n"
+    "   uv run ~/code/svenflow.ai/scripts/verify-opsec ~/code/svenflow.ai/pages/times/index.html\n"
+    "   This checks ALL blocklist terms PLUS pattern-based detection (phone, email, IP, UUID, git SHA).\n"
+    "   If it reports violations, fix them in the HTML and re-run verify-opsec until it prints CLEAN.\n"
+    "   Do NOT proceed to deploy until verify-opsec exits with code 0.\n\n"
+    "7. ARCHIVE: Run: uv run ~/code/svenflow.ai/scripts/archive-edition\n"
+    "   This deterministic script archives yesterday's edition and updates editions.json. Do not do this manually.\n\n"
+    "8. DEPLOY: cd ~/code/svenflow.ai && npm run build && bash deploy.sh\n"
+    "   If deploy fails, do NOT retry. Log the error and exit.\n\n"
+    "9. Do NOT send any SMS notification — this runs silently."
 )
 
 # Skillify prompt (single source of truth, used in both instructions and execution.prompt)
@@ -225,6 +274,33 @@ def _build_latencyfinder_reminder(admin_phone: str) -> dict:
     }
 
 
+def _build_sventimes_reminder(admin_phone: str) -> dict:
+    """Build the Sven Times daily gazette reminder config."""
+    return {
+        "title": "Nightly Sven Times gazette",
+        "schedule_type": "cron",
+        "schedule_value": "40 2 * * *",  # 2:40am daily (after other agents)
+        "tz_name": "America/New_York",
+        "event": {
+            "topic": "tasks",
+            "type": "task.requested",
+            "key": admin_phone,
+            "payload": {
+                "task_id": SVENTIMES_TASK_ID,
+                "title": "Nightly Sven Times gazette",
+                "requested_by": admin_phone,
+                "instructions": SVENTIMES_PROMPT,
+                "notify": False,
+                "timeout_minutes": 60,
+                "execution": {
+                    "mode": "agent",
+                    "prompt": SVENTIMES_PROMPT,
+                },
+            },
+        },
+    }
+
+
 def find_existing(reminders: list) -> list:
     """Find existing nightly task reminders by task_id in event payload."""
     found = []
@@ -303,6 +379,11 @@ def cmd_add():
         data["reminders"].append(r4)
         print(f"  Added: {r4['title']} (id={r4['id']}, cron=30 2 * * *, mode=agent)")
 
+        # Create Sven Times gazette reminder
+        r5 = create_reminder(**_build_sventimes_reminder(admin_phone))
+        data["reminders"].append(r5)
+        print(f"  Added: {r5['title']} (id={r5['id']}, cron=40 2 * * *, mode=agent)")
+
         save_reminders(data)
 
     print("\n✅ All nightly tasks scheduled (staggered, ET):")
@@ -311,6 +392,7 @@ def cmd_add():
     print("  2:10am - Skillify analysis (90min timeout, agent mode)")
     print("  2:20am - Bug finder scan (90min timeout, agent mode)")
     print("  2:30am - Latency finder scan (90min timeout, agent mode)")
+    print("  2:40am - Sven Times gazette (60min timeout, agent mode)")
 
 
 def main():

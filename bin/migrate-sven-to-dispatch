@@ -1,0 +1,79 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""
+One-time migration: rewrite sven-app: → dispatch-app: prefixes in sessions.json.
+
+This completes the rename from the old "sven-app" backend name to "dispatch-app".
+Run once, then remove the sven-app backward compat entry from backends.py.
+
+Usage:
+    migrate-sven-to-dispatch [--dry-run]
+"""
+
+import json
+import shutil
+import sys
+from pathlib import Path
+
+STATE_DIR = Path.home() / "dispatch" / "state"
+SESSIONS_FILE = STATE_DIR / "sessions.json"
+
+
+def migrate(dry_run: bool = False):
+    if not SESSIONS_FILE.exists():
+        print("sessions.json not found, nothing to migrate")
+        return
+
+    data = json.loads(SESSIONS_FILE.read_text())
+    changes = 0
+    new_data = {}
+
+    for key, value in data.items():
+        new_key = key.replace("sven-app:", "dispatch-app:")
+        if new_key != key:
+            changes += 1
+            print(f"  key: {key} → {new_key}")
+
+        # Also update fields inside the value
+        new_value = dict(value)
+        for field in ("chat_id", "session_name", "source", "transcript_dir"):
+            if field in new_value and isinstance(new_value[field], str):
+                old_val = new_value[field]
+                new_val = old_val.replace("sven-app", "dispatch-app")
+                if new_val != old_val:
+                    print(f"    {field}: {old_val} → {new_val}")
+                    new_value[field] = new_val
+                    changes += 1
+
+        new_data[new_key] = new_value
+
+    if changes == 0:
+        print("No sven-app references found, nothing to migrate")
+        return
+
+    print(f"\nTotal changes: {changes}")
+
+    if dry_run:
+        print("\n[DRY RUN] No changes written")
+        return
+
+    # Backup original
+    backup = SESSIONS_FILE.with_suffix(".json.bak-sven")
+    shutil.copy2(SESSIONS_FILE, backup)
+    print(f"Backup saved to {backup}")
+
+    # Write migrated data
+    SESSIONS_FILE.write_text(json.dumps(new_data, indent=2) + "\n")
+    print(f"Migration complete! {changes} changes written to {SESSIONS_FILE}")
+    print("\nNext steps:")
+    print("  1. Restart the daemon: claude-assistant restart")
+    print("  2. Verify sessions come up: claude-assistant status")
+    print("  3. Remove BACKENDS['sven-app'] from backends.py")
+
+
+if __name__ == "__main__":
+    dry_run = "--dry-run" in sys.argv
+    migrate(dry_run)

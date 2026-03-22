@@ -1,5 +1,5 @@
 """
-Tests for the sven-app backend and API server.
+Tests for the dispatch-app backend and API server.
 """
 
 import json
@@ -40,52 +40,65 @@ def temp_audio_dir():
 # =============================================================================
 
 
-class TestSvenAppBackend:
-    """Tests for the sven-app backend configuration."""
+class TestDispatchAppBackend:
+    """Tests for the dispatch-app backend configuration."""
 
     def test_backend_exists_in_backends(self):
-        """Verify sven-app backend is registered."""
+        """Verify dispatch-app backend is registered."""
         from assistant.backends import BACKENDS, get_backend
 
-        assert "sven-app" in BACKENDS
-        backend = get_backend("sven-app")
-        assert backend.name == "sven-app"
+        assert "dispatch-app" in BACKENDS
+        backend = get_backend("dispatch-app")
+        assert backend.name == "dispatch-app"
 
     def test_backend_config_values(self):
-        """Verify sven-app backend has correct configuration."""
+        """Verify dispatch-app backend has correct configuration."""
         from assistant.backends import get_backend
 
-        backend = get_backend("sven-app")
-        assert backend.label == "SVEN_APP"
-        assert backend.session_suffix == "-sven-app"
-        assert backend.registry_prefix == "sven-app:"
-        assert "reply-sven" in backend.send_cmd
+        backend = get_backend("dispatch-app")
+        assert backend.label == "DISPATCH_APP"
+        assert backend.session_suffix == "-dispatch-app"
+        assert backend.registry_prefix == "dispatch-app:"
+        assert "reply-app" in backend.send_cmd
 
     def test_backend_send_cmd_format(self):
         """Verify send_cmd has proper format with chat_id placeholder."""
         from assistant.backends import get_backend
 
-        backend = get_backend("sven-app")
+        backend = get_backend("dispatch-app")
         assert "{chat_id}" in backend.send_cmd
 
+    def test_backward_compat_sven_app_alias(self):
+        """Verify sven-app is a backward-compat alias for dispatch-app."""
+        from assistant.backends import BACKENDS
+
+        assert "sven-app" in BACKENDS
+        sven_app = BACKENDS["sven-app"]
+        dispatch_app = BACKENDS["dispatch-app"]
+        # Same canonical name, same send_cmd, but different registry prefix
+        assert sven_app.name == dispatch_app.name == "dispatch-app"
+        assert sven_app.send_cmd == dispatch_app.send_cmd
+        assert sven_app.registry_prefix == "sven-app:"
+        assert dispatch_app.registry_prefix == "dispatch-app:"
+
 
 # =============================================================================
-# Reply-Sven CLI Tests
+# Reply-App CLI Tests
 # =============================================================================
 
 
-class TestReplySvenCLI:
-    """Tests for the reply-sven CLI."""
+class TestReplyAppCLI:
+    """Tests for the reply-app CLI."""
 
-    def test_reply_sven_exists(self):
-        """Verify reply-sven script exists and is executable."""
-        script_path = Path.home() / ".claude" / "skills" / "sven-app" / "scripts" / "reply-sven"
-        assert script_path.exists(), f"reply-sven not found at {script_path}"
-        assert os.access(script_path, os.X_OK), "reply-sven is not executable"
+    def test_reply_app_exists(self):
+        """Verify reply-app script exists and is executable."""
+        script_path = Path.home() / ".claude" / "skills" / "dispatch-app" / "scripts" / "reply-app"
+        assert script_path.exists(), f"reply-app not found at {script_path}"
+        assert os.access(script_path, os.X_OK), "reply-app is not executable"
 
-    def test_reply_sven_empty_message_fails(self):
+    def test_reply_app_empty_message_fails(self):
         """Verify empty messages are rejected."""
-        script_path = Path.home() / ".claude" / "skills" / "sven-app" / "scripts" / "reply-sven"
+        script_path = Path.home() / ".claude" / "skills" / "dispatch-app" / "scripts" / "reply-app"
         result = subprocess.run(
             [str(script_path), "voice", ""],
             capture_output=True,
@@ -93,9 +106,9 @@ class TestReplySvenCLI:
         )
         assert result.returncode != 0
 
-    def test_reply_sven_stores_message(self, temp_db, temp_audio_dir):
-        """Verify reply-sven stores messages in database."""
-        script_path = Path.home() / ".claude" / "skills" / "sven-app" / "scripts" / "reply-sven"
+    def test_reply_app_stores_message(self, temp_db, temp_audio_dir):
+        """Verify reply-app stores messages in database."""
+        script_path = Path.home() / ".claude" / "skills" / "dispatch-app" / "scripts" / "reply-app"
 
         # Patch the paths in the script
         with patch.dict(os.environ, {
@@ -117,6 +130,12 @@ class TestReplySvenCLI:
             conn.close()
 
             # Note: Full test would require mocking TTS, but we verify structure
+
+    def test_reply_sven_backward_compat_exists(self):
+        """Verify reply-sven backward-compat wrapper exists."""
+        script_path = Path.home() / ".claude" / "skills" / "dispatch-app" / "scripts" / "reply-sven"
+        assert script_path.exists(), f"reply-sven backward-compat wrapper not found at {script_path}"
+        assert os.access(script_path, os.X_OK), "reply-sven is not executable"
 
 
 # =============================================================================
@@ -226,15 +245,13 @@ class TestMessageDatabase:
 # =============================================================================
 
 
-class TestSvenAPIModels:
+class TestDispatchAPIModels:
     """Tests for API data models."""
 
     def test_prompt_request_model(self):
         """Verify PromptRequest model structure."""
-        # This would test the Pydantic model if we import it
-        # For now, verify the expected JSON structure
         request_data = {
-            "transcript": "Hello Sven",
+            "transcript": "Hello",
             "token": "test-token-123"
         }
         assert "transcript" in request_data
@@ -281,8 +298,8 @@ class TestSvenAPIModels:
 # =============================================================================
 
 
-class TestSvenAPIIntegration:
-    """Integration tests for the Sven API server.
+class TestDispatchAPIIntegration:
+    """Integration tests for the Dispatch API server.
 
     These tests require the server to be running.
     """
