@@ -744,6 +744,7 @@ class SDKBackend:
         thread_originator_guid: str | None = None,
         source: str = "imessage",
         message_timestamp: datetime | None = None,
+        message_guid: str | None = None,
     ) -> bool:
         """Inject a message into an existing session.
         Creates session on-demand if missing (lazy creation).
@@ -796,6 +797,7 @@ class SDKBackend:
         wrapped = wrap_sms(
             msg_body, contact_name, tier, chat_id,
             reply_to_guid=thread_originator_guid, source=source,
+            message_guid=message_guid,
         )
         await session.inject(wrapped)
         self.registry.update_last_message_time(normalized)
@@ -1241,6 +1243,7 @@ Gemini analyzed the attached image:
         thread_originator_guid: str | None = None,
         source: str = "imessage",
         message_timestamp: datetime | None = None,
+        message_guid: str | None = None,
     ) -> bool:
         """Inject a message into a group session."""
         if not chat_id:
@@ -1273,6 +1276,7 @@ Gemini analyzed the attached image:
         wrapped = wrap_group_message(
             chat_id, display_name, sender_name, sender_tier,
             msg_body, reply_to_guid=thread_originator_guid, source=source,
+            message_guid=message_guid,
         )
         await session.inject(wrapped)
         self.registry.update_last_message_time(chat_id)

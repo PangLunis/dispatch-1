@@ -11,6 +11,16 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+# Shared schema constants — imported by server.py to eliminate drift
+CHAT_NOTES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chat_notes (
+    chat_id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+    content TEXT NOT NULL DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 _STATE_DIR = Path.home() / "dispatch" / "state"
 DB_PATH = _STATE_DIR / "dispatch-messages.db"
 IMAGE_DIR = _STATE_DIR / "dispatch-images"
@@ -40,6 +50,7 @@ def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")  # Wait up to 5s on lock contention
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -87,6 +98,9 @@ def init_db():
             conn.execute("ALTER TABLE chats ADD COLUMN last_opened_at DATETIME")
         except Exception:
             pass  # Column already exists (race condition)
+    # Chat notes table (1:1 with chats)
+    conn.execute(CHAT_NOTES_SCHEMA)
+
     conn.commit()
     conn.close()
 

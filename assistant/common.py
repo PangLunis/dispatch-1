@@ -165,6 +165,18 @@ def get_group_session_name_from_participants(participant_names: list) -> str:
   return "-".join(first_names) if first_names else "group-unknown"
 
 
+def _guid_decorations(message_guid: str | None) -> tuple[str, str]:
+  """Build GUID line and react hint for injected prompts.
+
+  Returns (guid_line, react_hint) — both empty strings if no GUID.
+  """
+  if not message_guid:
+    return "", ""
+  guid_line = f"\nMessage-GUID: {message_guid}"
+  react_hint = f'\nTo react: reply --react <emoji> --guid "{message_guid}"'
+  return guid_line, react_hint
+
+
 def wrap_sms(
   prompt: str,
   contact_name: str,
@@ -173,6 +185,7 @@ def wrap_sms(
   reply_to_guid: str | None = None,
   source: str = "imessage",
   app: bool = False,
+  message_guid: str | None = None,
 ) -> str:
   """Wrap prompt in SMS format with reminder to send via CLI.
 
@@ -206,13 +219,15 @@ def wrap_sms(
   now = datetime.now(ZoneInfo("America/New_York"))
   timestamp = now.strftime("%a %b %d, %Y %-I:%M%p %Z")  # Mon Feb 23, 2026 6:12PM EST
 
+  guid_line, react_hint = _guid_decorations(message_guid)
+
   return f"""
 ---{backend.label} FROM {contact_name} ({tier})---
 Chat ID: {chat_id}
-Time: {timestamp}{reply_context}
+Time: {timestamp}{guid_line}{reply_context}
 {display_prompt}
 ---END {backend.label}---
-**Important:** You are in a text message session. Communicate back with: {reply_cmd}
+**Important:** You are in a text message session. Communicate back with: {reply_cmd}{react_hint}
 """
 
 
@@ -237,6 +252,7 @@ def wrap_group_message(
   msg_body: str,
   reply_to_guid: str | None = None,
   source: str = "imessage",
+  message_guid: str | None = None,
 ) -> str:
   """Wrap a group message for injection."""
   shown_name = display_name or "Group Chat"
@@ -272,14 +288,16 @@ def wrap_group_message(
   now = datetime.now(ZoneInfo("America/New_York"))
   timestamp = now.strftime("%a %b %d, %Y %-I:%M%p %Z")  # Mon Feb 23, 2026 6:12PM EST
 
+  guid_line, react_hint = _guid_decorations(message_guid)
+
   return f"""
 ---GROUP {backend.label} [{shown_name}] FROM {sender_name} [TIER: {sender_tier}]---
 Chat ID: {chat_id}
-Time: {timestamp}{reply_context}
+Time: {timestamp}{guid_line}{reply_context}
 {msg_body}
 ---END {backend.label}---{acl_note}
 
-To reply: ~/.claude/skills/sms-assistant/scripts/reply "message"
+To reply: ~/.claude/skills/sms-assistant/scripts/reply "message"{react_hint}
 """
 
 

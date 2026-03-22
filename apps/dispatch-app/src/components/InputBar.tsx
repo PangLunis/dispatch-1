@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
+import { SymbolView } from "expo-symbols";
 import { branding } from "../config/branding";
 import { impactLight } from "../utils/haptics";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
@@ -243,9 +244,12 @@ export function InputBar({ onSend, onSendWithImage, disabled }: InputBarProps) {
               ]}
               hitSlop={8}
             >
-              <View style={styles.sendArrow}>
-                <ArrowUpIcon />
-              </View>
+              <SymbolView
+                name="arrow.up"
+                tintColor="#ffffff"
+                size={18}
+                weight="bold"
+              />
             </Pressable>
           ) : showMic ? (
             <Pressable
@@ -262,19 +266,6 @@ export function InputBar({ onSend, onSendWithImage, disabled }: InputBarProps) {
         </View>
       </View>
     </>
-  );
-}
-
-/** Simple arrow-up SVG drawn with RN Views */
-function ArrowUpIcon() {
-  return (
-    <View style={arrowStyles.container}>
-      <View style={arrowStyles.shaft} />
-      <View style={arrowStyles.chevronContainer}>
-        <View style={arrowStyles.chevronLeft} />
-        <View style={arrowStyles.chevronRight} />
-      </View>
-    </View>
   );
 }
 
@@ -303,41 +294,6 @@ function ImageIcon() {
     </View>
   );
 }
-
-const arrowStyles = StyleSheet.create({
-  container: {
-    width: 16,
-    height: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  shaft: {
-    width: 2,
-    height: 10,
-    backgroundColor: "#ffffff",
-    position: "absolute",
-    bottom: 1,
-  },
-  chevronContainer: {
-    position: "absolute",
-    top: 0,
-    flexDirection: "row",
-  },
-  chevronLeft: {
-    width: 2,
-    height: 7,
-    backgroundColor: "#ffffff",
-    transform: [{ rotate: "-45deg" }],
-    marginRight: -1,
-  },
-  chevronRight: {
-    width: 2,
-    height: 7,
-    backgroundColor: "#ffffff",
-    transform: [{ rotate: "45deg" }],
-    marginLeft: -1,
-  },
-});
 
 const micStyles = StyleSheet.create({
   container: {
@@ -467,10 +423,6 @@ const styles = StyleSheet.create({
   },
   buttonPressed: {
     opacity: 0.7,
-  },
-  sendArrow: {
-    alignItems: "center",
-    justifyContent: "center",
   },
   pasteBar: {
     backgroundColor: "#1c1c1e",

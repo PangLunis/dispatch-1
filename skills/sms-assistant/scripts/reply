@@ -10,21 +10,30 @@ Usage:
     reply --image /path/to.png          # Send image only
     reply "caption" --image /path.png   # Send text + image
     reply --file /path/to.pdf           # Send any file
+    reply --react ❤️ --guid "p:0/..."   # React to a specific message (iMessage only)
 """
 import sys
 import json
 import subprocess
 import argparse
+import sqlite3
+import time
+import re
 from pathlib import Path
 
 TRANSCRIPTS_DIR = Path.home() / "transcripts"
 REGISTRY_PATH = Path.home() / "dispatch/state/sessions.json"
+BUS_DB_PATH = Path.home() / "dispatch/state/bus.db"
 SEND_SMS = Path.home() / ".claude/skills/sms-assistant/scripts/send-sms"
 SEND_SIGNAL = Path.home() / ".claude/skills/signal/scripts/send-signal"
 SEND_SIGNAL_GROUP = Path.home() / ".claude/skills/signal/scripts/send-signal-group"
 SEND_DISCORD = Path.home() / ".claude/skills/discord/scripts/send-discord"
 REPLY_APP = Path.home() / ".claude/skills/dispatch-app/scripts/reply-app"
 REPLY_DISPATCH_API = Path.home() / ".claude/skills/dispatch-app/scripts/reply-dispatch-api"
+
+GUID_PATTERN = re.compile(r'^(p:\d+/|s:\d+/|iMessage;)')
+# iMessage backends that support tapback reactions
+TAPBACK_BACKENDS = {"imessage", "test"}
 
 def is_group_chat_id(chat_id: str) -> bool:
     bare = chat_id
@@ -40,17 +49,82 @@ def strip_registry_prefix(chat_id: str) -> str:
             return chat_id[len(prefix):]
     return chat_id
 
+def produce_tapback(chat_id: str, message_guid: str, reaction: str, backend: str):
+    """Produce a tapback event to the imessage.ui bus topic."""
+    # Validate GUID format
+    if not GUID_PATTERN.match(message_guid):
+        print(f"Error: Invalid message GUID format: {message_guid}", file=sys.stderr)
+        print("Expected format: p:0/... or s:0/... or iMessage;...", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate backend supports tapbacks
+    if backend not in TAPBACK_BACKENDS:
+        print(f"Error: Tapback reactions only supported for iMessage (backend={backend})", file=sys.stderr)
+        sys.exit(1)
+
+    # Basic reaction validation — must be non-empty string
+    if not reaction or not reaction.strip():
+        print("Error: --react value cannot be empty", file=sys.stderr)
+        sys.exit(1)
+
+    if not BUS_DB_PATH.exists():
+        print(f"Error: Bus database not found at {BUS_DB_PATH}", file=sys.stderr)
+        sys.exit(1)
+
+    now_ms = int(time.time() * 1000)
+    payload = json.dumps({
+        "chat_id": chat_id,
+        "message_guid": message_guid,
+        "reaction": reaction.strip(),
+    })
+
+    conn = sqlite3.connect(str(BUS_DB_PATH))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+
+        # Use BEGIN IMMEDIATE to prevent race conditions with the Producer's
+        # background writer thread. This ensures offset read + INSERT are atomic.
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT COALESCE(MAX(\"offset\"), -1) + 1 FROM records WHERE topic = 'imessage.ui' AND partition = 0"
+        ).fetchone()
+        next_offset = row[0] if row else 0
+
+        conn.execute(
+            "INSERT INTO records (topic, partition, \"offset\", timestamp, key, type, source, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("imessage.ui", 0, next_offset, now_ms, f"imessage/{chat_id}", "tapback", "reply-cli", payload)
+        )
+        conn.commit()
+        print(f"Tapback {reaction} queued for {message_guid[:30]}...")
+    except Exception as e:
+        conn.rollback()
+        print(f"Error producing tapback event: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.close()
+
 def main():
     parser = argparse.ArgumentParser(description="Universal reply CLI")
     parser.add_argument("message", nargs="?", default="", help="Message text")
     parser.add_argument("--image", "-i", help="Path to image file")
     parser.add_argument("--file", "-f", help="Path to any file")
+    parser.add_argument("--react", help="React to a message with an emoji (mutually exclusive with message)")
+    parser.add_argument("--guid", help="Message GUID to react to (required with --react)")
     parser.add_argument("--allow-raw-filepath", action="store_true",
                         help="Allow sending filepath as text (normally rejected)")
     args = parser.parse_args()
 
-    if not args.message and not args.image and not args.file:
-        parser.error("Must provide message, --image, or --file")
+    # Validate mutually exclusive: react OR message, not both
+    if args.react and (args.message or args.image or args.file):
+        parser.error("--react is mutually exclusive with message, --image, and --file")
+
+    if args.react and not args.guid:
+        parser.error("--react requires --guid <message-guid>")
+
+    if not args.message and not args.image and not args.file and not args.react:
+        parser.error("Must provide message, --image, --file, or --react")
 
     cwd = Path.cwd()
     try:
@@ -85,6 +159,14 @@ def main():
         sys.exit(1)
 
     bare_chat_id = strip_registry_prefix(chat_id)
+
+    # Handle tapback reaction (produces to imessage.ui bus topic)
+    if args.react:
+        # For default iMessage backend, folder path doesn't have "imessage" prefix
+        # Default backend (not signal/discord/dispatch-app) = iMessage
+        effective_backend = backend if backend in ("signal", "discord", "dispatch-app", "sven-app", "dispatch-api") else "imessage"
+        produce_tapback(bare_chat_id, args.guid, args.react, effective_backend)
+        sys.exit(0)
 
     # Determine if group: prefer registry type field, fall back to heuristic
     # (heuristic can fail — some Signal group base64 IDs start with '+')

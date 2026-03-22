@@ -169,9 +169,15 @@ These drive session routing, display names, and SDK event lookups.
 
 #### Multi-Chat
 - `POST /chats` — create a new chat
-- `GET /chats` — list all chats (includes `is_thinking` status)
+- `GET /chats` — list all chats (includes `is_thinking`, `has_notes`)
 - `PATCH /chats/{chat_id}` — rename a chat
-- `DELETE /chats/{chat_id}` — delete chat + messages + session
+- `DELETE /chats/{chat_id}` — delete chat + messages + notes + session
+
+#### Chat Notes
+- `GET /chats/{chat_id}/notes` — read notes for a chat (returns `{chat_id, content, updated_at}`)
+- `PUT /chats/{chat_id}/notes` — create/update notes (upsert, 50K char limit)
+- Notes stored in `chat_notes` table (1:1 with chats, CASCADE delete)
+- `has_notes` boolean in chat list response indicates if notes exist
 
 #### System Dashboard
 - `GET /` — main dashboard HTML
@@ -555,7 +561,6 @@ claude-assistant status
 2. **CONNECTION section**:
    - **API Server**: Shows current URL. Tap → enter a URL → verify connection re-checks
    - **Status**: Green dot (●) + "Connected" when server is reachable. Tap to manually re-check
-   - **Scan for Servers**: Tap to auto-discover servers on your network
 3. **ABOUT section**:
    - **Device Token**: Shows truncated token (first 8 + "..." + last 4 chars, monospace). Tap → verify "Copied!" feedback appears for 2 seconds
 4. **DEBUG section**:
@@ -641,3 +646,33 @@ Run through these 10 steps to quickly validate all major flows:
 14. Restart API → Tap retry → Message sends                   ✓ CUJ 13
 15. Dashboard tab → WebView loads                             ✓ CUJ 12
 ```
+
+### Development Workflow
+
+**Using Expo Go** (from App Store). Supports fast refresh for all JS changes. Dev menu via shake gesture or 3-finger long press. There is a Dev Tools button in Settings → Debug that attempts NativeModules.DevMenu.show() with a fallback alert to shake.
+
+**Do NOT use expo-dev-client** — it adds a floating overlay icon that clutters the UI. Expo Go with fast refresh is sufficient for development.
+
+### Dev Server Management
+
+The Expo dev server must be running for the phone to load JS bundles during development:
+
+```bash
+# Start dev server (hot reload + fast refresh)
+cd ~/dispatch/apps/dispatch-app && npx expo start --port 8081
+
+# Restart dev server (after code changes that need full reload)
+pkill -f "expo start"; sleep 2
+cd ~/dispatch/apps/dispatch-app && npx expo start --port 8081
+```
+
+**IMPORTANT**: When making changes to the app code, ALWAYS ensure the Expo dev server is running on port 8081. The phone loads JS from this server. If it's not running, the app shows a red error screen.
+
+### Always Start the Dev Server
+
+**When editing dispatch-app code, ALWAYS start the Expo dev server if not already running.** Check with:
+```bash
+lsof -ti tcp:8081 -sTCP:LISTEN && echo "dev server running" || echo "NOT RUNNING - start it!"
+```
+
+This ensures the phone picks up changes via fast refresh automatically.

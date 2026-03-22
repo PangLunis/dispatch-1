@@ -12,12 +12,93 @@ import {
 import { Image } from "expo-image";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
+import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
+
+const AnimatedImage = Animated.createAnimatedComponent(Image);
 
 export default function ImageViewerScreen() {
   const { uri, title } = useLocalSearchParams<{ uri: string; title?: string }>();
   const router = useRouter();
   const [isSaving, setIsSaving] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+
+  // Zoom/pan shared values
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const savedTranslateX = useSharedValue(0);
+  const savedTranslateY = useSharedValue(0);
+
+  const pinchGesture = Gesture.Pinch()
+    .onUpdate((e) => {
+      scale.value = savedScale.value * e.scale;
+    })
+    .onEnd(() => {
+      if (scale.value < 1) {
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+      } else if (scale.value > 5) {
+        scale.value = withTiming(5);
+        savedScale.value = 5;
+      } else {
+        savedScale.value = scale.value;
+      }
+    });
+
+  const panGesture = Gesture.Pan()
+    .minPointers(1)
+    .onUpdate((e) => {
+      if (savedScale.value > 1) {
+        translateX.value = savedTranslateX.value + e.translationX;
+        translateY.value = savedTranslateY.value + e.translationY;
+      }
+    })
+    .onEnd(() => {
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    });
+
+  const doubleTapGesture = Gesture.Tap()
+    .numberOfTaps(2)
+    .onEnd(() => {
+      if (savedScale.value > 1) {
+        // Reset to 1x
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+      } else {
+        // Zoom to 3x
+        scale.value = withTiming(3);
+        savedScale.value = 3;
+      }
+    });
+
+  const composedGesture = Gesture.Simultaneous(
+    pinchGesture,
+    panGesture,
+    doubleTapGesture,
+  );
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { scale: scale.value },
+    ],
+  }));
 
   const handleSaveToPhotos = useCallback(async () => {
     if (!uri) return;
@@ -81,14 +162,16 @@ export default function ImageViewerScreen() {
           headerShadowVisible: false,
         }}
       />
-      <View style={styles.container}>
+      <GestureHandlerRootView style={styles.container}>
         {uri ? (
-          <Image
-            source={{ uri }}
-            style={styles.image}
-            contentFit="contain"
-            transition={200}
-          />
+          <GestureDetector gesture={composedGesture}>
+            <AnimatedImage
+              source={{ uri }}
+              style={[styles.image, animatedStyle]}
+              contentFit="contain"
+              transition={200}
+            />
+          </GestureDetector>
         ) : (
           <Text style={styles.errorText}>No image to display</Text>
         )}
@@ -130,7 +213,7 @@ export default function ImageViewerScreen() {
             )}
           </Pressable>
         </View>
-      </View>
+      </GestureHandlerRootView>
     </>
   );
 }
@@ -212,19 +295,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: "center",
     marginTop: 100,
-  },
-  headerActions: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  headerButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  headerButtonText: {
-    color: "#007AFF",
-    fontSize: 16,
-    fontWeight: "500",
   },
   toolbar: {
     flexDirection: "row",

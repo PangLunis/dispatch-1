@@ -38,6 +38,8 @@ Topic/type taxonomy (v6):
     tasks     — task.requested, task.started, task.completed, task.failed,
                 task.timeout, task.skipped (keyed by requested_by chat_id)
     facts     — fact.created, fact.updated, fact.expired (keyed by contact chat_id)
+    imessage.ui — tapback, typing.start, typing.stop (keyed by imessage/{chat_id})
+                  Serializes all Messages.app UI automation through single consumer.
 
 Source column semantics per topic:
     messages:   transport layer — "imessage", "signal", "test"
@@ -355,7 +357,7 @@ def sanitize_msg_for_bus(msg: dict) -> dict:
     DIRECT_FIELDS = {
         "rowid", "phone", "text", "is_group", "group_name",
         "chat_identifier", "is_audio_message", "audio_transcription",
-        "thread_originator_guid", "source", "sender_name",
+        "thread_originator_guid", "guid", "source", "sender_name",
     }
 
     for k, v in msg.items():

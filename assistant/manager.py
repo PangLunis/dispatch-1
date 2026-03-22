@@ -102,7 +102,11 @@ DISPATCH_API_PORT = 9091
 
 # Expo Metro dev server config - serves JS bundles to the mobile app
 DISPATCH_APP_DIR = ASSISTANT_DIR / "apps" / "dispatch-app"
-METRO_PORT = 8081
+try:
+    from . import config as _cfg
+    METRO_PORT = _cfg.get("metro.port", 8081)
+except Exception:
+    METRO_PORT = 8081
 
 # macOS epoch offset (2001-01-01 to 1970-01-01)
 MACOS_EPOCH_OFFSET = 978307200
