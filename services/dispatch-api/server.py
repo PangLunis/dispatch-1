@@ -38,7 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Query, Request, File, UploadFile, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -228,6 +228,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")  # Enable WAL for concurrent readers/writers
     conn.execute("PRAGMA busy_timeout=5000")  # Wait up to 5s on lock contention
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
@@ -266,6 +267,16 @@ def init_db():
             conn.execute("ALTER TABLE chats ADD COLUMN last_opened_at DATETIME")
         except sqlite3.OperationalError:
             pass  # Column already exists (race condition)
+    # Chat notes table — keep in sync with dispatch_db.py CHAT_NOTES_SCHEMA
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_notes (
+            chat_id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+            content TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -355,7 +366,8 @@ async def inject_prompt_to_app_session(transcript: str, chat_id: str = "voice", 
         if image_path:
             cmd.extend(["--attachment", image_path])
 
-        cmd.append(transcript)
+        # For image-only messages, use a placeholder prompt (image is the content)
+        cmd.append(transcript if transcript else "[Sent an image]")
 
         # Use async subprocess to avoid blocking the event loop
         # Clear VIRTUAL_ENV to prevent uv's venv from leaking into subprocess
@@ -429,18 +441,12 @@ async def health():
     return {"status": "healthy"}
 
 
-@app.get("/discover")
-async def discover():
-    """Return server identity for auto-discovery by the mobile app.
-
-    Includes hostname, local IP, tailscale IP, port, and assistant name
-    so scanning clients can identify and select this server.
-    """
-    import socket
+def _build_server_identity() -> dict:
+    """Build server identity once at import time. Cached — IPs are stable."""
+    import socket as _sock
     import subprocess as _sp
 
-    hostname = socket.gethostname()
-    port = 9091
+    hostname = _sock.gethostname()
 
     # Local IP (en0)
     local_ip = None
@@ -462,7 +468,6 @@ async def discover():
         if result.returncode == 0:
             tailscale_ip = result.stdout.strip()
         else:
-            # Try with socket flag
             result = _sp.run(
                 ["/opt/homebrew/opt/tailscale/bin/tailscale",
                  "--socket=/tmp/tailscale.sock", "ip", "-4"],
@@ -478,8 +483,21 @@ async def discover():
         "hostname": hostname,
         "local_ip": local_ip,
         "tailscale_ip": tailscale_ip,
-        "port": port,
+        "port": 9091,
     }
+
+
+_SERVER_IDENTITY = _build_server_identity()
+
+
+@app.get("/discover")
+async def discover():
+    """Return cached server identity for auto-discovery by the mobile app.
+
+    Response is computed once at startup (IPs are stable).
+    Called by the mobile app's subnet scanner — must be fast.
+    """
+    return _SERVER_IDENTITY
 
 
 @app.post("/prompt", response_model=PromptResponse)
@@ -581,8 +599,9 @@ async def receive_prompt(request: PromptRequest):
 
 @app.post("/prompt-with-image", response_model=PromptResponse)
 async def receive_prompt_with_image(
-    transcript: str = Form(...),
-    token: str = Form(...),
+    request: Request,
+    transcript: str = Form(""),
+    token: str = Form(""),
     chat_id: str = Form("voice"),
     message_id: str = Form(None),  # Client-generated idempotency key to prevent duplicates
     image: UploadFile | None = File(None),
@@ -594,6 +613,8 @@ async def receive_prompt_with_image(
     Stores user message and injects into app session with image attachment.
     Response will appear via GET /messages polling.
     """
+    # Accept token from either form data or query param (apiRequest sends it as query param)
+    token = token or request.query_params.get("token", "")
     token_short = token[:8] if token else "none"
     has_image = image is not None and image.filename
     logger.info(f"POST /prompt-with-image: token={token_short}... transcript={transcript[:100] if transcript else 'empty'}... has_image={has_image}")
@@ -1073,7 +1094,8 @@ async def list_chats(token: str = None):
                m.content AS last_message,
                m.created_at AS last_message_at,
                m.role AS last_message_role,
-               c.last_opened_at
+               c.last_opened_at,
+               EXISTS(SELECT 1 FROM chat_notes cn WHERE cn.chat_id = c.id AND cn.content != '') AS has_notes
         FROM chats c
         LEFT JOIN (
             SELECT chat_id, content, created_at, role,
@@ -1094,6 +1116,7 @@ async def list_chats(token: str = None):
             "last_message_at": _sqlite_to_iso(row[5]),
             "last_message_role": row[6],
             "last_opened_at": _sqlite_to_iso(row[7]),
+            "has_notes": bool(row[8]),
             "is_thinking": _check_is_thinking(f"{APP_SESSION_PREFIX}/{chat_id}"),
         })
     conn.close()
@@ -1137,6 +1160,57 @@ async def update_chat(chat_id: str, request: UpdateChatRequest, token: str = Non
         "created_at": _sqlite_to_iso(row[2]), "updated_at": _sqlite_to_iso(row[3]),
         "last_message": None, "last_message_at": None, "last_message_role": None,
         "last_opened_at": _sqlite_to_iso(row[4]),
+    }
+
+
+MAX_NOTES_LENGTH = 50_000
+
+
+class UpdateNotesRequest(BaseModel):
+    token: str = ""
+    content: str
+
+
+@app.get("/chats/{chat_id}/notes")
+async def get_chat_notes(chat_id: str, token: str = None):
+    """Get notes for a chat."""
+    validate_token(token)
+    conn = get_db()
+    row = conn.execute(
+        "SELECT content, updated_at FROM chat_notes WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+    conn.close()
+    return {
+        "chat_id": chat_id,
+        "content": row[0] if row else "",
+        "updated_at": _sqlite_to_iso(row[1]) if row else None,
+    }
+
+
+@app.put("/chats/{chat_id}/notes")
+async def update_chat_notes(chat_id: str, request: UpdateNotesRequest, token: str = None):
+    """Create or update notes for a chat (upsert)."""
+    effective_token = token or request.token
+    validate_token(effective_token)
+    if len(request.content) > MAX_NOTES_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Notes exceed maximum length of {MAX_NOTES_LENGTH} characters")
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO chat_notes (chat_id, content, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            content = excluded.content,
+            updated_at = CURRENT_TIMESTAMP
+    """, (chat_id, request.content))
+    conn.commit()
+    row = conn.execute(
+        "SELECT content, updated_at FROM chat_notes WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+    conn.close()
+    return {
+        "chat_id": chat_id,
+        "content": row[0],
+        "updated_at": _sqlite_to_iso(row[1]),
     }
 
 

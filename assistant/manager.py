@@ -100,6 +100,10 @@ DISPATCH_API_DIR = ASSISTANT_DIR / "services" / "dispatch-api"
 DISPATCH_API_SCRIPT = DISPATCH_API_DIR / "server.py"
 DISPATCH_API_PORT = 9091
 
+# Expo Metro dev server config - serves JS bundles to the mobile app
+DISPATCH_APP_DIR = ASSISTANT_DIR / "apps" / "dispatch-app"
+METRO_PORT = 8081
+
 # macOS epoch offset (2001-01-01 to 1970-01-01)
 MACOS_EPOCH_OFFSET = 978307200
 
@@ -314,7 +318,8 @@ class MessagesReader:
                 chat.style,
                 chat.display_name,
                 chat.chat_identifier,
-                message.thread_originator_guid
+                message.thread_originator_guid,
+                message.guid
             FROM message
             LEFT JOIN handle ON message.handle_id = handle.ROWID
             LEFT JOIN chat_message_join ON message.ROWID = chat_message_join.message_id
@@ -328,7 +333,7 @@ class MessagesReader:
 
         messages = []
         for row in rows:
-            rowid, date, phone, is_from_me, text, attributed_body, has_attachments, is_audio_message, chat_style, chat_display_name, chat_identifier, thread_originator_guid = row
+            rowid, date, phone, is_from_me, text, attributed_body, has_attachments, is_audio_message, chat_style, chat_display_name, chat_identifier, thread_originator_guid, message_guid = row
 
             # Race condition fix: If chat_style is NULL, the chat_message_join row might not
             # have been written yet. Wait 50ms and re-query this specific message.
@@ -404,7 +409,8 @@ class MessagesReader:
                 "chat_identifier": chat_identifier,
                 "is_audio_message": bool(is_audio_message),
                 "audio_transcription": audio_transcription,
-                "thread_originator_guid": thread_originator_guid
+                "thread_originator_guid": thread_originator_guid,
+                "guid": message_guid,
             })
 
         return messages
@@ -1567,6 +1573,7 @@ class Manager:
         self._bus.create_topic("tasks", retention_ms=168 * 3600 * 1000)  # 7 days
         self._bus.create_topic("messages.dlq", retention_ms=30 * 24 * 3600 * 1000)  # 30 days
         self._bus.create_topic("facts", retention_ms=30 * 24 * 3600 * 1000)  # 30 days
+        self._bus.create_topic("imessage.ui", retention_ms=24 * 3600 * 1000)  # 1 day — tapback reactions, typing indicators
         self._producer = self._bus.producer()
         self._dlq_retry_counts: dict[str, int] = {}  # offset_key -> retry_count
 
@@ -1581,6 +1588,9 @@ class Manager:
 
         # Spawn Dispatch API as child process
         self.dispatch_api_daemon = self._spawn_dispatch_api_daemon()
+
+        # Spawn Expo Metro dev server (serves JS bundles to mobile app)
+        self.metro_daemon = self._spawn_metro_daemon()
 
         # Signal integration
         self.signal_queue = queue.Queue()
@@ -1691,6 +1701,16 @@ class Manager:
                 action=actions.call_function(self._handle_compaction_completed_records),
                 commit_interval_s=5,
             ),
+            # iMessage UI automation consumer: serializes all Messages.app UI actions
+            # (tapback reactions, typing indicators) through a single consumer to prevent contention.
+            ConsumerConfig(
+                topic="imessage.ui",
+                group="imessage-ui-worker",
+                action=actions.call_function(self._handle_imessage_ui_records),
+                max_retries=1,
+                error_action=actions.dead_letter(self._bus, "messages.dlq"),
+                commit_interval_s=1,
+            ),
         ]
         return ConsumerRunner(self._bus, configs)
 
@@ -1712,6 +1732,61 @@ class Manager:
         )
         thread.start()
         return thread
+
+    # Constants for iMessage UI consumer (hoisted to class level)
+    _IMESSAGE_UI_GUID_PATTERN = re.compile(r'^(p:\d+/|s:\d+/|iMessage;)')
+    _TAPBACK_STALENESS_MS = 30_000  # 30s
+    _TYPING_STALENESS_MS = 5_000   # 5s
+
+    def _handle_imessage_ui_records(self, records):
+        """Bus consumer handler for imessage.ui events (tapback reactions, typing indicators).
+
+        Serializes all Messages.app UI automation through a single consumer
+        to prevent contention. One topic per UI-exclusive resource.
+
+        NOTE: No per-record try/except — let exceptions propagate so the
+        ConsumerRunner framework handles retry (max_retries=1) and DLQ.
+        """
+        for record in records:
+            payload = record.payload if isinstance(record.payload, dict) else json.loads(record.payload)
+            now_ms = int(time.time() * 1000)
+            age_ms = now_ms - record.timestamp if record.timestamp else 0
+
+            if record.type == "tapback":
+                # Staleness check
+                if age_ms > self._TAPBACK_STALENESS_MS:
+                    log.info(f"IMESSAGE_UI | discarding stale tapback ({age_ms}ms old): {record.key}")
+                    continue
+
+                guid = payload.get("message_guid", "")
+                reaction = payload.get("reaction", "")
+                chat_id = payload.get("chat_id", "")
+
+                # GUID format validation
+                if not guid or not self._IMESSAGE_UI_GUID_PATTERN.match(guid):
+                    log.warning(f"IMESSAGE_UI | invalid/missing GUID, discarding tapback: {guid}")
+                    continue
+
+                if not reaction or not chat_id:
+                    log.warning(f"IMESSAGE_UI | missing reaction or chat_id, discarding")
+                    continue
+
+                log.info(f"IMESSAGE_UI | tapback {reaction} on {guid[:20]}... for {chat_id}")
+                # TODO: execute tapback via UI automation
+                # For now, log the intent. The executor will be implemented next.
+                log.info(f"IMESSAGE_UI | tapback queued (executor not yet implemented)")
+
+            elif record.type in ("typing.start", "typing.stop"):
+                # Staleness check
+                if age_ms > self._TYPING_STALENESS_MS:
+                    log.debug(f"IMESSAGE_UI | discarding stale {record.type} ({age_ms}ms old)")
+                    continue
+
+                # TODO: execute typing indicator via UI automation (Phase 2)
+                log.debug(f"IMESSAGE_UI | {record.type} for {payload.get('chat_id', '?')}")
+
+            else:
+                log.warning(f"IMESSAGE_UI | unknown event type: {record.type}")
 
     def _handle_compaction_completed_records(self, records):
         """Bus consumer handler for compaction.completed events.
@@ -2579,6 +2654,90 @@ class Manager:
         except Exception:
             return False
 
+    def _spawn_metro_daemon(self) -> Optional[subprocess.Popen]:
+        """Spawn the Expo Metro dev server as a child process.
+
+        Serves JS bundles to the mobile app via fast refresh.
+        Returns the Popen object or None if spawn failed.
+        """
+        if not DISPATCH_APP_DIR.exists():
+            log.warning(f"Dispatch app dir not found at {DISPATCH_APP_DIR}")
+            return None
+
+        metro_log_path = LOGS_DIR / "metro.log"
+        self._close_log_fh('_metro_log_fh')
+        self._metro_log_fh = open(metro_log_path, "a")
+
+        # Kill any orphaned process on the metro port
+        try:
+            import subprocess as _sp
+            result = _sp.run(["lsof", "-ti", f"tcp:{METRO_PORT}", "-sTCP:LISTEN"], capture_output=True, text=True)
+            for pid_str in result.stdout.strip().split('\n'):
+                if pid_str.strip():
+                    try:
+                        import os as _os
+                        _os.kill(int(pid_str.strip()), 9)
+                        log.info(f"Killed orphaned process on port {METRO_PORT}: PID {pid_str.strip()}")
+                    except (ProcessLookupError, ValueError):
+                        pass
+        except Exception:
+            pass
+
+        try:
+            proc = subprocess.Popen(
+                ["npx", "expo", "start", "--port", str(METRO_PORT)],
+                stdout=self._metro_log_fh,
+                stderr=self._metro_log_fh,
+                cwd=str(DISPATCH_APP_DIR),
+                start_new_session=True,
+            )
+        except Exception:
+            self._close_log_fh('_metro_log_fh')
+            raise
+
+        try:
+            log.info(f"Spawned Metro dev server (PID: {proc.pid})")
+            lifecycle_log.info(f"METRO | SPAWNED | pid={proc.pid}")
+            produce_event(getattr(self, '_producer', None), "system", "health.service_spawned",
+                service_spawned_payload("metro", proc.pid), source="daemon")
+            return proc
+        except Exception as e:
+            log.error(f"Failed to spawn Metro dev server: {e}")
+            return None
+
+    def _check_metro_health(self) -> bool:
+        """Check if Metro dev server is responding."""
+        try:
+            import urllib.request
+            url = f"http://localhost:{METRO_PORT}/status"
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def _stop_metro(self):
+        """Stop the Metro dev server (kills entire process group)."""
+        if self.metro_daemon:
+            try:
+                pgid = os.getpgid(self.metro_daemon.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                self.metro_daemon.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    pgid = os.getpgid(self.metro_daemon.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    try:
+                        self.metro_daemon.kill()
+                    except (ProcessLookupError, OSError):
+                        pass
+            self.metro_daemon = None
+            log.info("Stopped Metro dev server")
+        self._close_log_fh('_metro_log_fh')
+
     def _kill_existing_signal_daemons(self):
         """Kill any existing signal-cli daemon processes to avoid pile-up."""
         try:
@@ -2820,6 +2979,15 @@ class Manager:
                         service_restarted_payload("dispatch_api", "unresponsive"), source="health")
                     self.dispatch_api_daemon.kill()
                     self.dispatch_api_daemon = self._spawn_dispatch_api_daemon()
+
+            # Check Metro dev server health
+            if self.metro_daemon is not None:
+                if self.metro_daemon.poll() is not None:
+                    log.warning("Metro dev server died, restarting...")
+                    lifecycle_log.info(f"METRO | DIED | restarting")
+                    produce_event(self._producer, "system", "health.service_restarted",
+                        service_restarted_payload("metro", "died"), source="health")
+                    self.metro_daemon = self._spawn_metro_daemon()
 
             # Proactive FD monitoring via ResourceRegistry — calibrated leak detection
             try:
@@ -3115,6 +3283,7 @@ You have 15 minutes. Work efficiently.
         chat_identifier = msg.get("chat_identifier")
         audio_transcription = msg.get("audio_transcription")
         thread_originator_guid = msg.get("thread_originator_guid")
+        message_guid = msg.get("guid")  # iMessage GUID for tapback reactions
         source = msg.get("source", "imessage")  # Default to iMessage for backwards compat
         message_timestamp = msg.get("timestamp")  # datetime for Gemini vision context
 
@@ -3269,6 +3438,7 @@ You have 15 minutes. Work efficiently.
                     thread_originator_guid=thread_originator_guid,
                     source=source,
                     message_timestamp=message_timestamp,
+                    message_guid=message_guid,
                 )
             elif existing_session:
                 # Unknown sender but we've already engaged with this group
@@ -3284,6 +3454,7 @@ You have 15 minutes. Work efficiently.
                     thread_originator_guid=thread_originator_guid,
                     source=source,
                     message_timestamp=message_timestamp,
+                    message_guid=message_guid,
                 )
             elif await asyncio.get_event_loop().run_in_executor(
                 self._chat_reader._executor, self.messages._group_has_blessed_participant, chat_identifier, self.contacts
@@ -3301,6 +3472,7 @@ You have 15 minutes. Work efficiently.
                     thread_originator_guid=thread_originator_guid,
                     source=source,
                     message_timestamp=message_timestamp,
+                    message_guid=message_guid,
                 )
             else:
                 # Ignore group messages from non-blessed contacts if no existing session
@@ -3324,6 +3496,7 @@ You have 15 minutes. Work efficiently.
                 attachments, audio_transcription, thread_originator_guid,
                 source=source,
                 message_timestamp=message_timestamp,
+                message_guid=message_guid,
             )
         else:
             # Contact exists but has unknown/unrecognized tier
@@ -3492,6 +3665,9 @@ You have 15 minutes. Work efficiently.
         if self.discord_listener:
             self.discord_listener.stop()
             self.discord_listener = None
+
+        # Stop Metro dev server
+        self._stop_metro()
 
         # Stop dispatch api daemon (kills entire process group, not just wrapper)
         self._stop_dispatch_api()
