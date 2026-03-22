@@ -1385,6 +1385,7 @@ class IPCServer:
         self.registry = registry
         self.contacts = contacts
         self._server = None
+        self.restart_api_callback: Optional[Any] = None
 
     async def start(self):
         # Clean up stale socket
@@ -1473,6 +1474,10 @@ class IPCServer:
                     if not s.get("tier"):
                         s["tier"] = reg.get("tier", "")
             return {"ok": True, "sessions": sessions}
+        elif cmd == "restart_api":
+            if hasattr(self, 'restart_api_callback') and self.restart_api_callback:
+                return self.restart_api_callback()
+            return {"ok": False, "error": "restart_api not available"}
         else:
             return {"ok": False, "error": f"Unknown command: {cmd}"}
 
@@ -1572,6 +1577,7 @@ class Manager:
         )
         self.reminders = ReminderPoller(self.sessions, self.contacts)
         self.ipc = IPCServer(self.sessions, self.registry, self.contacts)
+        self.ipc.restart_api_callback = self._restart_dispatch_api
 
         # Spawn Dispatch API as child process
         self.dispatch_api_daemon = self._spawn_dispatch_api_daemon()
@@ -2704,6 +2710,17 @@ class Manager:
 
         if SIGNAL_SOCKET.exists():
             SIGNAL_SOCKET.unlink()
+
+    def _restart_dispatch_api(self) -> dict:
+        """Restart the dispatch API server. Called via IPC."""
+        log.info("DISPATCH_API | restarting via CLI")
+        self._stop_dispatch_api()
+        self.dispatch_api_daemon = self._spawn_dispatch_api_daemon()
+        ok = self.dispatch_api_daemon is not None
+        pid = self.dispatch_api_daemon.pid if self.dispatch_api_daemon else None
+        msg = f"Dispatch API restarted (PID: {pid})" if ok else "Failed to restart Dispatch API"
+        log.info(f"DISPATCH_API | {msg}")
+        return {"ok": ok, "message": msg}
 
     def _stop_dispatch_api(self):
         """Stop Dispatch API daemon (kills entire process group, not just wrapper)."""

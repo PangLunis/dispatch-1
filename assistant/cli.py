@@ -486,6 +486,17 @@ def cmd_restart_sessions(args):
     return 0
 
 
+def cmd_restart_api(args):
+    """Restart the dispatch API server without touching daemon or sessions."""
+    print("Restarting dispatch API server...")
+    resp = _ipc_command({"cmd": "restart_api"})
+    if resp.get("ok"):
+        print(resp.get("message", "Dispatch API restarted"))
+    else:
+        print(f"Error: {resp.get('error', 'unknown')}")
+    return 0 if resp.get("ok") else 1
+
+
 def cmd_set_model(args):
     """Set the model for a specific session."""
     session = args.session
@@ -1035,6 +1046,7 @@ def main():
 
     # restart-sessions
     subparsers.add_parser("restart-sessions", help="Restart all sessions")
+    subparsers.add_parser("restart-api", help="Restart the dispatch API server")
 
     # compact-session (deprecated — compaction is now native)
     compact_session_parser = subparsers.add_parser("compact-session", help="[Deprecated] Compaction is now handled natively by Claude Code")
@@ -1135,6 +1147,7 @@ def main():
         "kill-sessions": cmd_kill_sessions,
         "restart-session": cmd_restart_session,
         "restart-sessions": cmd_restart_sessions,
+        "restart-api": cmd_restart_api,
         "compact-session": cmd_compact_session,
         "set-model": cmd_set_model,
         "install": cmd_install,
