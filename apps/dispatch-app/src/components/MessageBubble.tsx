@@ -3,10 +3,74 @@ import { ActivityIndicator, Alert, Pressable, Share, StyleSheet, Text, View } fr
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
+import * as WebBrowser from "expo-web-browser";
 import type { DisplayMessage } from "../hooks/useMessages";
 import { branding } from "../config/branding";
 import { buildImageUrl } from "../api/images";
 import { relativeTime } from "../utils/time";
+
+const URL_REGEX = /https?:\/\/[^\s<>\"'\])},]+/gi;
+
+/** Parse text into segments of plain text and URLs */
+function parseLinks(text: string): Array<{ type: "text" | "link"; value: string }> {
+  const segments: Array<{ type: "text" | "link"; value: string }> = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  URL_REGEX.lastIndex = 0;
+  while ((match = URL_REGEX.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: "text", value: text.slice(lastIndex, match.index) });
+    }
+    // Strip trailing punctuation that's likely not part of the URL
+    let url = match[0];
+    const trailingPunct = /[.,:;!?)]+$/.exec(url);
+    if (trailingPunct) {
+      url = url.slice(0, -trailingPunct[0].length);
+    }
+    segments.push({ type: "link", value: url });
+    lastIndex = match.index + url.length;
+    // Adjust regex position if we trimmed trailing chars
+    URL_REGEX.lastIndex = lastIndex;
+  }
+  if (lastIndex < text.length) {
+    segments.push({ type: "text", value: text.slice(lastIndex) });
+  }
+  return segments;
+}
+
+/** Render text with clickable links */
+function LinkedText({
+  text,
+  style,
+  linkColor,
+}: {
+  text: string;
+  style: any;
+  linkColor: string;
+}) {
+  const segments = parseLinks(text);
+  if (segments.length === 1 && segments[0].type === "text") {
+    return <Text style={style} selectable>{text}</Text>;
+  }
+  return (
+    <Text style={style} selectable>
+      {segments.map((seg, i) =>
+        seg.type === "link" ? (
+          <Text
+            key={i}
+            style={{ textDecorationLine: "underline", color: linkColor }}
+            onPress={() => WebBrowser.openBrowserAsync(seg.value)}
+          >
+            {seg.value}
+          </Text>
+        ) : (
+          seg.value
+        ),
+      )}
+    </Text>
+  );
+}
 
 const MAX_COLLAPSED_LENGTH = 840;
 
@@ -146,15 +210,14 @@ export function MessageBubble({ message, audioState, onRetry }: MessageBubblePro
               />
             </Pressable>
           )}
-          <Text
+          <LinkedText
+            text={displayText}
             style={[
               styles.text,
               isUser ? styles.textUser : styles.textAssistant,
             ]}
-            selectable
-          >
-            {displayText}
-          </Text>
+            linkColor={isUser ? "#d4e8ff" : branding.accentColor}
+          />
           {isLong && (
             <Pressable
               onPress={() => setExpanded((v) => !v)}
