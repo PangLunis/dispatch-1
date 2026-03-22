@@ -283,6 +283,40 @@ Previously used a 30-second window on `sdk_events` — checked if the latest eve
 
 ## Common Gotchas
 
+### Adding native Expo modules (e.g. expo-network, expo-camera)
+
+When you add a new native Expo module:
+
+1. **Install**: `bun add expo-network` (or `npx expo install expo-network`)
+2. **Pod install**: `cd ios && pod install` — native modules need CocoaPods linking
+3. **Native rebuild required**: `npx expo run:ios --device "DEVICE_NAME"` — JS-only metro reload is NOT enough
+4. **Clear metro cache**: If the app still shows "Unable to resolve module", kill ALL metro processes and restart with `npx expo start --clear`
+
+**The full sequence when you hit "Unable to resolve module" for a native package:**
+```bash
+cd ~/dispatch/apps/dispatch-app
+
+# 1. Verify the package is in node_modules
+ls node_modules/expo-network
+
+# 2. Install pods (often the missing step)
+cd ios && pod install && cd ..
+
+# 3. Kill any stale metro bundlers
+pkill -f metro; pkill -f "expo start"; pkill -f "expo run"
+
+# 4. Rebuild native + start fresh metro
+npx expo run:ios --device "Nikhil iPhone 16"
+```
+
+**Key insight**: If pods are missing but node_modules has the package, the native build will succeed but metro will fail to resolve the module at JS bundle time. Old metro processes with stale caches make this worse — always kill them before rebuilding.
+
+### Finding device names for `--device`
+
+```bash
+xcrun xctrace list devices  # Lists all connected devices + simulators
+```
+
 ### Message pagination — NEWEST N, not oldest
 The SQL MUST use a subquery to get the NEWEST 200:
 ```sql

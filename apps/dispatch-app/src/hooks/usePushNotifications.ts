@@ -109,13 +109,20 @@ function navigateToChat(notification: Notifications.Notification, source: string
     // Delay to ensure router is mounted (cold start scenario)
     setTimeout(() => {
       try {
-        router.replace({
-          pathname: "/chat/[id]",
-          params: { id: chatId, ...(chatTitle ? { chatTitle } : {}) },
-        });
-        console.warn("[push] router.replace called successfully");
+        // Reset stack to tabs first, then push chat on top.
+        // This ensures stack is always [tabs, chat] so back() works
+        // with native slide animation, and multiple notification taps
+        // don't pile up stack entries.
+        router.replace("/(tabs)");
+        setTimeout(() => {
+          router.push({
+            pathname: "/chat/[id]",
+            params: { id: chatId, ...(chatTitle ? { chatTitle } : {}) },
+          });
+          console.warn("[push] navigation complete: tabs -> chat");
+        }, 50);
       } catch (err) {
-        console.error("[push] router.push failed:", err);
+        console.error("[push] navigation failed:", err);
       }
     }, 500);
   } else {

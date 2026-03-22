@@ -9,7 +9,8 @@ import {
   Text,
   View,
 } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, router } from "expo-router";
+import { SymbolView } from "expo-symbols";
 import {
   chatAdapter,
   useMessages,
@@ -139,7 +140,29 @@ export default function ChatDetailScreen() {
       <Stack.Screen
         options={{
           title: currentTitle,
-          headerBackTitle: "Chats",
+          headerBackVisible: false,
+          headerLeft: () => (
+            <Pressable
+              onPress={() => {
+                if (router.canGoBack()) {
+                  router.back();
+                } else {
+                  router.replace("/(tabs)");
+                }
+              }}
+              hitSlop={8}
+              style={{ flexDirection: "row", alignItems: "center", marginLeft: 0, paddingHorizontal: 4, gap: 4 }}
+            >
+              <SymbolView
+                name={{ ios: "chevron.left", android: "arrow_back", web: "arrow_back" }}
+                tintColor="#3b82f6"
+                size={18}
+                weight="semibold"
+                style={{ width: 12, height: 20 }}
+              />
+              <Text style={{ color: "#3b82f6", fontSize: 17 }}>Chats</Text>
+            </Pressable>
+          ),
           headerStyle: { backgroundColor: "#09090b" },
           headerTintColor: "#fafafa",
           headerShadowVisible: false,

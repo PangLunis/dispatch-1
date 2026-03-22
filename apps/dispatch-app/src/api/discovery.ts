@@ -2,11 +2,14 @@
  * Server auto-discovery for dispatch-api.
  *
  * Discovers dispatch-api servers on:
- * 1. Local network (subnet scan on port 9091)
+ * 1. Local network (detects device subnet via expo-network, scans :9091)
  * 2. Tailscale network (API query + probe)
  *
  * Each discovered server is probed via GET /discover to get its identity.
  */
+
+import { Platform } from "react-native";
+import * as Network from "expo-network";
 
 const DISCOVER_TIMEOUT = 2000; // 2s per probe
 const PORT = 9091;
@@ -82,12 +85,25 @@ async function probeServer(
 }
 
 /**
- * Get the device's local IP subnet prefix (e.g. "192.168.1" from "192.168.1.42").
- * On React Native, we can't easily get the local IP, so we try common subnets.
+ * Get the device's local IP and derive the /24 subnet prefix.
+ * Uses expo-network on native, falls back for web.
+ * Returns e.g. "10.10.10" from "10.10.10.43".
  */
-function getCommonSubnets(): string[] {
-  // Common home network subnets to scan
-  return ["192.168.1", "192.168.0", "10.0.0", "10.0.1", "10.10.10", "172.16.0"];
+async function getDeviceSubnet(): Promise<string | null> {
+  try {
+    if (Platform.OS === "web") {
+      // Can't get local IP on web — return null to skip LAN scan
+      return null;
+    }
+    const ip = await Network.getIpAddressAsync();
+    if (!ip || ip === "0.0.0.0") return null;
+    // Extract /24 subnet prefix: "10.10.10.43" → "10.10.10"
+    const parts = ip.split(".");
+    if (parts.length !== 4) return null;
+    return `${parts[0]}.${parts[1]}.${parts[2]}`;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -169,8 +185,6 @@ async function discoverViaTailscale(
 export interface DiscoveryOptions {
   /** Tailscale API key for remote discovery */
   tailscaleApiKey?: string;
-  /** Specific subnets to scan (defaults to common subnets) */
-  subnets?: string[];
   /** Progress callback */
   onProgress?: (phase: string, scanned: number, total: number) => void;
   /** Also probe currently configured URL */
@@ -179,6 +193,7 @@ export interface DiscoveryOptions {
 
 /**
  * Run full server discovery: local network + tailscale.
+ * Detects the device's actual subnet dynamically via expo-network.
  * Returns deduplicated list of discovered servers.
  */
 export async function discoverServers(
@@ -208,18 +223,18 @@ export async function discoverServers(
     options.onProgress?.("current", 1, 1);
   }
 
-  // Phase 2: Local subnet scan + Tailscale in parallel
+  // Phase 2: Detect device subnet + Tailscale in parallel
   const localPromise = (async () => {
-    const subnets = options.subnets ?? getCommonSubnets();
-    for (const subnet of subnets) {
-      options.onProgress?.(`lan:${subnet}`, 0, 254);
-      const found = await scanSubnet(subnet, (scanned, total) => {
-        options.onProgress?.(`lan:${subnet}`, scanned, total);
-      });
-      found.forEach(addServer);
-      // If we found something on this subnet, skip remaining subnets
-      if (found.length > 0) break;
+    const subnet = await getDeviceSubnet();
+    if (!subnet) {
+      options.onProgress?.("lan", 0, 0); // Signal: no subnet detected
+      return;
     }
+    options.onProgress?.(`lan:${subnet}`, 0, 254);
+    const found = await scanSubnet(subnet, (scanned, total) => {
+      options.onProgress?.(`lan:${subnet}`, scanned, total);
+    });
+    found.forEach(addServer);
   })();
 
   const tailscalePromise = (async () => {
