@@ -24,6 +24,7 @@ import { EmptyState } from "@/src/components/EmptyState";
 import { useAudioPlayer } from "@/src/hooks/useAudioPlayer";
 import { useSdkEvents } from "@/src/hooks/useSdkEvents";
 import { updateChat, markChatAsOpened } from "@/src/api/chats";
+import { createAgentSession, sendAgentMessage } from "@/src/api/agents";
 import { screenStyles } from "@/src/styles/shared";
 import { showPrompt, showAlert } from "@/src/utils/alert";
 import { branding, sessionPrefix } from "@/src/config/branding";
@@ -46,6 +47,7 @@ export default function ChatDetailScreen() {
   const [imageSendError, setImageSendError] = useState<string | null>(null);
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
+  const [isCreatingDebugSession, setIsCreatingDebugSession] = useState(false);
   const menuButtonRef = useRef<View>(null);
 
   // Optimistically mark as read, persist to server, and track active chat for push suppression
@@ -284,6 +286,72 @@ export default function ChatDetailScreen() {
                 size={16}
               />
               <Text style={localStyles.menuItemText}>Notes</Text>
+            </Pressable>
+            <View style={localStyles.menuDivider} />
+            <Pressable
+              style={[localStyles.menuItem, isCreatingDebugSession && { opacity: 0.5 }]}
+              disabled={isCreatingDebugSession}
+              onPress={() => {
+                setMenuVisible(false);
+                setTimeout(() => {
+                  showPrompt(
+                    "Debug Chat",
+                    "Describe the issue you're seeing:",
+                    async (context) => {
+                      if (!context?.trim()) return;
+                      setIsCreatingDebugSession(true);
+                      try {
+                        const session = await createAgentSession(`Debug: ${currentTitle}`);
+                        const debugPrompt = [
+                          "You are a debug agent investigating an issue in a dispatch-app chat session.",
+                          "",
+                          "## Target Chat",
+                          `- Chat ID: ${id}`,
+                          `- Chat Title: ${currentTitle}`,
+                          `- Transcript path: ~/transcripts/dispatch-app/${id}/`,
+                          `- Backend: dispatch-app`,
+                          "",
+                          "## User's Bug Report",
+                          context.trim(),
+                          "",
+                          "## Investigation Steps",
+                          "1. Read the chat transcript with: uv run ~/.claude/skills/sms-assistant/scripts/read_transcript.py --session dispatch-app/${id}",
+                          `2. Check bus.db for recent events: sqlite3 ~/dispatch/state/bus.db "SELECT timestamp, event_type, tool_name, payload FROM sdk_events WHERE session_name LIKE '%${id}%' ORDER BY id DESC LIMIT 30"`,
+                          "3. Check daemon logs if relevant: tail -100 ~/dispatch/state/daemon.log",
+                          "4. Read relevant source code if the issue is in app behavior",
+                          "",
+                          "Diagnose the root cause and propose a specific fix.",
+                        ].join("\n");
+                        // Navigate immediately so user sees the session loading
+                        router.push({
+                          pathname: "/agents/[id]",
+                          params: {
+                            id: session.id,
+                            sessionName: session.name,
+                            sessionSource: "dispatch-api",
+                            sessionType: "dispatch-api",
+                          },
+                        });
+                        // Send debug prompt after navigation (fire-and-forget, session view will pick it up via polling)
+                        sendAgentMessage(session.id, debugPrompt).catch((err) => {
+                          showAlert("Error", "Debug session created but failed to send prompt. Try sending your message manually.");
+                        });
+                      } catch (err) {
+                        showAlert("Error", "Failed to create debug session. Check your connection and try again.");
+                      } finally {
+                        setIsCreatingDebugSession(false);
+                      }
+                    },
+                  );
+                }, 350);
+              }}
+            >
+              <SymbolView
+                name={{ ios: "ant", android: "bug_report", web: "bug_report" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={localStyles.menuItemText}>Debug Chat</Text>
             </Pressable>
           </View>
         </Pressable>

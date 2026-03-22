@@ -160,6 +160,11 @@ export default function ImageViewerScreen() {
           headerStyle: { backgroundColor: "#000000" },
           headerTintColor: "#ffffff",
           headerShadowVisible: false,
+          headerLeft: () => (
+            <Pressable onPress={() => router.back()} hitSlop={8}>
+              <Text style={{ color: "#007AFF", fontSize: 17 }}>Done</Text>
+            </Pressable>
+          ),
         }}
       />
       <GestureHandlerRootView style={styles.container}>

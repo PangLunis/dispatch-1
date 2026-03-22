@@ -335,6 +335,38 @@ The web build is served from `~/dispatch/apps/dispatch-app/dist/`.
 ### Expo Fast Refresh
 Fast Refresh preserves React state across file edits. `useState` initializers are IGNORED during hot reload.
 
+### Hot Reload Over Tailscale (Remote Development)
+
+For hot reload to work on a physical device over Tailscale:
+
+1. Add `metroHost: "YOUR_TAILSCALE_IP"` to `app.yaml` (IP only, no port)
+2. Use `npm start` (not `expo start`) — the `scripts/start-metro.js` wrapper reads `metroHost` and sets `REACT_NATIVE_PACKAGER_HOSTNAME` automatically
+3. `npm run start:local` bypasses this and runs plain `expo start`
+
+**Mullvad VPN + Tailscale coexistence:**
+- Mullvad's split tunnel must exclude BOTH the Tailscale app binary AND the `IPNExtension` (network extension)
+- Just excluding the Tailscale app is not enough — the IPNExtension handles actual network traffic
+- On Mac: Mullvad → Settings → Split tunneling → add both Tailscale AND IPNExtension
+- Start order: Mullvad first, then Tailscale
+- Same applies on iOS — Tailscale needs split tunnel exclusion in the VPN app
+
+### Instance-Specific Files (Must Be Gitignored)
+
+These files are per-instance and MUST NOT be tracked in git:
+- `services/dispatch-api/allowed_tokens.json` — device auth tokens
+- `state/dispatch-push-config.json` — APNs credentials
+- `state/dispatch-apns-tokens.json` — device push tokens
+- `apps/dispatch-app/app.yaml` — instance branding/config
+
+If a `git pull` wipes `allowed_tokens.json`, the app will show `403: Invalid token`. Re-add the device token (visible in app Settings → Device Token).
+
+### dispatch-api Port Conflicts
+
+If dispatch-api crashes in a loop with "Address already in use" on port 9091:
+- An old process is holding the port. The daemon's `_stop_dispatch_api()` does SIGTERM + 5s wait + SIGKILL.
+- **Critical**: ALL code paths that respawn dispatch-api (health check, restart, etc.) must go through `_stop_dispatch_api()` first. Direct `.kill()` + immediate respawn causes race conditions.
+- Manual fix: `kill $(lsof -ti tcp:9091 -sTCP:LISTEN)` then wait 2-3 seconds before restarting.
+
 ---
 
 ## Remaining Hardcoded Items (Follow-up)
@@ -342,12 +374,12 @@ Fast Refresh preserves React state across file edits. `useState` initializers ar
 These items still reference "sven" and need future refactoring:
 
 1. **`backends.py`** — The `sven-app` backend entry is hardcoded. Should auto-derive from `config.local.yaml`.
-2. **`cli.py`** — The `--sven-app` flag on `inject-prompt`. Consider renaming to `--app`.
+2. ~~**`cli.py`** — The `--sven-app` flag on `inject-prompt`. Consider renaming to `--app`.~~ ✅ Done — `--app` is primary, `--sven-app` kept as hidden backward-compat alias.
 3. **`~/.claude/skills/sven-app/`** — Skill directory name. Currently symlinked to `dispatch-app`.
-4. **`reply-sven` script name** — Should be renamed to `reply-app` or similar.
+4. **`reply-sven` script name** — Should be renamed to `reply-app` or similar. (`reply-app` exists, `reply-sven` is backward-compat wrapper.)
 5. **`tests/test_sven_app.py`** — Test file references `sven-app` backend by name.
-6. **`readers.py`** — Has `sven-app` backend-specific reader class.
-7. **`common.py`** — Has `sven-app` source check for reply command routing.
+6. ~~**`readers.py`** — Has `sven-app` backend-specific reader class.~~ ✅ Done — generalized to `dispatch-app`.
+7. ~~**`common.py`** — Has `sven-app` source check for reply command routing.~~ ✅ Done — handles both names.
 
 ---
 

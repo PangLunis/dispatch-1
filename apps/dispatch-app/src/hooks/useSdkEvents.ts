@@ -3,7 +3,7 @@ import { AppState, type AppStateStatus } from "react-native";
 import { getAgentSdkEvents } from "../api/agents";
 import type { SdkEvent } from "../api/types";
 
-const POLL_INTERVAL = 2000;
+const POLL_INTERVAL = 1000;
 
 export interface UseSdkEventsReturn {
   events: SdkEvent[];

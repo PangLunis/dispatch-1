@@ -2,8 +2,11 @@ import React from "react";
 import { Tabs } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { branding } from "@/src/config/branding";
+import { useUnreadChatCount } from "@/src/hooks/useUnreadChatCount";
 
 export default function TabLayout() {
+  const unreadChatCount = useUnreadChatCount();
+
   return (
     <Tabs
       screenOptions={{
@@ -26,6 +29,17 @@ export default function TabLayout() {
         name="index"
         options={{
           title: "Chats",
+          tabBarBadge: unreadChatCount > 0 ? unreadChatCount : undefined,
+          tabBarBadgeStyle: {
+            backgroundColor: "#007AFF",
+            color: "#ffffff",
+            fontSize: 11,
+            fontWeight: "600",
+            minWidth: 18,
+            height: 18,
+            lineHeight: 18,
+            borderRadius: 9,
+          },
           tabBarIcon: ({ color }) => (
             <SymbolView
               name={{

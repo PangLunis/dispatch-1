@@ -101,18 +101,19 @@ export function ThinkingIndicator({ events = [] }: ThinkingIndicatorProps) {
 
   return (
     <View style={styles.wrapper}>
-      <Pressable
-        onPress={() => setExpanded(false)}
-        style={styles.expandedBubble}
-      >
-        <View style={styles.expandedHeader}>
+      <View style={styles.expandedBubble}>
+        <Pressable
+          onPress={() => setExpanded(false)}
+          style={styles.expandedHeader}
+        >
           {dots}
           <Text style={styles.chevron}>▴</Text>
-        </View>
+        </Pressable>
         <ScrollView
           ref={scrollRef}
           style={styles.eventsList}
           showsVerticalScrollIndicator={false}
+          nestedScrollEnabled={true}
         >
           {events.length === 0 ? (
             <Text style={styles.emptyText}>Waiting for events...</Text>
@@ -122,7 +123,7 @@ export function ThinkingIndicator({ events = [] }: ThinkingIndicatorProps) {
             ))
           )}
         </ScrollView>
-      </Pressable>
+      </View>
     </View>
   );
 }
@@ -292,6 +293,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    paddingVertical: 4,
   },
   headerLabel: {
     color: "#71717a",

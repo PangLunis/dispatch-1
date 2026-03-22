@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { markAgentSessionAsRead } from "@/src/state/unreadAgents";
 import {
   agentAdapter,
   useMessages,
@@ -48,6 +49,11 @@ export default function AgentConversationScreen() {
   const [currentName, setCurrentName] = useState(sessionName || id || "Agent");
   const [sdkMode, setSdkMode] = useState(false);
   const isDispatchApi = sessionType === "dispatch-api";
+
+  // Mark this agent session as read when opened
+  useEffect(() => {
+    if (id) markAgentSessionAsRead(id);
+  }, [id]);
 
   const adapter = useMemo(() => agentAdapter(id ?? ""), [id]);
   const { messages, isLoading, error, isThinking, sendMessage } =

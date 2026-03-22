@@ -1,0 +1,216 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["pyyaml", "requests"]
+# ///
+"""RuView WiFi Sensing CLI — manage ESP32-S3 CSI sensor and sensing server."""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import yaml
+
+CONFIG_PATH = os.path.expanduser("~/dispatch/config.local.yaml")
+
+def load_config():
+    with open(CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    return cfg.get("ruview", {})
+
+def get_wifi_password():
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", "ruview-wifi", "-a", "ruview", "-w"],
+        capture_output=True, text=True
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+def get_server_url(cfg):
+    port = cfg.get("server", {}).get("http_port", 3000)
+    return f"http://localhost:{port}"
+
+def cmd_start(cfg):
+    import requests
+    url = get_server_url(cfg)
+    try:
+        r = requests.get(f"{url}/health", timeout=2)
+        if r.ok:
+            print(f"Server already running at {url}")
+            return
+    except Exception:
+        pass
+
+    repo = os.path.expanduser(cfg.get("repo_path", "~/code/RuView"))
+    binary = os.path.join(repo, "rust-port/wifi-densepose-rs/target/release/sensing-server")
+    if not os.path.exists(binary):
+        print("Error: sensing-server binary not found. Run build first.")
+        sys.exit(1)
+
+    server_cfg = cfg.get("server", {})
+    cmd = [
+        binary,
+        "--http-port", str(server_cfg.get("http_port", 3000)),
+        "--ws-port", str(server_cfg.get("ws_port", 8766)),
+        "--udp-port", str(server_cfg.get("udp_port", 5005)),
+        "--bind-addr", server_cfg.get("bind_addr", "0.0.0.0"),
+        "--source", "auto",
+        "--ui-path", "../../ui",
+    ]
+    os.chdir(os.path.join(repo, "rust-port/wifi-densepose-rs"))
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"Sensing server started at {url}")
+
+def cmd_stop(cfg):
+    result = subprocess.run(["pkill", "-f", "sensing-server"], capture_output=True)
+    print("Sensing server stopped" if result.returncode == 0 else "No server running")
+
+def cmd_status(cfg):
+    import requests
+    url = get_server_url(cfg)
+    try:
+        r = requests.get(f"{url}/health", timeout=2)
+        data = r.json()
+        print(f"Server: {data.get('status', 'unknown')}")
+        print(f"Source: {data.get('source', 'unknown')}")
+        print(f"Tick: {data.get('tick', 0)}")
+        print(f"Clients: {data.get('clients', 0)}")
+    except Exception:
+        print("Server: offline")
+
+def cmd_vitals(cfg):
+    import requests
+    url = get_server_url(cfg)
+    try:
+        r = requests.get(f"{url}/api/v1/vital-signs", timeout=2)
+        data = r.json()
+        vs = data.get("vital_signs", {})
+        print(f"Heart Rate:  {vs.get('heart_rate_bpm', 0):.0f} BPM (confidence: {vs.get('heartbeat_confidence', 0):.0%})")
+        print(f"Breathing:   {vs.get('breathing_rate_bpm', 0):.1f} BPM (confidence: {vs.get('breathing_confidence', 0):.0%})")
+        print(f"Signal:      {vs.get('signal_quality', 0):.0%}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+def cmd_presence(cfg):
+    import requests
+    url = get_server_url(cfg)
+    try:
+        r = requests.get(f"{url}/api/v1/sensing/latest", timeout=2)
+        data = r.json()
+        cl = data.get("classification", {})
+        print(f"Presence: {'YES' if cl.get('presence') else 'NO'}")
+        print(f"Motion:   {cl.get('motion_level', 'unknown')}")
+        print(f"Confidence: {cl.get('confidence', 0):.0%}")
+        persons = data.get("estimated_persons", data.get("persons", []))
+        if isinstance(persons, int):
+            print(f"Persons:  {persons}")
+        elif isinstance(persons, list):
+            print(f"Persons:  {len(persons)}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+def cmd_flash(cfg):
+    esp = cfg.get("esp32", {})
+    repo = os.path.expanduser(cfg.get("repo_path", "~/code/RuView"))
+    build_dir = os.path.join(repo, "firmware/esp32-csi-node/build")
+
+    cmd = [
+        "uvx", "--from", "esptool", "esptool",
+        "--chip", esp.get("chip", "esp32s3"),
+        "-p", esp.get("serial_port"),
+        "-b", "460800",
+        "--before", "default-reset", "--after", "hard-reset",
+        "write-flash", "--flash-mode", "dio",
+        "--flash-size", esp.get("flash_size", "8MB"),
+        "--flash-freq", "80m",
+        "0x0", os.path.join(build_dir, "bootloader/bootloader.bin"),
+        "0x8000", os.path.join(build_dir, "partition_table/partition-table.bin"),
+        "0xf000", os.path.join(build_dir, "ota_data_initial.bin"),
+        "0x20000", os.path.join(build_dir, "esp32-csi-node.bin"),
+    ]
+    subprocess.run(cmd)
+
+def cmd_provision(cfg):
+    esp = cfg.get("esp32", {})
+    wifi = cfg.get("wifi", {})
+    repo = os.path.expanduser(cfg.get("repo_path", "~/code/RuView"))
+    password = get_wifi_password()
+    if not password:
+        print("Error: WiFi password not found in Keychain")
+        sys.exit(1)
+
+    local_ip = None
+    try:
+        with open(CONFIG_PATH) as f:
+            full_cfg = yaml.safe_load(f)
+        local_ip = full_cfg.get("network", {}).get("local_ip")
+    except Exception:
+        pass
+
+    cmd = [
+        "uvx", "--from", "esp-idf-nvs-partition-gen", "--with", "esptool",
+        "python", os.path.join(repo, "firmware/esp32-csi-node/provision.py"),
+        "--port", esp.get("serial_port"),
+        "--ssid", wifi.get("ssid"),
+        "--password", password,
+        "--node-id", str(esp.get("node_id", 1)),
+    ]
+    if local_ip:
+        cmd.extend(["--target-ip", local_ip])
+    subprocess.run(cmd)
+
+def cmd_monitor(cfg):
+    esp = cfg.get("esp32", {})
+    port = esp.get("serial_port")
+    subprocess.run(["stty", "-f", port, "115200", "raw", "-echo"])
+    print(f"Monitoring {port} at 115200 baud (Ctrl+C to stop)")
+    try:
+        subprocess.run(["cat", port])
+    except KeyboardInterrupt:
+        pass
+
+def cmd_dashboard(cfg):
+    url = get_server_url(cfg)
+    chrome = os.path.expanduser("~/.claude/skills/chrome-control/scripts/chrome")
+    subprocess.run([chrome, "open", f"{url}/ui/observatory.html"])
+
+def cmd_screenshot(cfg):
+    url = get_server_url(cfg)
+    chrome = os.path.expanduser("~/.claude/skills/chrome-control/scripts/chrome")
+    # Find or open the observatory tab
+    result = subprocess.run([chrome, "tabs"], capture_output=True, text=True)
+    tab_id = None
+    for line in result.stdout.split("\n"):
+        if "observatory" in line.lower() or f"localhost:{cfg.get('server', {}).get('http_port', 3000)}" in line:
+            tab_id = line.strip().split()[0]
+            break
+    if not tab_id:
+        r = subprocess.run([chrome, "open", f"{url}/ui/observatory.html"], capture_output=True, text=True)
+        for word in r.stdout.split():
+            if word.isdigit():
+                tab_id = word
+                break
+        import time; time.sleep(4)
+    if tab_id:
+        result = subprocess.run([chrome, "screenshot", tab_id], capture_output=True, text=True)
+        print(result.stdout.strip())
+
+def main():
+    parser = argparse.ArgumentParser(description="RuView WiFi Sensing CLI")
+    parser.add_argument("command", choices=[
+        "start", "stop", "status", "vitals", "presence",
+        "flash", "provision", "monitor", "dashboard", "screenshot"
+    ])
+    args = parser.parse_args()
+
+    cfg = load_config()
+    commands = {
+        "start": cmd_start, "stop": cmd_stop, "status": cmd_status,
+        "vitals": cmd_vitals, "presence": cmd_presence,
+        "flash": cmd_flash, "provision": cmd_provision, "monitor": cmd_monitor,
+        "dashboard": cmd_dashboard, "screenshot": cmd_screenshot,
+    }
+    commands[args.command](cfg)
+
+if __name__ == "__main__":
+    main()

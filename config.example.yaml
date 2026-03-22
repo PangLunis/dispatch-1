@@ -55,3 +55,20 @@ chrome:
     1:
       name: "owner"
       email: "you@example.com"
+
+ruview:
+  repo_path: "~/code/RuView"
+  esp32:
+    serial_port: "/dev/cu.usbserial-XXXXXX"
+    mac: "XX:XX:XX:XX:XX:XX"
+    chip: "esp32s3"
+    flash_size: "8MB"
+    node_id: 1
+  wifi:
+    ssid: "YourSSID"
+    # password: stored in macOS Keychain as "ruview-wifi"
+  server:
+    http_port: 3000
+    ws_port: 8766
+    udp_port: 5005
+    bind_addr: "0.0.0.0"

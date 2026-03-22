@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { getChats, createChat, deleteChat } from "../api/chats";
 import type { Conversation } from "../api/types";
+import { notifyUnreadChatCount } from "../state/unreadChats";
 
 // ---------------------------------------------------------------------------
 // Optimistic read tracking (module-level, persists across screen navigations)
@@ -66,6 +67,16 @@ export function useChatList(): UseChatListReturn {
       });
       if (mountedRef.current) {
         _updateReadTracking(chats);
+        // Count unread chats for tab badge
+        const unreadCount = chats.filter((c) => {
+          if (_readChatIds.has(c.id)) return false;
+          if (c.last_message_role !== "assistant" || !c.last_message_at) return false;
+          if (c.last_opened_at) {
+            return new Date(c.last_message_at) > new Date(c.last_opened_at);
+          }
+          return true; // No last_opened_at — assistant message is unread
+        }).length;
+        notifyUnreadChatCount(unreadCount);
         setConversations(chats);
         setError(null);
       }

@@ -2427,11 +2427,24 @@ async def agents_sessions():
             logger.warning(f"agents_sessions: failed to load signal group names: {e}")
 
         # Build contact sessions from registry
+        # Track seen chat_ids to deduplicate prefixed variants (e.g. "signal:xxx" vs "xxx")
+        seen_chat_ids: set[str] = set()
+
         for chat_id, session_info in registry.items():
             if chat_id.startswith("dispatch-api:"):
                 continue  # dispatch-api sessions come from dispatch-messages.db
             if chat_id.startswith("dispatch-app:") or chat_id.startswith("sven-app:"):
                 continue  # dispatch-app sessions come from dispatch-messages.db below
+
+            # Deduplicate: strip source prefix to get canonical id
+            canonical_id = chat_id
+            for prefix in ("signal:", "imessage:", "discord:"):
+                if chat_id.startswith(prefix):
+                    canonical_id = chat_id[len(prefix):]
+                    break
+            if canonical_id in seen_chat_ids:
+                continue  # already have this session from its unprefixed entry
+            seen_chat_ids.add(canonical_id)
 
             last = last_messages.get(chat_id)
             last_text = None
@@ -2448,15 +2461,15 @@ async def agents_sessions():
             else:
                 last_time = session_info.get("last_message_time")
 
-            # Resolve display name: contact_name > group display name > participant list > chat_id
-            display_name = session_info.get("contact_name") or ""
+            # Resolve display name: contact_name > display_name > group display name > participant list > chat_id
+            display_name = session_info.get("contact_name") or session_info.get("display_name") or ""
             if not display_name and session_info.get("type") == "group":
                 source = session_info.get("source", "")
-                # Try platform-specific group name first
+                # Try platform-specific group name first (try both raw chat_id and canonical_id)
                 if source == "imessage":
-                    display_name = imessage_group_names.get(chat_id, "")
+                    display_name = imessage_group_names.get(chat_id, "") or imessage_group_names.get(canonical_id, "")
                 elif source == "signal":
-                    display_name = signal_group_names.get(chat_id, "")
+                    display_name = signal_group_names.get(chat_id, "") or signal_group_names.get(canonical_id, "")
                 # Fall back to participant list
                 if not display_name:
                     participants = session_info.get("participants") or []
@@ -2468,6 +2481,14 @@ async def agents_sessions():
                             display_name = ", ".join(names[:2]) + f" +{len(names)-2}"
             if not display_name:
                 display_name = chat_id
+
+            # Deduplicate signal groups that appear under different chat_ids
+            # (e.g. phone-based "signal:+207..." and base64 group ID for same group)
+            if session_info.get("source") == "signal" and session_info.get("type") == "group":
+                name_key = f"signal_group:{display_name}"
+                if name_key in seen_chat_ids:
+                    continue
+                seen_chat_ids.add(name_key)
 
             sessions.append({
                 "id": chat_id,

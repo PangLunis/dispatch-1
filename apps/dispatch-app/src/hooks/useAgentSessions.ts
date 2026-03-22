@@ -9,6 +9,7 @@ import {
 import type { AgentSession } from "../api/types";
 import { AGENT_SESSIONS_POLL_INTERVAL } from "../config/constants";
 import type { SourceFilter } from "../components/FilterPills";
+import { updateAgentReadTracking } from "../state/unreadAgents";
 
 interface UseAgentSessionsReturn {
   sessions: AgentSession[];
@@ -43,6 +44,7 @@ export function useAgentSessions(): UseAgentSessionsReturn {
     try {
       const fetched = await getAgentSessions();
       if (mountedRef.current) {
+        updateAgentReadTracking(fetched);
         setSessions(fetched);
         setError(null);
       }
