@@ -18,7 +18,15 @@ export interface Conversation {
   last_message_at: string | null;
   last_message_role: string | null;
   last_opened_at: string | null;
+  has_notes?: boolean;
   is_thinking?: boolean;
+}
+
+/** Notes for a chat */
+export interface ChatNotes {
+  chat_id: string;
+  content: string;
+  updated_at: string | null;
 }
 
 /** Response from POST /prompt and POST /prompt-with-image */

@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Platform,
   Pressable,
   ScrollView,
@@ -27,14 +26,8 @@ import {
   showDestructiveConfirm,
   showPrompt,
 } from "@/src/utils/alert";
-import {
-  discoverServers,
-  DiscoveredServer,
-} from "@/src/api/discovery";
 
 type ConnectionStatus = "checking" | "connected" | "disconnected";
-
-const TAILSCALE_API_KEY_STORAGE = "dispatch_tailscale_api_key";
 
 export default function SettingsScreen() {
   const { token } = useDeviceToken();
@@ -42,14 +35,6 @@ export default function SettingsScreen() {
     useState<ConnectionStatus>("checking");
   const [copiedToken, setCopiedToken] = useState(false);
   const [currentUrl, setCurrentUrl] = useState(getApiBaseUrl());
-
-  // Discovery state
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanPhase, setScanPhase] = useState("");
-  const [discoveredServers, setDiscoveredServers] = useState<
-    DiscoveredServer[]
-  >([]);
-  const [showServerList, setShowServerList] = useState(false);
 
   // Load persisted API URL on mount
   useEffect(() => {
@@ -91,58 +76,6 @@ export default function SettingsScreen() {
     return () => clearInterval(interval);
   }, [checkConnection]);
 
-  // Scan for servers
-  const handleScanServers = useCallback(async () => {
-    setIsScanning(true);
-    setShowServerList(true);
-    setDiscoveredServers([]);
-    setScanPhase("Starting scan...");
-
-    try {
-      // Load tailscale API key if saved
-      const tsKey = await getItem(TAILSCALE_API_KEY_STORAGE);
-
-      const servers = await discoverServers({
-        currentUrl: currentUrl || undefined,
-        tailscaleApiKey: tsKey ?? undefined,
-        onProgress: (phase, scanned, total) => {
-          if (phase === "current") {
-            setScanPhase("Checking current server...");
-          } else if (phase.startsWith("lan:")) {
-            const subnet = phase.replace("lan:", "");
-            const pct = Math.round((scanned / total) * 100);
-            setScanPhase(`Scanning ${subnet}.* (${pct}%)`);
-          } else if (phase === "tailscale") {
-            setScanPhase("Querying Tailscale...");
-          }
-        },
-      });
-
-      setDiscoveredServers(servers);
-      setScanPhase(
-        servers.length === 0
-          ? "No servers found"
-          : `Found ${servers.length} server${servers.length > 1 ? "s" : ""}`,
-      );
-    } catch (err) {
-      setScanPhase("Scan failed");
-    } finally {
-      setIsScanning(false);
-    }
-  }, [currentUrl]);
-
-  // Select a discovered server
-  const handleSelectServer = useCallback(
-    async (server: DiscoveredServer) => {
-      setApiBaseUrl(server.url);
-      setCurrentUrl(server.url);
-      await setItem(API_URL_STORAGE_KEY, server.url);
-      setShowServerList(false);
-      checkConnection();
-    },
-    [checkConnection],
-  );
-
   // Change API server URL manually
   const handleChangeUrl = useCallback(async () => {
     const newUrl = await showPrompt(
@@ -170,24 +103,6 @@ export default function SettingsScreen() {
     await deleteItem(API_URL_STORAGE_KEY);
     checkConnection();
   }, [checkConnection]);
-
-  // Configure Tailscale API key
-  const handleConfigureTailscale = useCallback(async () => {
-    const existing = await getItem(TAILSCALE_API_KEY_STORAGE);
-    const key = await showPrompt(
-      "Tailscale API Key",
-      "Enter your Tailscale API key for remote server discovery.\n\nCreate one at: https://login.tailscale.com/admin/settings/keys",
-      existing ?? "",
-    );
-    if (key === null) return; // cancelled
-    if (key === "") {
-      await deleteItem(TAILSCALE_API_KEY_STORAGE);
-      showAlert("Removed", "Tailscale API key cleared.");
-    } else {
-      await setItem(TAILSCALE_API_KEY_STORAGE, key);
-      showAlert("Saved", "Tailscale API key saved. Scan will now include remote devices.");
-    }
-  }, []);
 
   // Copy device token to clipboard (cross-platform)
   const handleCopyToken = useCallback(async () => {
@@ -300,15 +215,6 @@ export default function SettingsScreen() {
             </View>
           </Pressable>
           <View style={styles.separator} />
-          <Pressable style={styles.row} onPress={handleScanServers}>
-            <Text style={styles.rowLabel}>Scan for Servers</Text>
-            {isScanning ? (
-              <ActivityIndicator size="small" color="#71717a" />
-            ) : (
-              <Text style={styles.chevron}>&rsaquo;</Text>
-            )}
-          </Pressable>
-          <View style={styles.separator} />
           <Pressable style={styles.row} onPress={handleResetUrl}>
             <Text style={styles.resetText}>Reset to Default</Text>
             <Text style={styles.defaultUrl} numberOfLines={1}>
@@ -317,88 +223,7 @@ export default function SettingsScreen() {
           </Pressable>
         </View>
         <Text style={styles.sectionFooter}>
-          Tap API Server to enter manually, or Scan to auto-discover servers on your network.
-        </Text>
-      </View>
-
-      {/* Server Discovery Results */}
-      {showServerList && (
-        <View style={styles.section}>
-          <Text style={styles.sectionHeader}>DISCOVERED SERVERS</Text>
-          <View style={styles.sectionCard}>
-            {isScanning && discoveredServers.length === 0 && (
-              <View style={styles.scanningRow}>
-                <ActivityIndicator size="small" color="#71717a" />
-                <Text style={styles.scanPhaseText}>{scanPhase}</Text>
-              </View>
-            )}
-            {discoveredServers.map((server, index) => (
-              <React.Fragment key={server.url}>
-                {index > 0 && <View style={styles.separator} />}
-                <Pressable
-                  style={[
-                    styles.row,
-                    server.url === currentUrl && styles.selectedRow,
-                  ]}
-                  onPress={() => handleSelectServer(server)}
-                >
-                  <View style={styles.serverInfo}>
-                    <Text style={styles.serverName}>{server.name}</Text>
-                    <Text style={styles.serverDetail}>
-                      {server.hostname}
-                      {server.source === "tailscale" ? " (Tailscale)" : " (LAN)"}
-                      {" · "}
-                      {server.latencyMs}ms
-                    </Text>
-                  </View>
-                  {server.url === currentUrl ? (
-                    <Text style={styles.checkmark}>✓</Text>
-                  ) : (
-                    <Text style={styles.chevron}>&rsaquo;</Text>
-                  )}
-                </Pressable>
-              </React.Fragment>
-            ))}
-            {!isScanning && discoveredServers.length === 0 && (
-              <View style={styles.emptyRow}>
-                <Text style={styles.emptyText}>
-                  No servers found on your network
-                </Text>
-              </View>
-            )}
-          </View>
-          {!isScanning && (
-            <View style={styles.scanActions}>
-              <Pressable onPress={handleScanServers}>
-                <Text style={styles.scanAgainText}>Scan Again</Text>
-              </Pressable>
-              <Text style={styles.scanDivider}> · </Text>
-              <Pressable onPress={handleChangeUrl}>
-                <Text style={styles.scanAgainText}>Enter Manually</Text>
-              </Pressable>
-              <Text style={styles.scanDivider}> · </Text>
-              <Pressable onPress={() => setShowServerList(false)}>
-                <Text style={styles.dismissText}>Dismiss</Text>
-              </Pressable>
-            </View>
-          )}
-          {isScanning && discoveredServers.length > 0 && (
-            <Text style={styles.sectionFooter}>{scanPhase}</Text>
-          )}
-        </View>
-      )}
-
-      {/* Tailscale Section */}
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>TAILSCALE</Text>
-        <View style={styles.sectionCard}>
-          <Pressable style={styles.row} onPress={handleConfigureTailscale}>
-            <Text style={styles.rowLabel}>API Key</Text>
-            <Text style={styles.rowValue}>Configure</Text>
-          </Pressable>
-        </View>
-        <Text style={styles.sectionFooter}>
-          Add a Tailscale API key to discover servers on your tailnet remotely.
+          Tap API Server to change the URL manually.
         </Text>
       </View>
 
@@ -436,6 +261,31 @@ export default function SettingsScreen() {
             <Text style={styles.rowLabel}>Clear Notifications</Text>
             <Text style={styles.chevron}>&rsaquo;</Text>
           </Pressable>
+          {__DEV__ && Platform.OS !== "web" && (
+            <>
+              <View style={styles.separator} />
+              <Pressable
+                style={styles.row}
+                onPress={() => {
+                  try {
+                    const { NativeModules } = require("react-native");
+                    if (NativeModules.DevMenu?.show) {
+                      NativeModules.DevMenu.show();
+                    } else if (NativeModules.DevSettings?.show) {
+                      NativeModules.DevSettings.show();
+                    } else {
+                      showAlert("Dev Menu", "Shake your device to open the dev menu.");
+                    }
+                  } catch {
+                    showAlert("Dev Menu", "Shake your device to open the dev menu.");
+                  }
+                }}
+              >
+                <Text style={styles.rowLabel}>Dev Tools</Text>
+                <Text style={styles.chevron}>&rsaquo;</Text>
+              </Pressable>
+            </>
+          )}
         </View>
         <Text style={styles.sectionFooter}>
           View live system logs, restart Claude's conversation context, or clear all notifications.
@@ -485,14 +335,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingHorizontal: 4,
   },
-  sectionHeaderDanger: {
-    color: "#ef4444",
-    fontSize: 13,
-    fontWeight: "600",
-    letterSpacing: 0.5,
-    marginBottom: 8,
-    paddingHorizontal: 4,
-  },
   sectionCard: {
     backgroundColor: "#18181b",
     borderRadius: 12,
@@ -512,9 +354,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     minHeight: 48,
-  },
-  selectedRow: {
-    backgroundColor: "#1e3a2f",
   },
   rowLabel: {
     color: "#fafafa",
@@ -586,63 +425,5 @@ const styles = StyleSheet.create({
     color: "#52525b",
     fontSize: 22,
     fontWeight: "300",
-  },
-  // Discovery styles
-  scanningRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 12,
-  },
-  scanPhaseText: {
-    color: "#71717a",
-    fontSize: 14,
-  },
-  serverInfo: {
-    flex: 1,
-    marginRight: 12,
-  },
-  serverName: {
-    color: "#fafafa",
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  serverDetail: {
-    color: "#71717a",
-    fontSize: 12,
-    marginTop: 2,
-  },
-  checkmark: {
-    color: "#22c55e",
-    fontSize: 18,
-    fontWeight: "600",
-  },
-  emptyRow: {
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    alignItems: "center",
-  },
-  emptyText: {
-    color: "#52525b",
-    fontSize: 14,
-  },
-  scanActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 8,
-    paddingHorizontal: 4,
-  },
-  scanAgainText: {
-    color: "#3b82f6",
-    fontSize: 13,
-  },
-  scanDivider: {
-    color: "#52525b",
-    fontSize: 13,
-  },
-  dismissText: {
-    color: "#71717a",
-    fontSize: 13,
   },
 });

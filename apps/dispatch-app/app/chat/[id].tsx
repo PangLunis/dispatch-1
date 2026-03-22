@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -43,6 +44,9 @@ export default function ChatDetailScreen() {
   const audioPlayer = useAudioPlayer();
 
   const [imageSendError, setImageSendError] = useState<string | null>(null);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
+  const menuButtonRef = useRef<View>(null);
 
   // Optimistically mark as read, persist to server, and track active chat for push suppression
   useEffect(() => {
@@ -114,15 +118,30 @@ export default function ChatDetailScreen() {
     }
   }, [id, currentTitle]);
 
+  const handleMenuPress = useCallback(() => {
+    menuButtonRef.current?.measureInWindow((x, y, width, height) => {
+      setMenuPosition({ x: x + width - 160, y: y + height + 8 });
+      setMenuVisible(true);
+    });
+  }, []);
+
   const headerRight = useCallback(
     () => (
-      <Pressable onPress={handleRename} style={localStyles.renameButton}>
-        <Text style={[localStyles.renameButtonText, { color: branding.accentColor }]}>
-          Rename
-        </Text>
+      <Pressable
+        ref={menuButtonRef}
+        onPress={handleMenuPress}
+        hitSlop={8}
+        style={localStyles.menuButton}
+      >
+        <SymbolView
+          name={{ ios: "ellipsis.circle", android: "more_vert", web: "more_vert" }}
+          tintColor={branding.accentColor}
+          size={22}
+          weight="medium"
+        />
       </Pressable>
     ),
-    [handleRename],
+    [handleMenuPress],
   );
 
   const renderItem = useCallback(
@@ -215,17 +234,98 @@ export default function ChatDetailScreen() {
           onSendWithImage={handleSendWithImage}
         />
       </KeyboardAvoidingView>
+
+      {/* Dropdown menu */}
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+      >
+        <Pressable
+          style={localStyles.menuOverlay}
+          onPress={() => setMenuVisible(false)}
+        >
+          <View
+            style={[
+              localStyles.menuDropdown,
+              { top: menuPosition.y, left: menuPosition.x },
+            ]}
+          >
+            <Pressable
+              style={localStyles.menuItem}
+              onPress={() => {
+                setMenuVisible(false);
+                // Delay to let the modal fully dismiss before showing Alert.prompt
+                setTimeout(handleRename, 350);
+              }}
+            >
+              <SymbolView
+                name={{ ios: "pencil", android: "edit", web: "edit" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={localStyles.menuItemText}>Rename</Text>
+            </Pressable>
+            <View style={localStyles.menuDivider} />
+            <Pressable
+              style={localStyles.menuItem}
+              onPress={() => {
+                setMenuVisible(false);
+                router.push({
+                  pathname: "/chat/notes",
+                  params: { id, chatTitle: currentTitle },
+                });
+              }}
+            >
+              <SymbolView
+                name={{ ios: "note.text", android: "description", web: "description" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={localStyles.menuItemText}>Notes</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </>
   );
 }
 
 const localStyles = StyleSheet.create({
-  renameButton: {
-    paddingHorizontal: 8,
+  menuButton: {
+    paddingHorizontal: 4,
     paddingVertical: 4,
   },
-  renameButtonText: {
+  menuOverlay: {
+    flex: 1,
+  },
+  menuDropdown: {
+    position: "absolute",
+    width: 160,
+    backgroundColor: "#2a2a2e",
+    borderRadius: 12,
+    paddingVertical: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  menuDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#3f3f46",
+    marginHorizontal: 12,
+  },
+  menuItemText: {
+    color: "#fafafa",
     fontSize: 16,
-    fontWeight: "500",
   },
 });
