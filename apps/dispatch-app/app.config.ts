@@ -63,6 +63,9 @@ export default ({ config: _config }: ConfigContext): ExpoConfig => ({
         NSAllowsArbitraryLoads: true,
       },
     },
+    entitlements: {
+      "aps-environment": "development",
+    },
   },
   android: {
     adaptiveIcon: {
@@ -87,6 +90,22 @@ export default ({ config: _config }: ConfigContext): ExpoConfig => ({
             "$(PRODUCT_NAME) needs access to speech recognition for voice input.",
         },
       ],
+      ...(merged.developmentTeam
+        ? [
+            [
+              "expo-build-properties",
+              {
+                ios: {
+                  developmentTeam: merged.developmentTeam,
+                  codeSignStyle: merged.codeSignStyle || "Automatic",
+                  ...(merged.provisioningProfile && {
+                    provisioningProfileSpecifier: merged.provisioningProfile,
+                  }),
+                },
+              },
+            ],
+          ]
+        : []),
     ],
   experiments: {
     typedRoutes: true,

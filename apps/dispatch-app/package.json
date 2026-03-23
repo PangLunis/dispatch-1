@@ -17,6 +17,7 @@
     "@ronradtke/react-native-markdown-display": "^8.1.0",
     "expo": "~55.0.8",
     "expo-audio": "^55.0.9",
+    "expo-build-properties": "^55.0.10",
     "expo-clipboard": "^55.0.9",
     "expo-constants": "~55.0.9",
     "expo-document-picker": "^55.0.9",
