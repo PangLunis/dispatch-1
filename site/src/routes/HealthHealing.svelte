@@ -174,6 +174,40 @@
     </p>
   </section>
 
+  <section>
+    <h2>Self-Improvement Tools</h2>
+    <p>
+      Beyond reactive health monitoring, Dispatch includes proactive tools for
+      finding and fixing issues before they become incidents.
+    </p>
+
+    <div class="pattern-list">
+      <div class="pattern-header">Bug Finder</div>
+      <ul>
+        <li>Parallel discovery and refinement agents scan recent code changes, system health, test failures, and consistency issues</li>
+        <li>Uses multiple subagents to cast a wide net, then refines findings into actionable bug reports</li>
+      </ul>
+    </div>
+
+    <div class="pattern-list">
+      <div class="pattern-header">Latency Finder</div>
+      <ul>
+        <li>Analyzes performance JSONL files, bus.db sdk_events, bus.db records, and system metrics</li>
+        <li>Uses parallel discovery agents to scan multiple data sources simultaneously</li>
+        <li>Synthesizes findings into prioritized recommendations</li>
+      </ul>
+    </div>
+
+    <div class="pattern-list">
+      <div class="pattern-header">Skillify</div>
+      <ul>
+        <li>Mines conversation transcripts for automation opportunities</li>
+        <li>Proposes new skills, improvements to existing skills, and skill merges</li>
+        <li>Ensures the system gets smarter over time by converting recurring patterns into reusable capabilities</li>
+      </ul>
+    </div>
+  </section>
+
   <section class="related">
     <h2>Related</h2>
     <div class="related-links">

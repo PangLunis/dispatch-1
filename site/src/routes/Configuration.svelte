@@ -29,8 +29,7 @@
       <div class="config-header">Assistant</div>
       <pre><code>assistant:
   name: "Sven"
-  email: "assistant@example.com"
-  phone: "+19495551234"</code></pre>
+  email: "assistant@example.com"</code></pre>
     </div>
   </section>
 
@@ -74,6 +73,43 @@ lutron:
       email: "john@example.com"</code></pre>
       <p class="config-note">Profile 0 is the assistant's Chrome profile.</p>
     </div>
+
+    <div class="config-block">
+      <div class="config-header">Tailscale</div>
+      <pre><code>tailscale:
+  hostname: "dispatch-mac"
+  ip: "100.x.x.x"</code></pre>
+      <p class="config-note">Used for remote access via Tailscale VPN.</p>
+    </div>
+
+    <div class="config-block">
+      <div class="config-header">Network</div>
+      <pre><code>network:
+  local_ip: "192.168.1.x"</code></pre>
+    </div>
+
+    <div class="config-block">
+      <div class="config-header">Plex</div>
+      <pre><code>plex:
+  url: "http://localhost:32400"
+  local_url: "http://192.168.1.x:32400"
+  tailscale_url: "http://100.x.x.x:32400"</code></pre>
+    </div>
+
+    <div class="config-block">
+      <div class="config-header">Podcast</div>
+      <pre><code>podcast:
+  bucket: "your-gcs-bucket"
+  title: "Podcast Name"
+  email: "podcast@example.com"</code></pre>
+    </div>
+
+    <div class="config-block">
+      <div class="config-header">Hooks</div>
+      <pre><code>hooks:
+  compact_notify: true</code></pre>
+      <p class="config-note">Enable notifications on session compaction events.</p>
+    </div>
   </section>
 
   <section>
@@ -116,6 +152,14 @@ lutron:
           <td><code>DISABLE_SIGNAL</code></td>
           <td>Set to disable Signal integration</td>
         </tr>
+        <tr>
+          <td><code>DISCORD_BOT_TOKEN</code></td>
+          <td>Discord bot token for Discord backend</td>
+        </tr>
+        <tr>
+          <td><code>DISPATCH_API_PORT</code></td>
+          <td>Port for dispatch-api FastAPI server (default: 9091)</td>
+        </tr>
       </tbody>
     </table>
   </section>
@@ -133,7 +177,6 @@ partner:
 assistant:
   name: "Sven"
   email: "assistant@example.com"
-  phone: "+19495551234"
 
 signal:
   account: "+19495551234"

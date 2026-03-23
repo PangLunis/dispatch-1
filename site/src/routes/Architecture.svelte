@@ -49,7 +49,7 @@
     </div>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 500 840" class="architecture-svg" role="img" aria-label="Architecture diagram showing the message flow through Dispatch: messages arrive via iMessage and Signal, flow through the Manager Daemon for contact lookup and tier checking, fan out to individual Claude SDK sessions, get processed with inject-prompt, and responses are sent back via send-sms.">
+      <svg viewBox="0 0 720 870" class="architecture-svg" role="img" aria-label="Architecture diagram showing the message flow through Dispatch: messages arrive via iMessage, Signal, Discord, and Dispatch App, flow through the Manager Daemon for contact lookup and tier checking, fan out to individual Claude SDK sessions, get processed with inject-prompt, and responses are sent back via backend-specific reply commands.">
         <defs>
           <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="4" result="blur"/>
@@ -76,62 +76,86 @@
         </defs>
 
         <!-- ════════════════════════════════════════════════════════════ -->
-        <!-- ROW 1: CHATS (1:1 + Group) - Mini iPhone mockups -->
+        <!-- ROW 1: CHATS - 4 message sources -->
         <!-- ════════════════════════════════════════════════════════════ -->
-        <g transform="translate(90, 5)">
-          <!-- 1:1 DM - iPhone mockup -->
-          <!-- Phone outer frame -->
+
+        <!-- iMessage - iPhone mockup -->
+        <g transform="translate(15, 5)">
           <rect x="0" y="0" width="140" height="90" rx="14" fill="#1a1a1a"/>
-          <!-- Dynamic Island -->
           <rect x="50" y="4" width="40" height="10" rx="5" fill="#000"/>
-          <!-- Screen -->
           <rect x="4" y="16" width="132" height="70" rx="10" fill="#f2f2f7"/>
-          <!-- Nav bar -->
           <rect x="4" y="16" width="132" height="16" rx="10" fill="#f9f9f9"/>
           <rect x="4" y="26" width="132" height="6" fill="#f9f9f9"/>
           <text x="70" y="27" class="iphone-nav-title">Alice</text>
-          <!-- Chat bubbles -->
           <g transform="translate(10, 38)">
-            <!-- Received bubble (gray, left aligned) -->
             <rect x="0" y="0" width="55" height="16" rx="8" fill="#e5e5ea"/>
             <text x="8" y="11" class="imessage-text">weather?</text>
-            <!-- Sent bubble (blue, right aligned) -->
             <rect x="67" y="0" width="55" height="16" rx="8" fill="#0b93f6"/>
             <text x="75" y="11" class="imessage-text-sent">45°F ☀️</text>
           </g>
-          <!-- Tier badge -->
           <rect x="4" y="74" width="132" height="12" rx="0 0 10 10" fill="rgba(242,142,44,0.15)"/>
           <text x="70" y="83" class="phone-tier admin">admin</text>
         </g>
 
-        <g transform="translate(260, 5)">
-          <!-- Group chat - iPhone mockup -->
-          <!-- Phone outer frame -->
+        <!-- Signal - iPhone mockup -->
+        <g transform="translate(185, 5)">
           <rect x="0" y="0" width="140" height="90" rx="14" fill="#1a1a1a"/>
-          <!-- Dynamic Island -->
           <rect x="50" y="4" width="40" height="10" rx="5" fill="#000"/>
-          <!-- Screen -->
           <rect x="4" y="16" width="132" height="70" rx="10" fill="#f2f2f7"/>
-          <!-- Nav bar -->
           <rect x="4" y="16" width="132" height="16" rx="10" fill="#f9f9f9"/>
           <rect x="4" y="26" width="132" height="6" fill="#f9f9f9"/>
           <text x="70" y="27" class="iphone-nav-title">Family (3)</text>
-          <!-- Chat bubbles -->
           <g transform="translate(10, 38)">
-            <!-- Received bubble 1 -->
             <rect x="0" y="0" width="45" height="16" rx="8" fill="#e5e5ea"/>
             <text x="6" y="11" class="imessage-text">Mom: hi!</text>
-            <!-- Received bubble 2 -->
             <rect x="50" y="0" width="50" height="16" rx="8" fill="#e5e5ea"/>
             <text x="56" y="11" class="imessage-text">Dad: hey</text>
           </g>
-          <!-- Tier badge -->
           <rect x="4" y="74" width="132" height="12" rx="0 0 10 10" fill="rgba(118,183,178,0.2)"/>
           <text x="70" y="83" class="phone-tier">family</text>
         </g>
 
+        <!-- Discord - chat app style box -->
+        <g transform="translate(395, 5)">
+          <rect x="0" y="0" width="140" height="90" rx="10" fill="#5865F2"/>
+          <!-- Header bar -->
+          <rect x="0" y="0" width="140" height="22" rx="10" fill="#4752C4"/>
+          <rect x="0" y="12" width="140" height="10" fill="#4752C4"/>
+          <text x="14" y="16" class="discord-channel"># general</text>
+          <!-- Chat messages -->
+          <g transform="translate(8, 30)">
+            <circle cx="6" cy="6" r="6" fill="#7289DA" opacity="0.6"/>
+            <text x="16" y="9" class="discord-text">Bob: hey bot</text>
+            <circle cx="6" cy="22" r="6" fill="#57F287" opacity="0.6"/>
+            <text x="16" y="25" class="discord-text">Dispatch: on it</text>
+          </g>
+          <!-- Tier badge -->
+          <rect x="4" y="74" width="132" height="12" rx="0 0 8 8" fill="rgba(175,122,161,0.2)"/>
+          <text x="70" y="83" class="phone-tier">favorite</text>
+        </g>
+
+        <!-- Dispatch App - mobile app style box -->
+        <g transform="translate(565, 5)">
+          <rect x="0" y="0" width="140" height="90" rx="14" fill="#1a1a1a"/>
+          <rect x="50" y="4" width="40" height="10" rx="5" fill="#000"/>
+          <rect x="4" y="16" width="132" height="70" rx="10" fill="#292524"/>
+          <!-- App header -->
+          <rect x="4" y="16" width="132" height="16" rx="10" fill="#44403c"/>
+          <rect x="4" y="26" width="132" height="6" fill="#44403c"/>
+          <text x="70" y="27" class="dispatch-app-title">Dispatch</text>
+          <!-- Chat bubbles (dark theme) -->
+          <g transform="translate(10, 38)">
+            <rect x="0" y="0" width="60" height="16" rx="8" fill="#44403c"/>
+            <text x="8" y="11" class="dispatch-app-text">remind me</text>
+            <rect x="65" y="0" width="50" height="16" rx="8" fill="{colors.blue}"/>
+            <text x="73" y="11" class="imessage-text-sent">done!</text>
+          </g>
+          <rect x="4" y="74" width="132" height="12" rx="0 0 10 10" fill="rgba(242,142,44,0.15)"/>
+          <text x="70" y="83" class="phone-tier admin">admin</text>
+        </g>
+
         <!-- ════════════════════════════════════════════════════════════ -->
-        <!-- CHAT.DB (below chats, messages flow into it) -->
+        <!-- INGESTION SOURCES (below chats) -->
         <!-- ════════════════════════════════════════════════════════════ -->
         <g transform="translate(20, 100)">
           <rect x="0" y="0" width="95" height="70" rx="8" class="db-box"/>
@@ -140,63 +164,89 @@
           <text x="47" y="55" class="db-sublabel">database</text>
         </g>
 
-        <!-- Arrows from chats DOWN to chat.db (staggered, no overlap) -->
+        <g transform="translate(190, 100)">
+          <rect x="0" y="0" width="95" height="70" rx="8" class="db-box"/>
+          <text x="47" y="25" class="db-label">🔌 Socket</text>
+          <text x="47" y="42" class="db-sublabel">signal-cli</text>
+          <text x="47" y="55" class="db-sublabel">JSON-RPC</text>
+        </g>
+
+        <g transform="translate(410, 100)">
+          <rect x="0" y="0" width="95" height="70" rx="8" class="db-box discord-source"/>
+          <text x="47" y="25" class="db-label">🤖 Gateway</text>
+          <text x="47" y="42" class="db-sublabel">Discord</text>
+          <text x="47" y="55" class="db-sublabel">WebSocket</text>
+        </g>
+
+        <g transform="translate(590, 100)">
+          <rect x="0" y="0" width="95" height="70" rx="8" class="db-box"/>
+          <text x="47" y="25" class="db-label">📡 API</text>
+          <text x="47" y="42" class="db-sublabel">dispatch-api</text>
+          <text x="47" y="55" class="db-sublabel">:9091</text>
+        </g>
+
+        <!-- Arrows from chats DOWN to ingestion sources -->
         <g class="flow-to-db">
-          <!-- 1:1 chat arrow: straight down from bottom-left of iPhone -->
-          <path d="M 115 95 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
-          <!-- Group chat arrow: down then left along y=102, enters chat.db from right side -->
-          <path d="M 330 95 L 330 102 L 115 102 L 115 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <path d="M 85 95 L 68 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <path d="M 255 95 L 238 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <path d="M 465 95 L 458 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
+          <path d="M 635 95 L 638 100" class="flow-path-thin" marker-end="url(#arrowGray)"/>
           {#if step === 1}
             <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.5s" fill="freeze" path="M 115 95 L 115 100"/>
+              <animateMotion dur="0.5s" fill="freeze" path="M 85 95 L 68 100"/>
             </circle>
           {/if}
         </g>
 
         <!-- ════════════════════════════════════════════════════════════ -->
-        <!-- DAEMON polls chat.db (arrow FROM daemon TO chat.db) -->
+        <!-- DAEMON polls/listens to sources -->
         <!-- ════════════════════════════════════════════════════════════ -->
 
-        <!-- Arrow from daemon pointing LEFT to chat.db (daemon polls it) - direct diagonal -->
+        <!-- Arrows from ingestion sources down to daemon -->
         <g class="flow-poll">
-          <path d="M 155 195 L 115 170" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
-          <text x="110" y="195" class="flow-label-small" fill="{colors.gray}">polls</text>
+          <path d="M 68 170 L 180 195" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
+          <text x="80" y="195" class="flow-label-small" fill="{colors.gray}">polls</text>
+          <path d="M 238 170 L 270 195" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
+          <text x="220" y="195" class="flow-label-small" fill="{colors.gray}">listens</text>
+          <path d="M 458 170 L 430 195" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
+          <text x="450" y="195" class="flow-label-small" fill="{colors.gray}">gateway</text>
+          <path d="M 638 170 L 530 195" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
+          <text x="590" y="195" class="flow-label-small" fill="{colors.gray}">webhook</text>
           {#if step === 2}
             <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.4s" fill="freeze" path="M 155 195 L 115 170"/>
+              <animateMotion dur="0.4s" fill="freeze" path="M 68 170 L 180 195"/>
             </circle>
           {/if}
         </g>
 
         <!-- Daemon -->
-        <g transform="translate(155, 175)">
+        <g transform="translate(155, 195)">
           <g class="daemon" class:active={step >= 3 && step <= 4}>
-            <rect x="0" y="0" width="280" height="100" rx="12" class="daemon-box"/>
-            <text x="140" y="24" class="daemon-title">Manager Daemon</text>
+            <rect x="0" y="0" width="400" height="100" rx="12" class="daemon-box"/>
+            <text x="200" y="24" class="daemon-title">Manager Daemon</text>
 
             <!-- Contact lookup -->
-            <g transform="translate(15, 38)">
-              <rect x="0" y="0" width="115" height="50" rx="8" class="daemon-inner-box" class:active={step === 3}/>
-              <text x="57" y="18" class="daemon-inner-title">🔍 Lookup</text>
-              <text x="57" y="35" class="daemon-inner-result" class:visible={step >= 3}>+1617... → Alice</text>
+            <g transform="translate(25, 38)">
+              <rect x="0" y="0" width="160" height="50" rx="8" class="daemon-inner-box" class:active={step === 3}/>
+              <text x="80" y="18" class="daemon-inner-title">🔍 Lookup</text>
+              <text x="80" y="35" class="daemon-inner-result" class:visible={step >= 3}>+1617... → Alice</text>
             </g>
 
             <!-- ACL check -->
-            <g transform="translate(145, 38)">
-              <rect x="0" y="0" width="115" height="50" rx="8" class="daemon-inner-box" class:active={step === 4}/>
-              <text x="57" y="18" class="daemon-inner-title">🛡️ ACL</text>
-              <text x="57" y="35" class="daemon-inner-result tier-admin" class:visible={step >= 4}>tier → admin ✓</text>
+            <g transform="translate(210, 38)">
+              <rect x="0" y="0" width="160" height="50" rx="8" class="daemon-inner-box" class:active={step === 4}/>
+              <text x="80" y="18" class="daemon-inner-title">🛡️ ACL</text>
+              <text x="80" y="35" class="daemon-inner-result tier-admin" class:visible={step >= 4}>tier → admin ✓</text>
             </g>
           </g>
         </g>
 
         <!-- Watchdog -->
-        <g transform="translate(20, 200)">
+        <g transform="translate(20, 220)">
           <rect x="0" y="0" width="95" height="50" rx="6" fill="{colors.red}" opacity="0.15"/>
           <text x="47" y="18" class="watchdog-label">🛡️ Watchdog</text>
           <text x="47" y="32" class="watchdog-desc">monitors health</text>
           <text x="47" y="44" class="watchdog-desc">auto-restarts</text>
-          <!-- Dashed line to left side of daemon (from watchdog right edge to daemon left edge) -->
           <path d="M 95 25 L 135 25" class="watchdog-line" stroke-dasharray="3,3"/>
         </g>
 
@@ -205,20 +255,20 @@
         <!-- ════════════════════════════════════════════════════════════ -->
         <g class="fan-out">
           <!-- Main line down from daemon -->
-          <path d="M 295 275 L 295 305" class="flow-path-solid incoming"/>
+          <path d="M 355 295 L 355 325" class="flow-path-solid incoming"/>
 
           <!-- Branch node (small circle) -->
-          <circle cx="295" cy="310" r="5" fill="{colors.blue}"/>
+          <circle cx="355" cy="330" r="5" fill="{colors.blue}"/>
 
           <!-- Fan lines from branch node - faded for idle sessions -->
-          <path d="M 295 315 L 100 365" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
-          <path d="M 295 315 L 210 365" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
+          <path d="M 355 335 L 150 385" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
+          <path d="M 355 335 L 270 385" class="flow-path-thin faded" marker-end="url(#arrowGray)"/>
           <!-- Active/selected session path - highlighted in orange -->
-          <path d="M 295 315 L 350 365" class="flow-path-solid" stroke="{colors.orange}" stroke-width="2.5" marker-end="url(#arrowOrange)"/>
+          <path d="M 355 335 L 420 385" class="flow-path-solid" stroke="{colors.orange}" stroke-width="2.5" marker-end="url(#arrowOrange)"/>
 
           {#if step === 5}
             <circle r="4" fill="{colors.orange}" filter="url(#glow)">
-              <animateMotion dur="0.5s" fill="freeze" path="M 295 315 L 350 365"/>
+              <animateMotion dur="0.5s" fill="freeze" path="M 355 335 L 420 385"/>
             </circle>
           {/if}
         </g>
@@ -227,7 +277,7 @@
         <!-- SESSION BUBBLES -->
         <!-- ════════════════════════════════════════════════════════════ -->
         <!-- Family Group session (faded) -->
-        <g transform="translate(55, 365)">
+        <g transform="translate(105, 385)">
           <rect x="0" y="0" width="90" height="50" rx="8" class="session-bubble faded"/>
           <rect x="0" y="0" width="90" height="18" rx="8" fill="{colors.teal}" opacity="0.3"/>
           <rect x="0" y="10" width="90" height="8" fill="{colors.teal}" opacity="0.3"/>
@@ -237,7 +287,7 @@
         </g>
 
         <!-- Friend session (faded) -->
-        <g transform="translate(165, 365)">
+        <g transform="translate(225, 385)">
           <rect x="0" y="0" width="90" height="50" rx="8" class="session-bubble faded"/>
           <rect x="0" y="0" width="90" height="18" rx="8" fill="{colors.purple}" opacity="0.3"/>
           <rect x="0" y="10" width="90" height="8" fill="{colors.purple}" opacity="0.3"/>
@@ -247,7 +297,7 @@
         </g>
 
         <!-- Active 1:1 session (Alice) -->
-        <g transform="translate(300, 365)">
+        <g transform="translate(370, 385)">
           <rect x="0" y="0" width="100" height="50" rx="8" class="session-bubble" class:selected={step >= 5}/>
           <rect x="0" y="0" width="100" height="18" rx="8" fill="{colors.orange}"/>
           <rect x="0" y="10" width="100" height="8" fill="{colors.orange}"/>
@@ -259,19 +309,19 @@
         <!-- ════════════════════════════════════════════════════════════ -->
         <!-- INJECT-PROMPT -->
         <!-- ════════════════════════════════════════════════════════════ -->
-        <path d="M 350 415 L 350 445" class="flow-path-solid incoming"/>
+        <path d="M 420 435 L 420 465" class="flow-path-solid incoming"/>
 
-        <g transform="translate(220, 450)">
-          <rect x="0" y="0" width="200" height="30" rx="6" fill="{colors.blue}" class:glow={step === 6}/>
-          <text x="100" y="19" class="inject-label">inject-prompt(tier=admin)</text>
+        <g transform="translate(280, 470)">
+          <rect x="0" y="0" width="220" height="30" rx="6" fill="{colors.blue}" class:glow={step === 6}/>
+          <text x="110" y="19" class="inject-label">inject-prompt(tier=admin)</text>
         </g>
 
         <g class="flow-down">
-          <path d="M 320 480 L 320 515" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
-          <text x="335" y="502" class="flow-label-small" fill="{colors.blue}">to Claude</text>
+          <path d="M 390 500 L 390 535" class="flow-path-solid incoming" marker-end="url(#arrowBlue)"/>
+          <text x="405" y="522" class="flow-label-small" fill="{colors.blue}">to Claude</text>
           {#if step === 6}
             <circle r="5" fill="{colors.blue}" filter="url(#glow)">
-              <animateMotion dur="0.4s" fill="freeze" path="M 320 480 L 320 515"/>
+              <animateMotion dur="0.4s" fill="freeze" path="M 390 500 L 390 535"/>
             </circle>
           {/if}
         </g>
@@ -279,59 +329,58 @@
         <!-- ════════════════════════════════════════════════════════════ -->
         <!-- AGENT SESSION (active work) -->
         <!-- ════════════════════════════════════════════════════════════ -->
-        <g transform="translate(120, 525)">
+        <g transform="translate(190, 545)">
           <g class="session" class:active={step >= 7}>
-            <rect x="0" y="0" width="300" height="100" rx="10" class="session-box"/>
-            <rect x="0" y="0" width="300" height="30" rx="10" fill="{colors.orange}"/>
-            <rect x="0" y="15" width="300" height="15" fill="{colors.orange}"/>
+            <rect x="0" y="0" width="340" height="100" rx="10" class="session-box"/>
+            <rect x="0" y="0" width="340" height="30" rx="10" fill="{colors.orange}"/>
+            <rect x="0" y="15" width="340" height="15" fill="{colors.orange}"/>
             <text x="15" y="21" class="session-title">Alice</text>
-            <text x="285" y="21" class="session-tier-label">admin</text>
+            <text x="325" y="21" class="session-tier-label">admin</text>
 
             <g transform="translate(15, 40)">
               <text x="0" y="12" class="session-path">~/transcripts/imessage/_16175969496/</text>
-              <rect x="0" y="18" width="270" height="32" rx="4" class="session-work" class:active={step >= 7}/>
+              <rect x="0" y="18" width="310" height="32" rx="4" class="session-work" class:active={step >= 7}/>
               <text x="8" y="34" class="session-work-text">🔧 "what's the weather?"</text>
               <text x="8" y="46" class="session-work-text">✓ "45°F and cloudy!"</text>
             </g>
           </g>
         </g>
 
-        <!-- Arrow to send-sms -->
+        <!-- Arrow to reply commands -->
         <g class="flow-down">
-          <path d="M 270 625 L 270 665" class="flow-path-solid outgoing" marker-end="url(#arrowGreen)"/>
-          <text x="285" y="650" class="flow-label-small" fill="{colors.green}">reply</text>
+          <path d="M 360 645 L 360 680" class="flow-path-solid outgoing" marker-end="url(#arrowGreen)"/>
+          <text x="375" y="668" class="flow-label-small" fill="{colors.green}">reply</text>
           {#if step === 8}
             <circle r="5" fill="{colors.green}" filter="url(#glow)">
-              <animateMotion dur="0.4s" fill="freeze" path="M 270 625 L 270 665"/>
+              <animateMotion dur="0.4s" fill="freeze" path="M 360 645 L 360 680"/>
             </circle>
           {/if}
         </g>
 
         <!-- ════════════════════════════════════════════════════════════ -->
-        <!-- SEND-SMS -->
+        <!-- REPLY COMMANDS (backend-specific) -->
         <!-- ════════════════════════════════════════════════════════════ -->
-        <g transform="translate(170, 675)">
-          <rect x="0" y="0" width="200" height="40" rx="8" fill="{colors.green}"/>
-          <text x="100" y="16" class="node-label">send-sms</text>
-          <text x="100" y="30" class="node-sublabel">delivers response</text>
+        <g transform="translate(130, 690)">
+          <rect x="0" y="0" width="460" height="50" rx="8" fill="{colors.green}"/>
+          <text x="230" y="18" class="node-label">Backend-Specific Reply</text>
+          <text x="230" y="36" class="node-sublabel">send-sms · send-signal · send-discord · reply-app</text>
         </g>
 
-        <!-- Return path - goes RIGHT side, enters 1:1 iPhone from bottom -->
+        <!-- Return path - goes RIGHT side, up to sources -->
         <g class="flow-return">
-          <!-- Path: right from send-sms, up the right side, then to 1:1 iPhone bottom edge -->
-          <path d="M 370 695 L 460 695 L 460 105 L 160 105 L 160 95"
+          <path d="M 590 715 L 690 715 L 690 105 L 85 105 L 85 95"
                 class="flow-path-solid outgoing" marker-end="url(#arrowGreen)"/>
-          <text x="470" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
+          <text x="700" y="400" class="flow-label-vertical" fill="{colors.green}">response</text>
           {#if step === 9}
             <circle r="5" fill="{colors.green}" filter="url(#glow)">
               <animateMotion dur="1.0s" fill="freeze"
-                path="M 370 695 L 460 695 L 460 105 L 160 105 L 160 95"/>
+                path="M 590 715 L 690 715 L 690 105 L 85 105 L 85 95"/>
             </circle>
           {/if}
         </g>
 
         <!-- Legend -->
-        <g transform="translate(40, 820)">
+        <g transform="translate(40, 850)">
           <g>
             <circle r="5" cx="5" cy="5" fill="{colors.blue}"/>
             <text x="16" y="9" class="legend-text">Incoming</text>
@@ -376,9 +425,12 @@
   <section>
     <h2>How It Works</h2>
     <p>
-      The <strong>Manager Daemon</strong> is a single Python async event loop that polls
-      iMessage's <code>chat.db</code> every 100ms and listens on Signal's JSON-RPC socket
-      for push notifications. Both backends feed into the same pipeline.
+      The <strong>Manager Daemon</strong> is a single Python async event loop that ingests
+      messages from four backends: it polls iMessage's <code>chat.db</code> every 100ms,
+      listens on Signal's JSON-RPC socket for push notifications, connects to Discord
+      via a Gateway WebSocket (<code>discord_listener.py</code>), and receives webhooks
+      from the Dispatch App's FastAPI backend (<code>dispatch-api</code> on port 9091).
+      All four backends feed into the same pipeline.
     </p>
     <p>
       When a message arrives, the daemon looks up the sender in macOS Contacts.app to
@@ -391,6 +443,14 @@
       Sessions persist across daemon restarts via SDK resume tokens stored in the
       <code>sessions.json</code> registry. When a session's context fills up, it compacts
       (summarizes conversation history) and restarts with the summary.
+    </p>
+    <p>
+      Responses are routed back through backend-specific reply commands:
+      <code>send-sms</code> for iMessage, <code>send-signal</code> for Signal,
+      <code>send-discord</code> for Discord (via REST API), and
+      <code>reply-app</code> for the Dispatch App. Sessions can also use the
+      universal <code>reply</code> CLI which auto-detects the backend from
+      the transcript directory.
     </p>
     <p>
       All events — messages, session lifecycle, health checks — flow through the
@@ -431,7 +491,7 @@
     <div class="related-links">
       <button class="related-link" on:click={() => navigateTo('messaging')}>
         <span class="related-label">Messaging</span>
-        <span class="related-desc">iMessage and Signal backends</span>
+        <span class="related-desc">iMessage, Signal, Discord &amp; Dispatch App backends</span>
       </button>
       <button class="related-link" on:click={() => navigateTo('health')}>
         <span class="related-label">Health & Healing</span>
@@ -524,6 +584,40 @@
 
   .phone-tier.admin {
     fill: #f28e2c;
+  }
+
+  /* Discord channel text */
+  .discord-channel {
+    font-family: var(--font-sans);
+    font-size: 9px;
+    font-weight: 600;
+    fill: rgba(255,255,255,0.9);
+  }
+
+  .discord-text {
+    font-family: var(--font-sans);
+    font-size: 7px;
+    fill: rgba(255,255,255,0.85);
+  }
+
+  /* Dispatch App text */
+  .dispatch-app-title {
+    font-family: var(--font-sans);
+    font-size: 9px;
+    font-weight: 600;
+    fill: #fafaf9;
+    text-anchor: middle;
+  }
+
+  .dispatch-app-text {
+    font-family: var(--font-sans);
+    font-size: 7px;
+    fill: #d6d3d1;
+  }
+
+  .discord-source {
+    fill: #eef2ff;
+    stroke: #818cf8;
   }
 
   /* DB box */

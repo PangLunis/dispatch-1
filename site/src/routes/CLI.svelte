@@ -20,6 +20,7 @@
       <li><button class="text-link" on:click={() => { document.getElementById('scheduling')?.scrollIntoView({ behavior: 'smooth' }) }}>Scheduling</button></li>
       <li><button class="text-link" on:click={() => { document.getElementById('bus')?.scrollIntoView({ behavior: 'smooth' }) }}>Event Bus</button></li>
       <li><button class="text-link" on:click={() => { document.getElementById('identifiers')?.scrollIntoView({ behavior: 'smooth' }) }}>Session Identifiers</button></li>
+      <li><button class="text-link" on:click={() => { document.getElementById('tools')?.scrollIntoView({ behavior: 'smooth' }) }}>Additional Tools</button></li>
       <li><button class="text-link" on:click={() => { document.getElementById('env')?.scrollIntoView({ behavior: 'smooth' }) }}>Environment</button></li>
     </ul>
   </nav>
@@ -185,6 +186,18 @@
       <pre><code>~/.claude/skills/signal/scripts/send-signal "+15555551234" "message"
 ~/.claude/skills/signal/scripts/send-signal-group "base64-group-id" "message"</code></pre>
     </div>
+
+    <div class="cmd-block">
+      <div class="cmd-name">send-discord</div>
+      <div class="cmd-desc">Send Discord message</div>
+      <pre><code>~/.claude/skills/discord/scripts/send-discord "channel_id" "message"</code></pre>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-name">reply-app</div>
+      <div class="cmd-desc">Send Dispatch App message</div>
+      <pre><code>~/.claude/skills/dispatch-app/scripts/reply-app "chat_id" "message"</code></pre>
+    </div>
   </section>
 
   <section id="scheduling">
@@ -273,6 +286,38 @@
         <dt><code>session_id</code></dt>
         <dd>Resume token for Claude SDK. Enables persistent conversations across restarts.</dd>
       </dl>
+    </div>
+  </section>
+
+  <section id="tools">
+    <h2>Additional Tools</h2>
+
+    <div class="cmd-block">
+      <div class="cmd-name">axctl</div>
+      <div class="cmd-desc">macOS Accessibility CLI for automating native apps</div>
+      <pre><code>./bin/axctl list-windows
+./bin/axctl click "Button Name"
+./bin/axctl type "text"</code></pre>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-name">perf-analyze</div>
+      <div class="cmd-desc">Analyze performance metric JSONL files</div>
+      <pre><code>./bin/perf-analyze
+./bin/perf-analyze --since 24h</code></pre>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-name">claude-menubar</div>
+      <div class="cmd-desc">Launch the Dispatch menu bar app</div>
+      <pre><code>./bin/claude-menubar</code></pre>
+    </div>
+
+    <div class="cmd-block">
+      <div class="cmd-name">install / uninstall</div>
+      <div class="cmd-desc">Manage the LaunchAgent for auto-start at boot</div>
+      <pre><code>./bin/claude-assistant install
+./bin/claude-assistant uninstall</code></pre>
     </div>
   </section>
 

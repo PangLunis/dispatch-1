@@ -75,7 +75,7 @@
         <div class="feature-desc">Admin, Partner, Family, Favorite tiers with scoped permissions</div>
       </button>
       <button class="feature clickable" on:click={() => navigateTo('skills')}>
-        <div class="feature-title">73+ Skills</div>
+        <div class="feature-title">95+ Skills</div>
         <div class="feature-desc">Browser automation, smart home, iOS dev, payments, and more</div>
       </button>
       <button class="feature clickable" on:click={() => navigateTo('memory')}>
@@ -113,6 +113,8 @@
       <div class="arch-row">
         <div class="arch-box source">iMessage</div>
         <div class="arch-box source">Signal</div>
+        <div class="arch-box source">Discord</div>
+        <div class="arch-box source">App</div>
       </div>
       <div class="arch-arrow"></div>
       <div class="arch-row">
@@ -135,8 +137,8 @@
       </div>
     </div>
     <p class="arch-summary">
-      Messages arrive via iMessage polling (100ms) or Signal socket push. The daemon looks up
-      the sender's tier, wraps the message, and injects it into their dedicated Claude session.
+      Messages arrive via iMessage polling, Signal socket, Discord Gateway, or the Dispatch App API.
+      The daemon looks up the sender's tier, wraps the message, and injects it into their dedicated Claude session.
       <button class="text-link" on:click={() => navigateTo('architecture')}>See full architecture →</button>
     </p>
   </section>

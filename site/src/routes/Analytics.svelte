@@ -153,18 +153,29 @@
   </section>
 
   <section>
-    <h2>Future: Analytics Consumers</h2>
+    <h2>Analytics Tools</h2>
     <p>
-      The bus consumer framework supports independent consumer groups.
-      Each consumer tracks its own committed offset independently.
+      Several tools provide deeper analysis of system behavior.
     </p>
 
-    <h3>Planned Consumers</h3>
-    <ul>
-      <li><strong>Real-time alerting</strong> — immediate notifications on anomalies</li>
-      <li><strong>Dashboard aggregation</strong> — periodic rollups for visualization</li>
-      <li><strong>Anomaly detection</strong> — statistical analysis of metric trends</li>
-    </ul>
+    <h3>perf-analyze CLI</h3>
+    <p>
+      Analyzes performance JSONL files for trends and anomalies.
+    </p>
+    <pre><code>./bin/perf-analyze
+./bin/perf-analyze --since 24h</code></pre>
+
+    <h3>Bus Dashboard</h3>
+    <p>
+      Generates interactive HTML dashboards from the bus database. Visualizes event
+      flows, session activity, and system health over time.
+    </p>
+
+    <h3>Bus Consumer Framework</h3>
+    <p>
+      The bus supports independent consumer groups, each tracking its own committed offset.
+      Active consumers include health monitoring, reminder processing, and fact lifecycle management.
+    </p>
   </section>
 
   <section class="related">

@@ -17,6 +17,10 @@
   import Analytics from './routes/Analytics.svelte'
   import Postmortems from './routes/Postmortems.svelte'
   import Scheduling from './routes/Scheduling.svelte'
+  import DispatchApp from './routes/DispatchApp.svelte'
+  import Discord from './routes/Discord.svelte'
+  import SvenPages from './routes/SvenPages.svelte'
+  import Voice from './routes/Voice.svelte'
 
   const pages = {
     'home': Home,
@@ -28,12 +32,16 @@
     'architecture': Architecture,
     'configuration': Configuration,
     'messaging': Messaging,
+    'dispatch-app': DispatchApp,
+    'discord': Discord,
     'message-bus': MessageBus,
     'memory': Memory,
+    'voice': Voice,
     'health': HealthHealing,
     'analytics': Analytics,
     'postmortems': Postmortems,
     'scheduling': Scheduling,
+    'sven-pages': SvenPages,
   }
 
   const pageTitles = {
@@ -46,12 +54,16 @@
     'architecture': 'Dispatch — Architecture',
     'configuration': 'Dispatch — Configuration',
     'messaging': 'Dispatch — Messaging',
+    'dispatch-app': 'Dispatch — Mobile App',
+    'discord': 'Dispatch — Discord',
     'message-bus': 'Dispatch — Message Bus',
     'memory': 'Dispatch — Memory',
+    'voice': 'Dispatch — Voice & TTS',
     'health': 'Dispatch — Health & Healing',
     'analytics': 'Dispatch — Analytics',
     'postmortems': 'Dispatch — Postmortems',
     'scheduling': 'Dispatch — Scheduling & Tasks',
+    'sven-pages': 'Dispatch — Sven Pages',
   }
 
   // Redirects for old routes

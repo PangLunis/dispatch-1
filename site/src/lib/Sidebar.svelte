@@ -17,9 +17,12 @@
       items: [
         { id: 'architecture', label: 'Architecture' },
         { id: 'messaging', label: 'Messaging' },
+        { id: 'dispatch-app', label: 'Mobile App' },
+        { id: 'discord', label: 'Discord' },
         { id: 'tiers', label: 'Tiers & Permissions' },
         { id: 'skills', label: 'Skills' },
         { id: 'memory', label: 'Memory' },
+        { id: 'voice', label: 'Voice & TTS' },
         { id: 'cli', label: 'CLI Reference' },
       ],
     },
@@ -31,6 +34,7 @@
         { id: 'health', label: 'Health & Healing' },
         { id: 'analytics', label: 'Analytics' },
         { id: 'postmortems', label: 'Postmortems' },
+        { id: 'sven-pages', label: 'Sven Pages' },
       ],
     },
   ];

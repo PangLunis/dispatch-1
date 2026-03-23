@@ -12,8 +12,9 @@
     <h2>Overview</h2>
     <p>
       All system events flow through a SQLite-backed message bus organized into
-      <strong>5 topics</strong>: <code>messages</code>, <code>sessions</code>,
-      <code>system</code>, <code>reminders</code>, and <code>tasks</code>.
+      <strong>8 topics</strong>: <code>messages</code>, <code>messages.dlq</code>,
+      <code>sessions</code>, <code>system</code>, <code>reminders</code>,
+      <code>tasks</code>, <code>facts</code>, and <code>imessage.ui</code>.
       Fire-and-forget writes with an in-memory queue ensure the event loop is
       never blocked. Multiple consumer groups can process events independently
       with committed offsets.
@@ -32,7 +33,7 @@
 
   <section>
     <h2>Event Taxonomy</h2>
-    <p>Common events shown. See <code>assistant/bus_helpers.py</code> for the full list (~50 event types).</p>
+    <p>Common events shown. See <code>assistant/bus_helpers.py</code> for the full list (~67 event types).</p>
     <table>
       <thead>
         <tr>
@@ -43,15 +44,15 @@
       <tbody>
         <tr>
           <td><code>messages</code></td>
-          <td><code>message.received</code>, <code>message.sent</code>, <code>message.failed</code>, <code>message.queued</code>, <code>message.delivered</code>, <code>message.ignored</code>, <code>reaction.received</code>, <code>reaction.ignored</code></td>
+          <td><code>message.received</code>, <code>message.sent</code>, <code>message.failed</code>, <code>message.queued</code>, <code>message.delivered</code>, <code>message.ignored</code>, <code>message.produce_failed</code>, <code>message.processing_failed</code>, <code>message.replay_failed</code>, <code>reaction.received</code>, <code>reaction.ignored</code></td>
         </tr>
         <tr>
           <td><code>sessions</code></td>
-          <td><code>session.created</code>, <code>session.restarted</code>, <code>session.killed</code>, <code>session.compacted</code>, <code>session.crashed</code>, <code>session.injected</code>, <code>session.idle_killed</code>, <code>session.prewarmed</code>, <code>session.tier_mismatch</code>, <code>permission.denied</code></td>
+          <td><code>session.created</code>, <code>session.restarted</code>, <code>session.killed</code>, <code>session.compacted</code>, <code>session.crashed</code>, <code>session.injected</code>, <code>session.idle_killed</code>, <code>session.prewarmed</code>, <code>session.tier_mismatch</code>, <code>session.prompt_built</code>, <code>session.receive_error</code>, <code>session.stop_failed</code>, <code>session.model_changed</code>, <code>permission.denied</code></td>
         </tr>
         <tr>
           <td><code>system</code></td>
-          <td><code>daemon.started</code>, <code>daemon.stopped</code>, <code>daemon.crashed</code>, <code>daemon.recovered</code>, <code>health.check_completed</code>, <code>consolidation.started</code>, <code>consolidation.completed</code>, <code>reminder.fired</code>, <code>vision.analyzed</code>, <code>sdk.turn_complete</code>, <code>session.heartbeat</code>, <code>command.restart</code>, <code>signal.connection_state</code></td>
+          <td><code>daemon.started</code>, <code>daemon.stopped</code>, <code>daemon.crashed</code>, <code>daemon.recovered</code>, <code>health.check_completed</code>, <code>health.check_failed</code>, <code>health.fast_check_completed</code>, <code>health.deep_check_completed</code>, <code>health.service_restarted</code>, <code>health.service_spawned</code>, <code>consolidation.started</code>, <code>consolidation.completed</code>, <code>consolidation.failed</code>, <code>consumer.crashed</code>, <code>consumer.restart_failed</code>, <code>scan.started</code>, <code>scan.completed</code>, <code>scan.failed</code>, <code>healme.triggered</code>, <code>healme.completed</code>, <code>compaction.triggered</code>, <code>compaction.completed</code>, <code>reminder.fired</code>, <code>vision.analyzed</code>, <code>sdk.turn_complete</code>, <code>session.heartbeat</code>, <code>command.restart</code>, <code>signal.connection_state</code></td>
         </tr>
         <tr>
           <td><code>reminders</code></td>
@@ -60,6 +61,18 @@
         <tr>
           <td><code>tasks</code></td>
           <td><code>task.requested</code>, <code>task.started</code>, <code>task.completed</code>, <code>task.failed</code>, <code>task.timeout</code>, <code>task.skipped</code></td>
+        </tr>
+        <tr>
+          <td><code>messages.dlq</code></td>
+          <td><code>message.dead_lettered</code> — dead letter queue for failed messages</td>
+        </tr>
+        <tr>
+          <td><code>facts</code></td>
+          <td><code>fact.created</code>, <code>fact.updated</code>, <code>fact.expired</code></td>
+        </tr>
+        <tr>
+          <td><code>imessage.ui</code></td>
+          <td><code>tapback</code>, <code>typing.start</code>, <code>typing.stop</code></td>
         </tr>
       </tbody>
     </table>

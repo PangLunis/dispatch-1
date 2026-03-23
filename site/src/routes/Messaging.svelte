@@ -5,15 +5,16 @@
 <article class="page">
   <header class="page-header">
     <h1>Messaging</h1>
-    <p class="lead">iMessage and Signal integration with real-time polling and group chat support.</p>
+    <p class="lead">iMessage, Signal, Discord, Dispatch App, and test backend integration with real-time polling and group chat support.</p>
   </header>
 
   <section>
     <h2>Overview</h2>
     <p>
-      Dispatch receives messages from two backends — iMessage (polls chat.db every 100ms)
-      and Signal (JSON-RPC socket via signal-cli daemon). Messages are routed to per-contact
-      Claude sessions based on tier.
+      Dispatch receives messages from five backends — iMessage (polls chat.db every 100ms),
+      Signal (JSON-RPC socket via signal-cli daemon), Discord (discord.py via Gateway WebSocket),
+      Dispatch App (Expo/React Native mobile app with FastAPI backend), and a test backend for
+      development. Messages are routed to per-contact Claude sessions based on tier.
     </p>
   </section>
 
@@ -53,11 +54,39 @@
   </section>
 
   <section>
+    <h2>Discord</h2>
+    <p>
+      Uses discord.py via the Discord Gateway WebSocket for real-time message receiving.
+      Sends messages via the Discord REST API. Messages are auto-chunked at 2000 characters
+      to stay within Discord's message length limit. Session directories live at
+      <code>~/transcripts/discord/{channel_id}/</code>.
+    </p>
+
+    <h3>CLI Commands</h3>
+    <pre><code># Send to a channel
+~/.claude/skills/discord/scripts/send-discord "channel_id" "message"</code></pre>
+  </section>
+
+  <section>
+    <h2>Dispatch App</h2>
+    <p>
+      An Expo/React Native mobile app frontend paired with a FastAPI backend (dispatch-api)
+      running on port 9091. Supports push notifications via Expo Push, voice input with
+      Whisper transcription, and TTS audio responses. Session directories live at
+      <code>~/transcripts/dispatch-app/{session_id}/</code>.
+    </p>
+
+    <h3>CLI Commands</h3>
+    <pre><code># Reply to a dispatch-app session
+~/.claude/skills/dispatch-app/scripts/reply-app "chat_id" "message"</code></pre>
+  </section>
+
+  <section>
     <h2>Universal Reply CLI</h2>
     <p>
       A single command that auto-detects the backend and chat_id from the current working directory.
       Works from any transcript directory and routes to the correct send command (send-sms,
-      send-signal, or send-signal-group).
+      send-signal, send-signal-group, send-discord, or reply-app).
     </p>
     <pre><code>~/.claude/skills/sms-assistant/scripts/reply "message"</code></pre>
   </section>
@@ -65,7 +94,7 @@
   <section>
     <h2>Image Handling</h2>
     <ul>
-      <li>Incoming images extracted from chat.db (iMessage) or signal-cli attachments</li>
+      <li>Incoming images extracted from chat.db (iMessage), signal-cli attachments, or Dispatch App uploads</li>
       <li>Analyzed via Gemini Vision API with conversation context for understanding</li>
       <li>Sessions can send images back using <code>--image</code> flag on send CLIs</li>
     </ul>
@@ -83,7 +112,7 @@
       <tbody>
         <tr>
           <td>1</td>
-          <td>Message arrives via chat.db or signal socket</td>
+          <td>Message arrives via chat.db, signal socket, Discord Gateway, Dispatch App API, or test backend</td>
         </tr>
         <tr>
           <td>2</td>
@@ -95,7 +124,7 @@
         </tr>
         <tr>
           <td>4</td>
-          <td>Message wrapped: <code>---SMS FROM ContactName (tier)---</code></td>
+          <td>Message wrapped per backend: <code>---SMS FROM---</code>, <code>---SIGNAL FROM---</code>, <code>---DISCORD FROM---</code>, or <code>---DISPATCH_APP FROM---</code></td>
         </tr>
         <tr>
           <td>5</td>
@@ -132,6 +161,18 @@
       <button class="related-link" on:click={() => navigateTo('cli')}>
         <span class="related-label">CLI Reference</span>
         <span class="related-desc">Send commands</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('dispatch-app')}>
+        <span class="related-label">Mobile App</span>
+        <span class="related-desc">Dispatch App details</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('discord')}>
+        <span class="related-label">Discord</span>
+        <span class="related-desc">Discord backend details</span>
+      </button>
+      <button class="related-link" on:click={() => navigateTo('voice')}>
+        <span class="related-label">Voice & TTS</span>
+        <span class="related-desc">Speech capabilities</span>
       </button>
     </div>
   </section>

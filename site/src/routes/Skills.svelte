@@ -34,6 +34,14 @@
           <code>contacts</code>
           <span>Contact lookup and tier management</span>
         </div>
+        <div class="skill">
+          <code>discord</code>
+          <span>Discord messaging backend</span>
+        </div>
+        <div class="skill">
+          <code>dispatch-app</code>
+          <span>Mobile app messaging integration</span>
+        </div>
       </div>
     </div>
 
@@ -77,10 +85,6 @@
       <div class="category-header">Development</div>
       <div class="skill-list">
         <div class="skill">
-          <code>ios-app</code>
-          <span>iOS dev and TestFlight</span>
-        </div>
-        <div class="skill">
           <code>cad</code>
           <span>3D CAD model generation</span>
         </div>
@@ -96,6 +100,24 @@
     </div>
 
     <div class="category">
+      <div class="category-header">Mobile App</div>
+      <div class="skill-list">
+        <div class="skill">
+          <code>dispatch-app</code>
+          <span>Expo/React Native app frontend</span>
+        </div>
+        <div class="skill">
+          <code>ios-app</code>
+          <span>iOS dev and TestFlight</span>
+        </div>
+        <div class="skill">
+          <code>appstore-connect</code>
+          <span>App Store Connect API</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="category">
       <div class="category-header">AI &amp; Vision</div>
       <div class="skill-list">
         <div class="skill">
@@ -103,16 +125,28 @@
           <span>Google Gemini chat/vision</span>
         </div>
         <div class="skill">
+          <code>midjourney</code>
+          <span>Image generation</span>
+        </div>
+        <div class="skill">
+          <code>nano-banana</code>
+          <span>Gemini image generation/editing</span>
+        </div>
+        <div class="skill">
           <code>vision</code>
           <span>Segmentation, depth, edges</span>
+        </div>
+        <div class="skill">
+          <code>image-to-video</code>
+          <span>Video from images</span>
         </div>
         <div class="skill">
           <code>image-to-3d</code>
           <span>3D models from images</span>
         </div>
         <div class="skill">
-          <code>image-to-video</code>
-          <span>Video from images</span>
+          <code>image-to-splat</code>
+          <span>Gaussian splatting from images</span>
         </div>
       </div>
     </div>
@@ -121,18 +155,6 @@
       <div class="category-header">Productivity</div>
       <div class="skill-list">
         <div class="skill">
-          <code>reminders</code>
-          <span>Scheduling and reminders (JSON-based)</span>
-        </div>
-        <div class="skill">
-          <code>notes-app</code>
-          <span>Apple Notes</span>
-        </div>
-        <div class="skill">
-          <code>google-suite</code>
-          <span>Gmail, Calendar, Drive, Docs</span>
-        </div>
-        <div class="skill">
           <code>memory</code>
           <span>Persistent FTS search</span>
         </div>
@@ -140,8 +162,20 @@
     </div>
 
     <div class="category">
-      <div class="category-header">Media</div>
+      <div class="category-header">Communication Tools</div>
       <div class="skill-list">
+        <div class="skill">
+          <code>google-suite</code>
+          <span>Gmail, Calendar, Drive, Docs</span>
+        </div>
+        <div class="skill">
+          <code>notes-app</code>
+          <span>Apple Notes management</span>
+        </div>
+        <div class="skill">
+          <code>reminders</code>
+          <span>Reminder management</span>
+        </div>
         <div class="skill">
           <code>tts</code>
           <span>Text-to-speech (Kokoro, Qwen3)</span>
@@ -150,43 +184,73 @@
           <code>transcribe</code>
           <span>Audio transcription</span>
         </div>
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header">Media &amp; Entertainment</div>
+      <div class="skill-list">
+        <div class="skill">
+          <code>plex</code>
+          <span>Media server control</span>
+        </div>
         <div class="skill">
           <code>podcast</code>
           <span>Podcast feed management</span>
         </div>
         <div class="skill">
           <code>dj-buyer</code>
-          <span>Search and buy DJ tracks</span>
+          <span>DJ track purchasing</span>
         </div>
         <div class="skill">
           <code>sheet-music</code>
           <span>Find piano sheet music</span>
         </div>
+        <div class="skill">
+          <code>passthepopcorn</code>
+          <span>Movie torrents</span>
+        </div>
+        <div class="skill">
+          <code>broadcasthenet</code>
+          <span>TV show torrents</span>
+        </div>
+        <div class="skill">
+          <code>seedbox</code>
+          <span>Seedbox management</span>
+        </div>
+        <div class="skill">
+          <code>chess</code>
+          <span>Chess.com automation</span>
+        </div>
+        <div class="skill">
+          <code>imdb-lookup</code>
+          <span>Movie/TV info</span>
+        </div>
       </div>
     </div>
 
     <div class="category">
-      <div class="category-header">Operations</div>
+      <div class="category-header">Self-Improvement</div>
       <div class="skill-list">
         <div class="skill">
           <code>bug-finder</code>
           <span>Parallel bug discovery</span>
         </div>
         <div class="skill">
-          <code>skillify</code>
-          <span>Mine conversations for skill ideas</span>
-        </div>
-        <div class="skill">
           <code>latency-finder</code>
-          <span>Find performance bottlenecks</span>
+          <span>Performance bottleneck analysis</span>
         </div>
         <div class="skill">
-          <code>debug</code>
-          <span>Diagnose sessions and incidents</span>
+          <code>skillify</code>
+          <span>Skill mining and improvement</span>
         </div>
         <div class="skill">
-          <code>perf</code>
-          <span>Execution performance metrics</span>
+          <code>skill-builder</code>
+          <span>Build and improve skills</span>
+        </div>
+        <div class="skill">
+          <code>skill-finder</code>
+          <span>Discover skills from marketplace</span>
         </div>
         <div class="skill">
           <code>infra-self-improvement</code>
@@ -196,35 +260,147 @@
     </div>
 
     <div class="category">
-      <div class="category-header">Lifestyle</div>
+      <div class="category-header">System &amp; Debug</div>
       <div class="skill-list">
         <div class="skill">
+          <code>perf</code>
+          <span>Performance metrics</span>
+        </div>
+        <div class="skill">
+          <code>bus</code>
+          <span>Message bus reference</span>
+        </div>
+        <div class="skill">
+          <code>bus-dashboard</code>
+          <span>Event visualization</span>
+        </div>
+        <div class="skill">
+          <code>debug</code>
+          <span>System diagnostics</span>
+        </div>
+        <div class="skill">
+          <code>system-info</code>
+          <span>Resource monitoring</span>
+        </div>
+        <div class="skill">
+          <code>ccusage</code>
+          <span>API usage tracking</span>
+        </div>
+        <div class="skill">
+          <code>computer-use</code>
+          <span>Screen interaction</span>
+        </div>
+        <div class="skill">
+          <code>axctl</code>
+          <span>macOS accessibility CLI</span>
+        </div>
+        <div class="skill">
+          <code>screen-clicking</code>
+          <span>Native app automation</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header">Shopping &amp; Services</div>
+      <div class="skill-list">
+        <div class="skill">
+          <code>deals</code>
+          <span>Deal comparison</span>
+        </div>
+        <div class="skill">
           <code>cooking</code>
-          <span>Recipes and Instacart ordering</span>
+          <span>Recipe and grocery</span>
         </div>
         <div class="skill">
           <code>grubhub</code>
-          <span>Food delivery via Chrome</span>
+          <span>Food delivery</span>
         </div>
         <div class="skill">
-          <code>deals</code>
-          <span>Price comparison and tracking</span>
+          <code>payments</code>
+          <span>Online purchasing</span>
         </div>
         <div class="skill">
-          <code>vacation-house</code>
-          <span>Property search automation</span>
+          <code>airbnb</code>
+          <span>Vacation rental search</span>
         </div>
         <div class="skill">
-          <code>flight-tracker</code>
-          <span>Flight status and tracking</span>
+          <code>books</code>
+          <span>Free ebook downloads</span>
         </div>
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header">Travel &amp; Places</div>
+      <div class="skill-list">
         <div class="skill">
           <code>places</code>
           <span>Google Places search</span>
         </div>
         <div class="skill">
-          <code>airbnb</code>
-          <span>Browse Airbnb listings</span>
+          <code>flight-tracker</code>
+          <span>Flight status</span>
+        </div>
+        <div class="skill">
+          <code>vacation-house</code>
+          <span>Property search</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header">Hosting &amp; Deployment</div>
+      <div class="skill-list">
+        <div class="skill">
+          <code>sven-pages</code>
+          <span>HTML hosting with ACLs</span>
+        </div>
+        <div class="skill">
+          <code>modal</code>
+          <span>Serverless GPU functions</span>
+        </div>
+        <div class="skill">
+          <code>tailscale</code>
+          <span>VPN/networking info</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header">Automation &amp; Research</div>
+      <div class="skill-list">
+        <div class="skill">
+          <code>autoresearch</code>
+          <span>Autonomous research loops</span>
+        </div>
+        <div class="skill">
+          <code>manual-test</code>
+          <span>Manual testing orchestrator</span>
+        </div>
+        <div class="skill">
+          <code>plan</code>
+          <span>Project planning</span>
+        </div>
+        <div class="skill">
+          <code>html-reports</code>
+          <span>Report generation</span>
+        </div>
+        <div class="skill">
+          <code>newspaper</code>
+          <span>Newspaper-style formatting</span>
+        </div>
+        <div class="skill">
+          <code>figma</code>
+          <span>Design integration</span>
+        </div>
+        <div class="skill">
+          <code>webgpu-forge</code>
+          <span>Browser ML models</span>
+        </div>
+        <div class="skill">
+          <code>shader-video</code>
+          <span>Shader visualizations</span>
         </div>
       </div>
     </div>
@@ -233,17 +409,13 @@
       <div class="category-header">Payments &amp; Security</div>
       <div class="skill-list">
         <div class="skill">
-          <code>payments</code>
-          <span>Online purchases via Privacy.com</span>
-        </div>
-        <div class="skill">
           <code>passwords</code>
           <span>macOS Keychain credentials</span>
         </div>
       </div>
     </div>
 
-    <p class="more">Representative selection of 73+ total skills</p>
+    <p class="more">Representative selection of 95+ total skills</p>
   </section>
 
   <section>
