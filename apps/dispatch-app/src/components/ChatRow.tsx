@@ -1,30 +1,40 @@
 import React, { useEffect, useRef } from "react";
 import { Animated, StyleSheet, Text, View, Pressable } from "react-native";
+import { Image } from "expo-image";
 import type { Conversation } from "../api/types";
 import { relativeTime } from "../utils/time";
+import { buildImageUrl } from "../api/images";
 
 interface ChatRowProps {
   conversation: Conversation;
   onPress: () => void;
   onLongPress?: () => void;
-  /** Force-mark as read (optimistic read) */
-  forceRead?: boolean;
+  /** Optimistic read/unread override */
+  readOverride?: "read" | "unread";
 }
 
-export function ChatRow({ conversation, onPress, onLongPress, forceRead }: ChatRowProps) {
-  const { title, last_message, last_message_at, last_message_role, last_opened_at, is_thinking } =
+export function ChatRow({ conversation, onPress, onLongPress, readOverride }: ChatRowProps) {
+  const { title, last_message, last_message_at, last_message_role, last_opened_at, is_thinking, marked_unread, image_url } =
     conversation;
 
-  // Chat is "unread" only when the agent sent a message the user hasn't seen yet.
-  // User's own messages never trigger unread — only assistant messages do.
-  // forceRead overrides everything (optimistic read when user taps into chat).
-  const isUnread = forceRead
-    ? false
-    : last_message_role === "assistant" && last_message_at
-      ? last_opened_at
-        ? new Date(last_message_at) > new Date(last_opened_at)
-        : true  // No last_opened_at yet — assistant message is unread
-      : false;
+  // Compute unread state with optimistic override
+  // readOverride takes priority, then server marked_unread, then time-based logic
+  let isUnread: boolean;
+  if (readOverride === "unread") {
+    isUnread = true;
+  } else if (readOverride === "read") {
+    isUnread = false;
+  } else if (marked_unread) {
+    isUnread = true;
+  } else {
+    // Original time-based logic: unread only when assistant sent a message user hasn't seen
+    isUnread =
+      last_message_role === "assistant" && last_message_at
+        ? last_opened_at
+          ? new Date(last_message_at) > new Date(last_opened_at)
+          : true // No last_opened_at yet — assistant message is unread
+        : false;
+  }
 
   // Build preview text with "You: " prefix for user messages
   let preview = "";
@@ -56,9 +66,18 @@ export function ChatRow({ conversation, onPress, onLongPress, forceRead }: ChatR
       ) : (
         <View style={styles.unreadDotSpacer} />
       )}
-      <View style={styles.avatar}>
-        <Text style={styles.avatarText}>{initials || "?"}</Text>
-      </View>
+      {image_url ? (
+        <Image
+          source={{ uri: buildImageUrl(image_url) }}
+          style={styles.avatarImage}
+          contentFit="cover"
+          transition={200}
+        />
+      ) : (
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{initials || "?"}</Text>
+        </View>
+      )}
       <View style={styles.content}>
         <View style={styles.topRow}>
           <Text style={[styles.title, isUnread && styles.titleUnread]} numberOfLines={1}>
@@ -150,6 +169,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
+  },
+  avatarImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    marginRight: 12,
+    backgroundColor: "#3f3f46",
   },
   avatarText: {
     color: "#d4d4d8",

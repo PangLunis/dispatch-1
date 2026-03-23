@@ -6,6 +6,8 @@ export interface ChatMessage {
   audio_url: string | null;
   image_url: string | null;
   created_at: string;
+  status?: string; // "generating" | "complete" | "failed"
+  failure_reason?: string | null; // "timeout" | "generation_error" | "server_restart" | "storage_error"
 }
 
 /** A chat conversation (dispatch-api chats) */
@@ -20,6 +22,10 @@ export interface Conversation {
   last_opened_at: string | null;
   has_notes?: boolean;
   is_thinking?: boolean;
+  forked_from?: string | null;
+  fork_message_id?: string | null;
+  marked_unread?: boolean;
+  image_url?: string | null; // Cover image URL (generated via nano-banana)
 }
 
 /** Notes for a chat */

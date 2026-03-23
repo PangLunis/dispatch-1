@@ -1,44 +1,67 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import { getChats, createChat, deleteChat } from "../api/chats";
+import { getChats, createChat, deleteChat, markChatAsUnread as apiMarkChatAsUnread } from "../api/chats";
 import type { Conversation } from "../api/types";
 import { notifyUnreadChatCount } from "../state/unreadChats";
 
 // ---------------------------------------------------------------------------
-// Optimistic read tracking (module-level, persists across screen navigations)
+// Unified optimistic read/unread tracking (module-level, persists across navigations)
 // ---------------------------------------------------------------------------
 
-/** Set of chat IDs the user has opened (treated as "read") */
-const _readChatIds = new Set<string>();
+/** Optimistic override: 'read' = user opened it, 'unread' = user manually marked unread */
+const _optimisticState = new Map<string, "read" | "unread">();
 
 /** Map of chat ID -> last_message content when read (to detect new messages) */
 const _readAtMessage = new Map<string, string | null>();
 
 /** Mark a chat as read (call from chat detail screen) */
 export function markChatAsRead(chatId: string): void {
-  _readChatIds.add(chatId);
+  _optimisticState.set(chatId, "read");
 }
 
-/** Check if a chat should be treated as read (optimistic) */
+/** Get the optimistic override for a chat */
+export function getChatOptimisticState(
+  chatId: string,
+): "read" | "unread" | undefined {
+  return _optimisticState.get(chatId);
+}
+
+// Legacy export — used by index.tsx for backward compat
 export function isChatRead(chatId: string): boolean {
-  return _readChatIds.has(chatId);
+  return _optimisticState.get(chatId) === "read";
 }
 
-/** Update read tracking when new data arrives — clear read if a new message arrived */
+/** Update read tracking when new data arrives — clear overrides once reconciled */
 function _updateReadTracking(conversations: Conversation[]): void {
   for (const conv of conversations) {
-    if (_readChatIds.has(conv.id)) {
+    const state = _optimisticState.get(conv.id);
+    if (state === "read") {
       const prevMessage = _readAtMessage.get(conv.id);
       if (prevMessage === undefined) {
         // First time seeing this after marking read — record current last_message
         _readAtMessage.set(conv.id, conv.last_message);
       } else if (conv.last_message !== prevMessage) {
         // New message arrived since we read it — no longer "read"
-        _readChatIds.delete(conv.id);
+        _optimisticState.delete(conv.id);
         _readAtMessage.delete(conv.id);
+      }
+    } else if (state === "unread") {
+      // Clear optimistic unread once server confirms marked_unread = true
+      if (conv.marked_unread) {
+        _optimisticState.delete(conv.id);
       }
     }
   }
+}
+
+/** Check if a chat is unread based on server data (no optimistic overrides) */
+function _isServerUnread(c: Conversation): boolean {
+  if (c.marked_unread) return true;
+  if (c.last_message_role !== "assistant" || !c.last_message_at) return false;
+  if (c.last_opened_at) {
+    return new Date(c.last_message_at) > new Date(c.last_opened_at);
+  }
+  return true; // No last_opened_at — assistant message is unread
 }
 
 interface UseChatListReturn {
@@ -48,6 +71,7 @@ interface UseChatListReturn {
   loadConversations: () => Promise<void>;
   createConversation: (title?: string) => Promise<Conversation | null>;
   deleteConversation: (chatId: string) => Promise<boolean>;
+  markAsUnread: (chatId: string) => Promise<void>;
 }
 
 export function useChatList(): UseChatListReturn {
@@ -69,12 +93,10 @@ export function useChatList(): UseChatListReturn {
         _updateReadTracking(chats);
         // Count unread chats for tab badge
         const unreadCount = chats.filter((c) => {
-          if (_readChatIds.has(c.id)) return false;
-          if (c.last_message_role !== "assistant" || !c.last_message_at) return false;
-          if (c.last_opened_at) {
-            return new Date(c.last_message_at) > new Date(c.last_opened_at);
-          }
-          return true; // No last_opened_at — assistant message is unread
+          const opt = _optimisticState.get(c.id);
+          if (opt === "read") return false;
+          if (opt === "unread") return true;
+          return _isServerUnread(c);
         }).length;
         notifyUnreadChatCount(unreadCount);
         setConversations(chats);
@@ -143,6 +165,26 @@ export function useChatList(): UseChatListReturn {
     [],
   );
 
+  const markAsUnread = useCallback(
+    async (chatId: string): Promise<void> => {
+      // Optimistic: set module-level state + force re-render
+      _optimisticState.set(chatId, "unread");
+      _readAtMessage.delete(chatId);
+      setConversations((prev) => [...prev]);
+
+      try {
+        await apiMarkChatAsUnread(chatId);
+      } catch {
+        // Rollback: clear optimistic state and re-fetch
+        _optimisticState.delete(chatId);
+        if (mountedRef.current) {
+          await loadConversations();
+        }
+      }
+    },
+    [loadConversations],
+  );
+
   // Initial load
   useEffect(() => {
     loadConversations();
@@ -189,5 +231,6 @@ export function useChatList(): UseChatListReturn {
     loadConversations,
     createConversation,
     deleteConversation,
+    markAsUnread,
   };
 }

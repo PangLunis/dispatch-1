@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   FlatList,
+  InteractionManager,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -23,10 +24,11 @@ import { ThinkingIndicator } from "@/src/components/ThinkingIndicator";
 import { EmptyState } from "@/src/components/EmptyState";
 import { useAudioPlayer } from "@/src/hooks/useAudioPlayer";
 import { useSdkEvents } from "@/src/hooks/useSdkEvents";
-import { updateChat, markChatAsOpened } from "@/src/api/chats";
-import { createAgentSession, sendAgentMessage } from "@/src/api/agents";
+import { updateChat, markChatAsOpened, forkChat, deleteChat, generateChatImage } from "@/src/api/chats";
+import { ApiError } from "@/src/api/client";
+import { startDebugSession } from "@/src/utils/debugSession";
 import { screenStyles } from "@/src/styles/shared";
-import { showPrompt, showAlert } from "@/src/utils/alert";
+import { showPrompt, showAlert, showDestructiveConfirm } from "@/src/utils/alert";
 import { branding, sessionPrefix } from "@/src/config/branding";
 import { markChatAsRead } from "@/src/hooks/useChatList";
 import { setActiveChatId, dismissNotificationsForChat } from "@/src/hooks/usePushNotifications";
@@ -48,6 +50,7 @@ export default function ChatDetailScreen() {
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [isCreatingDebugSession, setIsCreatingDebugSession] = useState(false);
+  const [isForking, setIsForking] = useState(false);
   const menuButtonRef = useRef<View>(null);
 
   // Optimistically mark as read, persist to server, and track active chat for push suppression
@@ -119,6 +122,89 @@ export default function ChatDetailScreen() {
       showAlert("Error", err instanceof Error ? err.message : "Failed to rename chat");
     }
   }, [id, currentTitle]);
+
+  const handleFork = useCallback(async () => {
+    const forkTitle = await showPrompt("Fork Chat", "Title for the forked chat:", `${currentTitle} (fork)`);
+    if (!forkTitle) return;
+    setIsForking(true);
+    try {
+      const forked = await forkChat(id ?? "", forkTitle);
+      router.push({
+        pathname: "/chat/[id]",
+        params: { id: forked.id, chatTitle: forked.title },
+      });
+    } catch (err) {
+      showAlert("Error", err instanceof Error ? err.message : "Failed to fork chat");
+    } finally {
+      setIsForking(false);
+    }
+  }, [id, currentTitle]);
+
+  const handleDebugChat = useCallback(async () => {
+    const context = await showPrompt(
+      "Debug Chat",
+      "Describe the issue you're seeing:",
+    );
+    if (!context?.trim()) return;
+    setIsCreatingDebugSession(true);
+    try {
+      const result = await startDebugSession(id ?? "", currentTitle, context.trim());
+      router.push({
+        pathname: "/agents/[id]",
+        params: {
+          id: result.id,
+          sessionName: result.name,
+          sessionSource: "dispatch-api",
+          sessionType: "dispatch-api",
+          backTitle: "Chat",
+        },
+      });
+      if (result.warning) {
+        // Show non-blocking warning after navigation settles
+        InteractionManager.runAfterInteractions(() =>
+          showAlert("Warning", result.warning!),
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      showAlert("Error", `Failed to create debug session: ${msg}`);
+    } finally {
+      setIsCreatingDebugSession(false);
+    }
+  }, [id, currentTitle]);
+
+  const handleDelete = useCallback(async () => {
+    const confirmed = await showDestructiveConfirm(
+      "Delete Chat",
+      `Delete "${currentTitle}" and all its messages? This can't be undone.`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteChat(id ?? "");
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace("/(tabs)");
+      }
+    } catch (err) {
+      showAlert("Error", err instanceof Error ? err.message : "Failed to delete chat");
+    }
+  }, [id, currentTitle]);
+
+  const handleGenerateImage = useCallback(async () => {
+    try {
+      await generateChatImage(id ?? "");
+      showAlert("Generating", "Creating a cover image for this chat. It will appear in the chat list shortly.");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        showAlert("Please Wait", "Server is busy, please try again in a moment");
+      } else if (err instanceof ApiError && err.status === 400) {
+        showAlert("Error", "This chat needs messages before generating an image");
+      } else {
+        showAlert("Error", err instanceof Error ? err.message : "Failed to start image generation");
+      }
+    }
+  }, [id]);
 
   const handleMenuPress = useCallback(() => {
     menuButtonRef.current?.measureInWindow((x, y, width, height) => {
@@ -234,6 +320,7 @@ export default function ChatDetailScreen() {
         <InputBar
           onSend={handleSend}
           onSendWithImage={handleSendWithImage}
+          chatId={`${sessionPrefix}:${id}`}
         />
       </KeyboardAvoidingView>
 
@@ -258,8 +345,9 @@ export default function ChatDetailScreen() {
               style={localStyles.menuItem}
               onPress={() => {
                 setMenuVisible(false);
-                // Delay to let the modal fully dismiss before showing Alert.prompt
-                setTimeout(handleRename, 350);
+                // Longer delay needed: Modal must fully dismiss AND release the
+                // responder chain before Alert.prompt can acquire keyboard focus
+                setTimeout(handleRename, 600);
               }}
             >
               <SymbolView
@@ -268,6 +356,22 @@ export default function ChatDetailScreen() {
                 size={16}
               />
               <Text style={localStyles.menuItemText}>Rename</Text>
+            </Pressable>
+            <View style={localStyles.menuDivider} />
+            <Pressable
+              style={[localStyles.menuItem, (isForking || messages.length === 0) && { opacity: 0.5 }]}
+              disabled={isForking || messages.length === 0}
+              onPress={() => {
+                setMenuVisible(false);
+                InteractionManager.runAfterInteractions(handleFork);
+              }}
+            >
+              <SymbolView
+                name={{ ios: "arrow.triangle.branch", android: "fork_right", web: "fork_right" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={localStyles.menuItemText}>{isForking ? "Forking..." : "Fork"}</Text>
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
@@ -289,61 +393,26 @@ export default function ChatDetailScreen() {
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
+              style={localStyles.menuItem}
+              onPress={() => {
+                setMenuVisible(false);
+                InteractionManager.runAfterInteractions(handleGenerateImage);
+              }}
+            >
+              <SymbolView
+                name={{ ios: "sparkles", android: "auto_awesome", web: "auto_awesome" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={localStyles.menuItemText}>Generate Chat Image</Text>
+            </Pressable>
+            <View style={localStyles.menuDivider} />
+            <Pressable
               style={[localStyles.menuItem, isCreatingDebugSession && { opacity: 0.5 }]}
               disabled={isCreatingDebugSession}
               onPress={() => {
                 setMenuVisible(false);
-                setTimeout(() => {
-                  showPrompt(
-                    "Debug Chat",
-                    "Describe the issue you're seeing:",
-                    async (context) => {
-                      if (!context?.trim()) return;
-                      setIsCreatingDebugSession(true);
-                      try {
-                        const session = await createAgentSession(`Debug: ${currentTitle}`);
-                        const debugPrompt = [
-                          "You are a debug agent investigating an issue in a dispatch-app chat session.",
-                          "",
-                          "## Target Chat",
-                          `- Chat ID: ${id}`,
-                          `- Chat Title: ${currentTitle}`,
-                          `- Transcript path: ~/transcripts/dispatch-app/${id}/`,
-                          `- Backend: dispatch-app`,
-                          "",
-                          "## User's Bug Report",
-                          context.trim(),
-                          "",
-                          "## Investigation Steps",
-                          "1. Read the chat transcript with: uv run ~/.claude/skills/sms-assistant/scripts/read_transcript.py --session dispatch-app/${id}",
-                          `2. Check bus.db for recent events: sqlite3 ~/dispatch/state/bus.db "SELECT timestamp, event_type, tool_name, payload FROM sdk_events WHERE session_name LIKE '%${id}%' ORDER BY id DESC LIMIT 30"`,
-                          "3. Check daemon logs if relevant: tail -100 ~/dispatch/state/daemon.log",
-                          "4. Read relevant source code if the issue is in app behavior",
-                          "",
-                          "Diagnose the root cause and propose a specific fix.",
-                        ].join("\n");
-                        // Navigate immediately so user sees the session loading
-                        router.push({
-                          pathname: "/agents/[id]",
-                          params: {
-                            id: session.id,
-                            sessionName: session.name,
-                            sessionSource: "dispatch-api",
-                            sessionType: "dispatch-api",
-                          },
-                        });
-                        // Send debug prompt after navigation (fire-and-forget, session view will pick it up via polling)
-                        sendAgentMessage(session.id, debugPrompt).catch((err) => {
-                          showAlert("Error", "Debug session created but failed to send prompt. Try sending your message manually.");
-                        });
-                      } catch (err) {
-                        showAlert("Error", "Failed to create debug session. Check your connection and try again.");
-                      } finally {
-                        setIsCreatingDebugSession(false);
-                      }
-                    },
-                  );
-                }, 350);
+                InteractionManager.runAfterInteractions(handleDebugChat);
               }}
             >
               <SymbolView
@@ -353,9 +422,34 @@ export default function ChatDetailScreen() {
               />
               <Text style={localStyles.menuItemText}>Debug Chat</Text>
             </Pressable>
+            <View style={localStyles.menuDivider} />
+            <Pressable
+              style={localStyles.menuItem}
+              onPress={() => {
+                setMenuVisible(false);
+                InteractionManager.runAfterInteractions(handleDelete);
+              }}
+            >
+              <SymbolView
+                name={{ ios: "trash", android: "delete", web: "delete" }}
+                tintColor="#ef4444"
+                size={16}
+              />
+              <Text style={[localStyles.menuItemText, { color: "#ef4444" }]}>Delete</Text>
+            </Pressable>
           </View>
         </Pressable>
       </Modal>
+
+      {/* Loading overlay while creating debug session */}
+      {isCreatingDebugSession && (
+        <View style={localStyles.debugLoadingOverlay}>
+          <View style={localStyles.debugLoadingBox}>
+            <ActivityIndicator color="#007AFF" size="small" />
+            <Text style={localStyles.debugLoadingText}>Creating debug session…</Text>
+          </View>
+        </View>
+      )}
     </>
   );
 }
@@ -395,5 +489,24 @@ const localStyles = StyleSheet.create({
   menuItemText: {
     color: "#fafafa",
     fontSize: 16,
+  },
+  debugLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0, 0, 0, 0.4)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  debugLoadingBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#2a2a2e",
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  debugLoadingText: {
+    color: "#fafafa",
+    fontSize: 15,
   },
 });

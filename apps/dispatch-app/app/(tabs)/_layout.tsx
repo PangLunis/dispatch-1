@@ -71,6 +71,12 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="voice"
+        options={{
+          href: null, // Hidden — voice mode is now inline in each chat's InputBar
+        }}
+      />
+      <Tabs.Screen
         name="dashboard"
         options={{
           title: "Dashboard",

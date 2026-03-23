@@ -76,6 +76,10 @@ def init_db():
         conn.execute("ALTER TABLE messages ADD COLUMN chat_id TEXT NOT NULL DEFAULT 'voice'")
     if "image_path" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN image_path TEXT")
+    if "status" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'complete'")
+    if "failure_reason" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN failure_reason TEXT")
 
     # Ensure indexes exist
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
@@ -100,6 +104,18 @@ def init_db():
             pass  # Column already exists (race condition)
     # Chat notes table (1:1 with chats)
     conn.execute(CHAT_NOTES_SCHEMA)
+
+    # Migration: add fork columns if missing
+    if "forked_from" not in chat_columns:
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN forked_from TEXT REFERENCES chats(id) ON DELETE SET NULL")
+        except Exception:
+            pass
+    if "fork_message_id" not in chat_columns:
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN fork_message_id TEXT")
+        except Exception:
+            pass
 
     conn.commit()
     conn.close()

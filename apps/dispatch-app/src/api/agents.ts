@@ -4,6 +4,7 @@ import type {
   AgentSessionsResponse,
   AgentMessagesResponse,
   AgentSession,
+  Conversation,
   SdkEventsResponse,
 } from "./types";
 
@@ -91,6 +92,20 @@ export async function renameAgentSession(
     {
       method: "PATCH",
       body: { name },
+    },
+  );
+}
+
+/** Fork an agent session into a new dispatch-app chat. POST /api/agents/sessions/:sessionId/fork-to-chat */
+export async function forkAgentToChat(
+  sessionId: string,
+  title: string,
+): Promise<Conversation> {
+  return apiRequest<Conversation>(
+    `/api/agents/sessions/${encodeURIComponent(sessionId)}/fork-to-chat`,
+    {
+      method: "POST",
+      body: { title },
     },
   );
 }

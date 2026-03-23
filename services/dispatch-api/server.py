@@ -7,6 +7,7 @@
 #     "pydantic",
 #     "python-multipart",
 #     "pyyaml",
+#     "sse-starlette",
 # ]
 # ///
 """
@@ -24,6 +25,7 @@ Endpoints:
 - GET /audio/{message_id} - Download TTS audio file
 """
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -143,6 +145,7 @@ for old_path, new_path in _LEGACY_RENAMES.items():
         except OSError:
             pass  # Best-effort migration
 CLAUDE_ASSISTANT_CLI = str(Path.home() / "dispatch" / "bin" / "claude-assistant")
+NANO_BANANA_PATH = Path.home() / ".claude" / "skills" / "nano-banana" / "scripts" / "nano-banana"
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX = 30  # requests per window
 
@@ -196,6 +199,20 @@ class UpdateChatRequest(BaseModel):
     title: str
 
 
+class ForkChatRequest(BaseModel):
+    token: str = ""
+    title: str
+
+
+class ForkAgentToChatRequest(BaseModel):
+    title: str = ""
+
+
+class GenerateImageRequest(BaseModel):
+    """Request to generate a chat cover image via nano-banana"""
+    chat_id: str
+
+
 class PromptResponse(BaseModel):
     """Response to iOS app"""
     status: str
@@ -247,6 +264,11 @@ def init_db():
     # Migration: add image_path column if missing
     if "image_path" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN image_path TEXT")
+    # Migration: add status/failure_reason for async image generation
+    if "status" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'complete'")
+    if "failure_reason" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN failure_reason TEXT")
     # Create indexes for chat_id queries
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_created ON messages(chat_id, created_at)")
@@ -276,7 +298,32 @@ def init_db():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migration: add fork columns if missing
+    if "forked_from" not in chat_columns:
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN forked_from TEXT REFERENCES chats(id) ON DELETE SET NULL")
+        except sqlite3.OperationalError:
+            pass
+    if "fork_message_id" not in chat_columns:
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN fork_message_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+    # Migration: add image_path column for chat cover images
+    if "image_path" not in chat_columns:
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN image_path TEXT")
+        except sqlite3.OperationalError:
+            pass
+    # Migration: add marked_unread column for manual unread tracking
+    if "marked_unread" not in chat_columns:
+        try:
+            conn.execute("ALTER TABLE chats ADD COLUMN marked_unread BOOLEAN DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
+    # Reconcile orphaned 'generating' messages from prior crashes/restarts
+    conn.execute("UPDATE messages SET status='failed', failure_reason='server_restart', content='Image generation interrupted' WHERE status='generating'")
     conn.commit()
     conn.close()
 
@@ -718,6 +765,172 @@ async def receive_prompt_with_image(
     )
 
 
+# ---------------------------------------------------------------------------
+# Image generation
+# ---------------------------------------------------------------------------
+
+_generate_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent image generations
+_active_generate_tasks: set[asyncio.Task] = set()
+
+
+def _update_message_status(
+    message_id: str,
+    chat_id: str,
+    content: str,
+    status: str,
+    failure_reason: str | None = None,
+    image_path: str | None = None,
+):
+    """Update a message's status with proper connection handling."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE messages SET content=?, status=?, failure_reason=?, image_path=COALESCE(?, image_path) WHERE id=?",
+            (content, status, failure_reason, image_path, message_id),
+        )
+        conn.execute(
+            "UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (chat_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def copy_image_to_canonical(source_path: str, message_id: str, chat_id: str) -> str | None:
+    """Copy an image file to the canonical dispatch-images directory."""
+    import shutil
+    src = Path(source_path)
+    if not src.exists():
+        return None
+    dest_dir = IMAGE_DIR / chat_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ext = src.suffix.lower() or ".png"
+    dest = dest_dir / f"{message_id}{ext}"
+    try:
+        shutil.copy2(src, dest)
+        return str(dest)
+    except Exception:
+        return None
+
+
+async def _generate_chat_image_background(chat_id: str, chat_title: str, prompt: str):
+    """Background task: run nano-banana and store result as chat cover image."""
+    output_path = f"/tmp/chat-image-{chat_id}.png"
+    start = time.monotonic()
+    try:
+        async with _generate_semaphore:
+            env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [str(NANO_BANANA_PATH), prompt, "--aspect-ratio", "1:1", "-o", output_path],
+                timeout=90,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        if result.returncode != 0:
+            raise RuntimeError(f"exit {result.returncode}: {result.stderr[:200]}")
+
+        # Copy to canonical location for chat images
+        dest_dir = IMAGE_DIR / "chat-covers"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        import shutil
+        dest = dest_dir / f"{chat_id}.png"
+        shutil.copy2(output_path, dest)
+        canonical_path = str(dest)
+
+        # Update chats table with image_path
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE chats SET image_path = ? WHERE id = ?",
+                (canonical_path, chat_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        elapsed = time.monotonic() - start
+        logger.info(f"Chat image generated: chat_id={chat_id}, title=\"{chat_title}\", duration={elapsed:.1f}s")
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Chat image generation timeout: chat_id={chat_id}")
+    except Exception as e:
+        logger.error(f"Chat image generation failed: chat_id={chat_id}, error={e}")
+    finally:
+        Path(output_path).unlink(missing_ok=True)
+
+
+@app.post("/generate-image", status_code=202)
+async def generate_image(req: GenerateImageRequest, token: Optional[str] = None):
+    """Generate an image via nano-banana and store as an assistant message.
+
+    Returns 202 immediately with the placeholder message_id.
+    The image is generated in the background; poll GET /messages to see the result.
+    """
+    token_short = token[:8] if token else "none"
+    logger.info(f"POST /generate-image: chat_id={req.chat_id}, prompt={req.prompt[:100]}, token={token_short}...")
+
+    # Validate token
+    if token:
+        allowed_tokens = load_allowed_tokens()
+        if allowed_tokens and token not in allowed_tokens:
+            raise HTTPException(status_code=401, detail="Unknown device token")
+
+    # Validate prompt
+    if not req.prompt or not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt is required")
+    if len(req.prompt) > 1000:
+        raise HTTPException(status_code=400, detail="Prompt must be 1000 characters or less")
+
+    # Validate chat_id exists
+    conn = get_db()
+    try:
+        chat_row = conn.execute("SELECT id FROM chats WHERE id = ?", (req.chat_id,)).fetchone()
+        if not chat_row:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
+        # DB-based rate limit: check if already generating for this chat
+        existing = conn.execute(
+            "SELECT id FROM messages WHERE chat_id = ? AND status = 'generating' LIMIT 1",
+            (req.chat_id,),
+        ).fetchone()
+        if existing:
+            logger.warning(f"POST /generate-image: already generating for chat_id={req.chat_id}")
+            raise HTTPException(status_code=429, detail="An image is already being generated for this chat")
+
+        # Check global concurrency
+        if len(_active_generate_tasks) >= 3:
+            raise HTTPException(status_code=429, detail="Server busy, please try again")
+
+        # Create placeholder message
+        message_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO messages (id, role, content, status, chat_id) VALUES (?, ?, ?, ?, ?)",
+            (message_id, "assistant", "🎨 Generating image...", "generating", req.chat_id),
+        )
+        conn.execute(
+            "UPDATE chats SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (req.chat_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    logger.info(
+        f"POST /generate-image: placeholder created message_id={message_id}, "
+        f"in_flight={len(_active_generate_tasks)}"
+    )
+
+    # Spawn background generation task
+    task = asyncio.create_task(_generate_image_background(message_id, req.chat_id, req.prompt.strip()))
+    _active_generate_tasks.add(task)
+    task.add_done_callback(_active_generate_tasks.discard)
+
+    return {"message_id": message_id, "status": "generating"}
+
+
 @app.get("/messages")
 async def get_messages(since: Optional[str] = None, token: Optional[str] = None, chat_id: str = "voice"):
     """Get messages from the conversation, filtered by chat."""
@@ -736,7 +949,7 @@ async def get_messages(since: Optional[str] = None, token: Optional[str] = None,
             # Convert ISO 8601 back to SQLite format for comparison
             since_sqlite = since.replace("T", " ").replace("Z", "") if since else since
             cursor = conn.execute(
-                "SELECT id, role, content, image_path, audio_path, created_at FROM messages "
+                "SELECT id, role, content, image_path, audio_path, created_at, status, failure_reason FROM messages "
                 "WHERE chat_id = ? AND created_at > ? ORDER BY created_at ASC LIMIT 500",
                 (chat_id, since_sqlite)
             )
@@ -744,7 +957,7 @@ async def get_messages(since: Optional[str] = None, token: Optional[str] = None,
             # Subquery gets newest 200 messages, outer query re-orders ASC for display
             cursor = conn.execute(
                 "SELECT * FROM ("
-                "  SELECT id, role, content, image_path, audio_path, created_at FROM messages "
+                "  SELECT id, role, content, image_path, audio_path, created_at, status, failure_reason FROM messages "
                 "  WHERE chat_id = ? ORDER BY created_at DESC LIMIT 200"
                 ") ORDER BY created_at ASC",
                 (chat_id,)
@@ -765,6 +978,9 @@ async def get_messages(since: Optional[str] = None, token: Optional[str] = None,
             else:
                 msg["image_url"] = None
             del msg["image_path"]
+            # Expose status and failure_reason for async operations
+            msg["status"] = msg.get("status") or "complete"
+            msg["failure_reason"] = msg.get("failure_reason")
             # Convert SQLite timestamp to ISO 8601 for JavaScript
             msg["created_at"] = _sqlite_to_iso(msg.get("created_at"))
             messages.append(msg)
@@ -864,6 +1080,179 @@ async def get_audio(message_id: str, token: Optional[str] = None):
     )
 
 
+# ---------------------------------------------------------------------------
+# Voice Brainstorm SSE Endpoint
+# ---------------------------------------------------------------------------
+
+
+class VoiceRespondRequest(BaseModel):
+    """Request body for POST /voice/respond SSE endpoint."""
+    chat_id: str = "voice"
+    transcript: str
+    token: str
+
+
+@app.post("/voice/respond")
+async def voice_respond(req: VoiceRespondRequest):
+    """
+    SSE endpoint for voice brainstorm mode.
+
+    Flow:
+    1. Validate token
+    2. Store user message
+    3. Check agent session health
+    4. Inject prompt to agent session
+    5. Stream SSE events: thinking → agent_text → audio_ready (or error/timeout)
+
+    The client reads the SSE stream and plays audio when ready.
+    """
+    import asyncio
+    from sse_starlette.sse import EventSourceResponse
+
+    # 1. Auth
+    validate_token(req.token)
+
+    # 2. Guard: min transcript length
+    if len(req.transcript.strip()) < 3:
+        async def _short():
+            yield {"data": json.dumps({"type": "error", "message": "Transcript too short."})}
+        return EventSourceResponse(_short())
+
+    # 3. Store user message (idempotent check — skip if transcript already stored recently)
+    user_msg_id = str(uuid.uuid4())
+    try:
+        store_user_message(user_msg_id, req.transcript, req.chat_id)
+    except Exception as e:
+        logger.error(f"voice/respond: failed to store user message: {e}")
+        async def _db_err():
+            yield {"data": json.dumps({"type": "error", "message": "Failed to store message."})}
+        return EventSourceResponse(_db_err())
+
+    # 4. Check agent session health
+    session_name = f"{APP_SESSION_PREFIX}/{req.chat_id}"
+    is_busy = _check_is_thinking(session_name)
+    if is_busy:
+        async def _busy():
+            yield {"data": json.dumps({"type": "error", "message": "Agent is busy with another request. Try again in a moment."})}
+        return EventSourceResponse(_busy())
+
+    # 5. Inject prompt to agent session
+    inject_success = await inject_prompt_to_app_session(req.transcript, req.chat_id)
+    if not inject_success:
+        async def _inject_fail():
+            yield {"data": json.dumps({"type": "error", "message": "Agent unavailable. Try again in a moment."})}
+        return EventSourceResponse(_inject_fail())
+
+    # 6. Stream SSE events — poll DB for agent response, then generate TTS
+    async def event_stream():
+        yield {"data": json.dumps({"type": "thinking"})}
+
+        # Poll for agent response (reply-app does atomic INSERT)
+        start = time.time()
+        agent_msg = None
+        while time.time() - start < 120:
+            try:
+                conn = get_db()
+                row = conn.execute(
+                    "SELECT id, content FROM messages WHERE chat_id = ? AND role = 'assistant' "
+                    "AND created_at > datetime('now', '-3 minutes') "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (req.chat_id,),
+                ).fetchone()
+                conn.close()
+
+                if row:
+                    msg_id, content = row[0], row[1]
+                    # Make sure this is a NEW message (after our user message)
+                    conn2 = get_db()
+                    user_ts = conn2.execute(
+                        "SELECT created_at FROM messages WHERE id = ?", (user_msg_id,)
+                    ).fetchone()
+                    agent_ts = conn2.execute(
+                        "SELECT created_at FROM messages WHERE id = ?", (msg_id,)
+                    ).fetchone()
+                    conn2.close()
+
+                    if user_ts and agent_ts and agent_ts[0] >= user_ts[0]:
+                        agent_msg = {"id": msg_id, "content": content}
+                        break
+            except Exception as e:
+                logger.error(f"voice/respond: DB poll error: {e}")
+
+            await asyncio.sleep(0.3)
+
+        if not agent_msg:
+            yield {"data": json.dumps({"type": "timeout", "message": "Agent took too long to respond."})}
+            return
+
+        # Agent responded — send text immediately
+        yield {"data": json.dumps({
+            "type": "agent_text",
+            "text": agent_msg["content"],
+            "message_id": agent_msg["id"],
+        })}
+
+        # Generate TTS
+        try:
+            audio_path = AUDIO_DIR / f"{agent_msg['id']}.wav"
+
+            if not audio_path.exists():
+                AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+                tts_script = Path.home() / ".claude" / "skills" / "tts" / "scripts" / "speak"
+
+                if not tts_script.exists():
+                    logger.error("voice/respond: TTS script not found")
+                    yield {"data": json.dumps({"type": "error", "message": "TTS unavailable. Text response shown above."})}
+                    return
+
+                tts_start = time.time()
+                proc = await asyncio.create_subprocess_exec(
+                    str(tts_script), agent_msg["content"], "-o", str(audio_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+
+                if proc.returncode != 0 or not audio_path.exists():
+                    logger.error(f"voice/respond: TTS failed: {stderr.decode()[:200]}")
+                    yield {"data": json.dumps({"type": "error", "message": "TTS generation failed. Text response shown above."})}
+                    return
+
+                tts_duration = time.time() - tts_start
+                log_perf("voice_tts_ms", tts_duration * 1000, message_id=agent_msg["id"])
+
+                # Update DB with audio path
+                conn = get_db()
+                conn.execute(
+                    "UPDATE messages SET audio_path = ? WHERE id = ?",
+                    (str(audio_path), agent_msg["id"]),
+                )
+                conn.commit()
+                conn.close()
+
+            yield {"data": json.dumps({
+                "type": "audio_ready",
+                "audio_url": f"/audio/{agent_msg['id']}",
+            })}
+
+            # Cleanup: delete WAVs older than 24h
+            try:
+                cutoff = time.time() - 86400
+                for old_wav in AUDIO_DIR.glob("*.wav"):
+                    if old_wav.stat().st_mtime < cutoff:
+                        old_wav.unlink()
+            except Exception:
+                pass  # Best-effort cleanup
+
+        except asyncio.TimeoutError:
+            yield {"data": json.dumps({"type": "error", "message": "TTS timed out. Text response shown above."})}
+        except Exception as e:
+            logger.error(f"voice/respond: TTS error: {e}")
+            yield {"data": json.dumps({"type": "error", "message": "Audio generation failed."})}
+
+    return EventSourceResponse(event_stream())
+
+
 @app.get("/image/{message_id}")
 async def get_image(message_id: str, token: Optional[str] = None):
     """Serve an image attachment for a message.
@@ -915,6 +1304,34 @@ async def get_image(message_id: str, token: Optional[str] = None):
         media_type=mime_type,
         filename=image_path.name,
         headers={"Cache-Control": "max-age=86400"},
+    )
+
+
+@app.get("/chat-image/{chat_id}")
+async def get_chat_image(chat_id: str, token: Optional[str] = None):
+    """Serve the cover image for a chat."""
+    if token:
+        allowed_tokens = load_allowed_tokens()
+        if allowed_tokens and token not in allowed_tokens:
+            raise HTTPException(status_code=401, detail="Unknown device token")
+
+    conn = get_db()
+    row = conn.execute("SELECT image_path FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Chat image not found")
+
+    image_path = Path(row[0]).resolve()
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="Image file not found")
+
+    mime_type = mimetypes.guess_type(str(image_path))[0] or "image/png"
+    return FileResponse(
+        path=image_path,
+        media_type=mime_type,
+        filename=image_path.name,
+        headers={"Cache-Control": "max-age=3600"},
     )
 
 
@@ -1095,7 +1512,10 @@ async def list_chats(token: str = None):
                m.created_at AS last_message_at,
                m.role AS last_message_role,
                c.last_opened_at,
-               EXISTS(SELECT 1 FROM chat_notes cn WHERE cn.chat_id = c.id AND cn.content != '') AS has_notes
+               EXISTS(SELECT 1 FROM chat_notes cn WHERE cn.chat_id = c.id AND cn.content != '') AS has_notes,
+               c.forked_from,
+               c.marked_unread,
+               c.image_path
         FROM chats c
         LEFT JOIN (
             SELECT chat_id, content, created_at, role,
@@ -1118,6 +1538,9 @@ async def list_chats(token: str = None):
             "last_opened_at": _sqlite_to_iso(row[7]),
             "has_notes": bool(row[8]),
             "is_thinking": _check_is_thinking(f"{APP_SESSION_PREFIX}/{chat_id}"),
+            "forked_from": row[9],
+            "marked_unread": bool(row[10]),
+            "image_url": f"/chat-image/{chat_id}" if row[11] and Path(row[11]).exists() else None,
         })
     conn.close()
     return {"chats": chats}
@@ -1129,7 +1552,24 @@ async def mark_chat_opened(chat_id: str, token: str = None):
     validate_token(token)
     conn = get_db()
     cursor = conn.execute(
-        "UPDATE chats SET last_opened_at = CURRENT_TIMESTAMP WHERE id = ?",
+        "UPDATE chats SET last_opened_at = CURRENT_TIMESTAMP, marked_unread = 0 WHERE id = ?",
+        (chat_id,),
+    )
+    conn.commit()
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chat not found")
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/chats/{chat_id}/unread")
+async def mark_chat_unread(chat_id: str, token: str = None):
+    """Mark a chat as manually unread."""
+    validate_token(token)
+    conn = get_db()
+    cursor = conn.execute(
+        "UPDATE chats SET marked_unread = 1 WHERE id = ?",
         (chat_id,),
     )
     conn.commit()
@@ -1160,6 +1600,133 @@ async def update_chat(chat_id: str, request: UpdateChatRequest, token: str = Non
         "created_at": _sqlite_to_iso(row[2]), "updated_at": _sqlite_to_iso(row[3]),
         "last_message": None, "last_message_at": None, "last_message_role": None,
         "last_opened_at": _sqlite_to_iso(row[4]),
+    }
+
+
+@app.post("/chats/{chat_id}/fork")
+async def fork_chat(chat_id: str, request: ForkChatRequest, token: str = None):
+    """Fork a chat: create a new chat with copied message history and inject context into a new session."""
+    import asyncio
+    import tempfile
+
+    effective_token = token or request.token
+    validate_token(effective_token)
+
+    conn = get_db()
+
+    # Validate source chat exists
+    source = conn.execute("SELECT id, title FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    if not source:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Source chat not found")
+
+    source_title = source[1]
+    new_chat_id = str(uuid.uuid4())
+    fork_title = request.title or f"{source_title} (fork)"
+
+    try:
+        # Create the forked chat
+        conn.execute(
+            "INSERT INTO chats (id, title, forked_from, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (new_chat_id, fork_title, chat_id),
+        )
+
+        # Copy messages from source chat (limit 5000, ordered by created_at + rowid tiebreaker)
+        source_messages = conn.execute(
+            """SELECT role, content, audio_path, image_path, created_at
+               FROM messages WHERE chat_id = ?
+               ORDER BY created_at ASC, rowid ASC LIMIT 5000""",
+            (chat_id,),
+        ).fetchall()
+
+        # Generate new UUIDs in Python and bulk insert
+        new_messages = []
+        for row in source_messages:
+            new_messages.append((str(uuid.uuid4()), row[0], row[1], row[2], row[3], new_chat_id, row[4]))
+
+        conn.executemany(
+            "INSERT INTO messages (id, role, content, audio_path, image_path, chat_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            new_messages,
+        )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        logger.error(f"fork_chat: DB error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fork chat")
+
+    # Build context from last ~50 messages for session injection
+    context_messages = source_messages[-50:] if len(source_messages) > 50 else source_messages
+    context_lines = []
+    omitted = len(source_messages) - len(context_messages)
+    if omitted > 0:
+        context_lines.append(f"({omitted} earlier messages omitted — full history visible in chat)\n")
+    for msg in context_messages:
+        role_label = "user" if msg[0] == "user" else "assistant"
+        context_lines.append(f"[{role_label}]: {msg[1]}")
+
+    context_text = "\n".join(context_lines)
+    fork_prompt = f'SESSION START - FORKED from "{source_title}" ({APP_SESSION_PREFIX}:{chat_id})\n\n## Prior Conversation (forked context)\n{context_text}\n\nThe user forked this chat to explore a new direction.\n\nIMPORTANT: Immediately send a brief summary of the prior conversation (3-5 bullet points covering the key topics and any pending items). Then wait for new messages.'
+
+    # Fetch the new chat row for response
+    row = conn.execute(
+        "SELECT id, title, created_at, updated_at, last_opened_at, forked_from FROM chats WHERE id = ?",
+        (new_chat_id,),
+    ).fetchone()
+    conn.close()
+
+    # Inject context into new session (non-blocking, fire-and-forget with timeout)
+    # Uses --file to avoid ARG_MAX limits with large conversation context
+    async def _inject_fork_context():
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", prefix=f"fork-context-{new_chat_id[:8]}-", suffix=".txt", delete=False) as f:
+                f.write(fork_prompt)
+                tmp_path = f.name
+
+            env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+            cmd = [
+                CLAUDE_ASSISTANT_CLI, "inject-prompt",
+                f"{APP_SESSION_PREFIX}:{new_chat_id}",
+                "--admin",
+                "--file", tmp_path,
+            ]
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                if proc.returncode != 0:
+                    logger.warning(f"fork_chat: inject-prompt failed (code {proc.returncode}): {stderr.decode()[:200]}")
+                else:
+                    logger.info(f"fork_chat: session created for {new_chat_id}")
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning(f"fork_chat: inject-prompt timed out for {new_chat_id}")
+        except Exception as e:
+            logger.warning(f"fork_chat: failed to inject fork context: {e}")
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    # Fire and forget — don't block the response
+    asyncio.create_task(_inject_fork_context())
+
+    return {
+        "id": row[0], "title": row[1],
+        "created_at": _sqlite_to_iso(row[2]), "updated_at": _sqlite_to_iso(row[3]),
+        "last_message": None, "last_message_at": None, "last_message_role": None,
+        "last_opened_at": _sqlite_to_iso(row[4]),
+        "forked_from": row[5],
     }
 
 
@@ -2988,6 +3555,185 @@ async def delete_agent_session(session_id: str, delete_messages: bool = False):
                 logger.warning(f"delete_agent_session: failed to remove transcript dir: {e}")
 
     return {"ok": True}
+
+
+@app.post("/api/agents/sessions/{session_id:path}/fork-to-chat")
+async def fork_agent_to_chat(session_id: str, request: ForkAgentToChatRequest):
+    """Fork an agent/contact session into a new dispatch-app chat.
+
+    Works for both contact sessions (iMessage/Signal — reads from bus.db) and
+    dispatch-api sessions (reads from dispatch-messages.db).
+    Creates a new chat with copied messages and injects context into a new Claude session.
+    """
+    import asyncio
+    import tempfile
+
+    # Determine session name and source for the title
+    session_name = session_id
+    session_source = "unknown"
+
+    if session_id.startswith("dispatch-api:"):
+        # Dispatch-API session — get title from chats table
+        msg_db = _get_messages_db()
+        row = msg_db.execute("SELECT title FROM chats WHERE id = ?", (session_id,)).fetchone()
+        msg_db.close()
+        session_name = row[0] if row else session_id
+        session_source = "dispatch-api"
+    else:
+        # Contact session — get name from registry
+        registry = _load_sessions()
+        session_info = registry.get(session_id, {})
+        session_name = session_info.get("contact_name", session_id)
+        session_source = session_info.get("backend", "unknown")
+
+    fork_title = request.title or f"{session_name} (fork)"
+    new_chat_id = str(uuid.uuid4())
+
+    # Fetch messages from the source session
+    source_messages = []  # list of (role, text, timestamp_ms)
+
+    if session_id.startswith("dispatch-api:"):
+        # Read from dispatch-messages.db
+        msg_db = _get_messages_db()
+        rows = msg_db.execute(
+            "SELECT role, content, created_at FROM messages WHERE chat_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 5000",
+            (session_id,),
+        ).fetchall()
+        msg_db.close()
+        for row in rows:
+            try:
+                ts_ms = int(datetime.fromisoformat(row[2]).timestamp() * 1000)
+            except Exception:
+                ts_ms = 0
+            source_messages.append((row[0], row[1], ts_ms, row[2]))
+    else:
+        # Read from bus.db (contact session)
+        registry = _load_sessions()
+        sender_map = _build_sender_map(registry)
+        conn = get_bus_db()
+        rows = conn.execute(
+            'SELECT "offset", type, source, payload, timestamp '
+            "FROM records "
+            "WHERE topic = 'messages' "
+            "  AND json_extract(payload, '$.chat_id') = ? "
+            "  AND type IN ('message.received', 'message.sent') "
+            "  AND source NOT IN ('consumer-retry', 'sdk_backend.replay') "
+            "ORDER BY timestamp ASC LIMIT 5000",
+            (session_id,),
+        ).fetchall()
+        conn.close()
+
+        for row in rows:
+            offset, type_, source, payload_str, timestamp = row
+            if type_ == "message.sent":
+                role = "assistant"
+            else:
+                role = "user"
+            text = _extract_text_from_record(payload_str, source, type_)
+            if text:
+                # Convert epoch ms to SQLite datetime string
+                dt_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                source_messages.append((role, text, timestamp, dt_str))
+
+    if not source_messages:
+        raise HTTPException(status_code=400, detail="No messages to fork")
+
+    # Create the new chat and copy messages
+    db = get_db()
+    try:
+        db.execute(
+            "INSERT INTO chats (id, title, forked_from, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (new_chat_id, fork_title, None),  # forked_from is NULL — cross-system fork
+        )
+
+        new_messages = []
+        for msg in source_messages:
+            role, text, ts_ms, dt_str = msg
+            new_messages.append((str(uuid.uuid4()), role, text, None, None, new_chat_id, dt_str))
+
+        db.executemany(
+            "INSERT INTO messages (id, role, content, audio_path, image_path, chat_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            new_messages,
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        db.close()
+        logger.error(f"fork_agent_to_chat: DB error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fork session to chat")
+
+    # Build context from last ~50 messages for session injection
+    context_messages = source_messages[-50:] if len(source_messages) > 50 else source_messages
+    context_lines = []
+    omitted = len(source_messages) - len(context_messages)
+    if omitted > 0:
+        context_lines.append(f"({omitted} earlier messages omitted — full history visible in chat)\n")
+    for msg in context_messages:
+        role_label = "user" if msg[0] == "user" else "assistant"
+        context_lines.append(f"[{role_label}]: {msg[1]}")
+
+    context_text = "\n".join(context_lines)
+    fork_prompt = f'SESSION START - FORKED from {session_source} session "{session_name}"\n\n## Prior Conversation (forked context)\n{context_text}\n\nThe user forked this {session_source} conversation into a new chat to continue the discussion here.\n\nIMPORTANT: Immediately send a brief summary of the prior conversation (3-5 bullet points covering the key topics and any pending items). Then wait for new messages.'
+
+    # Fetch new chat for response
+    row = db.execute(
+        "SELECT id, title, created_at, updated_at, last_opened_at, forked_from FROM chats WHERE id = ?",
+        (new_chat_id,),
+    ).fetchone()
+    db.close()
+
+    # Inject context into new session (non-blocking, fire-and-forget)
+    async def _inject_fork_context():
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", prefix=f"fork-agent-{new_chat_id[:8]}-", suffix=".txt", delete=False) as f:
+                f.write(fork_prompt)
+                tmp_path = f.name
+
+            env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+            cmd = [
+                CLAUDE_ASSISTANT_CLI, "inject-prompt",
+                f"{APP_SESSION_PREFIX}:{new_chat_id}",
+                "--admin",
+                "--file", tmp_path,
+            ]
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                if proc.returncode != 0:
+                    logger.warning(f"fork_agent_to_chat: inject-prompt failed (code {proc.returncode}): {stderr.decode()[:200]}")
+                else:
+                    logger.info(f"fork_agent_to_chat: session created for {new_chat_id}")
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning(f"fork_agent_to_chat: inject-prompt timed out for {new_chat_id}")
+        except Exception as e:
+            logger.warning(f"fork_agent_to_chat: failed to inject fork context: {e}")
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    asyncio.create_task(_inject_fork_context())
+
+    logger.info(f"fork_agent_to_chat: forked {session_id} ({session_source}) -> chat {new_chat_id} ({fork_title})")
+
+    return {
+        "id": row[0], "title": row[1],
+        "created_at": _sqlite_to_iso(row[2]), "updated_at": _sqlite_to_iso(row[3]),
+        "last_message": None, "last_message_at": None, "last_message_role": None,
+        "last_opened_at": _sqlite_to_iso(row[4]),
+        "forked_from": row[5],
+    }
 
 
 # ---------------------------------------------------------------------------

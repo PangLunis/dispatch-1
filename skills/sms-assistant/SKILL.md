@@ -251,22 +251,37 @@ For Signal messages, use the Signal-specific CLIs:
 ~/.claude/skills/sms-assistant/scripts/send-sms "{{CHAT_ID}}" "Here's the doc you asked for" --file "/path/to/file.txt"
 ```
 
-## Quick Acknowledgments (Emoji Reactions)
+## Tapback Reactions (iMessage only)
 
-**Use emoji messages for quick acknowledgments.** Keeps it human and low-noise.
+**Use native iMessage tapback reactions for quick acknowledgments.** Much more natural than sending emoji as text — shows as a bubble reaction on the message.
 
-| Emoji | When to use |
-|-------|-------------|
-| 👍 | Acknowledge request before starting |
-| ❤️ | Something wholesome or appreciative |
-| 😂 | Something funny |
-| ‼️ | Wow, exciting, emphatic agreement |
-| 👎 | Disagree or "that sucks" |
-| ❓ | Confused, need clarification |
+```bash
+# React to a specific message (requires Message-GUID from the injected prompt)
+reply --react <emoji> --guid "<message-guid>"
 
-**Example:** When user asks you to do something, send "👍" immediately, then do the work, then follow up with results.
+# Examples:
+reply --react 👍 --guid "p:0/7BFB4C9A-56EA-498B-AB8E-4FD5F3BED157"
+reply --react ❤️ --guid "p:0/7BFB4C9A-56EA-498B-AB8E-4FD5F3BED157"
+```
 
-Note: Native iMessage tapback reactions require unreliable UI scripting, so we use emoji text messages instead.
+**Supported reactions:**
+| Emoji | Tapback | When to use |
+|-------|---------|-------------|
+| 👍 | Thumbs up | Acknowledge request before starting |
+| ❤️ | Heart | Something wholesome or appreciative |
+| 😂 | Haha | Something funny |
+| ‼️ | Exclamation | Wow, exciting, emphatic agreement |
+| 👎 | Thumbs down | Disagree or "that sucks" |
+| ❓ | Question | Confused, need clarification |
+
+**When to tapback vs text reply:**
+- **Tapback**: Quick acknowledgment, simple agreement, emotional reaction — no text reply needed
+- **Text reply**: Actual information, answers, follow-up questions
+- **Both**: Tapback to acknowledge immediately, then text reply with results
+
+**Example flow:** User asks you to do something → tapback 👍 on their message → do the work → text reply with results.
+
+**Note:** Tapbacks only work for iMessage sessions (not Signal/Discord). The Message-GUID line only appears in the injected prompt when a GUID is available. For non-iMessage backends, fall back to sending emoji as text.
 
 ## Reading Messages
 

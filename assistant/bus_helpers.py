@@ -590,6 +590,42 @@ def produce_scan_event(producer, scanner: str, event_type: str, payload: dict):
                   key=f"scan-{scanner}-{run_id}", source=scanner)
 
 
+# ─── iMessage UI events ─────────────────────────────────────────────
+# Producers for the imessage.ui topic (tapback, read, typing).
+# Consumed by the single-threaded UI automation consumer in Manager.
+
+def produce_imessage_ui_event(producer, chat_id: str, event_type: str,
+                               payload: dict, source: str = "daemon"):
+    """Produce an event to the imessage.ui topic.
+
+    Args:
+        chat_id: Bare phone number (e.g. "+16175969496") or group hex ID.
+        event_type: One of "tapback", "read", "typing.start", "typing.stop".
+        payload: Must include "chat_id" at minimum.
+        source: Origin component (e.g. "daemon", "reply-cli", "sdk").
+    """
+    produce_event(producer, "imessage.ui", event_type, payload,
+                  key=f"imessage/{chat_id}", source=source)
+
+
+def produce_read_receipt(producer, chat_id: str, source: str = "daemon"):
+    """Produce a read receipt event for a chat.
+
+    When consumed, this navigates Messages.app to the chat, which
+    automatically marks messages as read and sends read receipts.
+    """
+    produce_imessage_ui_event(producer, chat_id, "read",
+                               {"chat_id": chat_id}, source=source)
+
+
+def produce_typing_event(producer, chat_id: str, start: bool,
+                          source: str = "daemon"):
+    """Produce a typing indicator event (start or stop)."""
+    event_type = "typing.start" if start else "typing.stop"
+    produce_imessage_ui_event(producer, chat_id, event_type,
+                               {"chat_id": chat_id}, source=source)
+
+
 def query_undelivered_messages(db_path: str, chat_id: str, max_age_hours: int = 24) -> list[dict]:
     """Query bus for messages that were queued but never delivered.
 

@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  InteractionManager,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -10,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { SymbolView } from "expo-symbols";
 import { markAgentSessionAsRead } from "@/src/state/unreadAgents";
 import {
   agentAdapter,
@@ -26,6 +29,7 @@ import { branding } from "@/src/config/branding";
 import { screenStyles } from "@/src/styles/shared";
 import {
   deleteAgentSession,
+  forkAgentToChat,
   renameAgentSession,
 } from "@/src/api/agents";
 import {
@@ -38,16 +42,21 @@ import type { SdkEvent } from "@/src/api/types";
 
 export default function AgentConversationScreen() {
   const router = useRouter();
-  const { id, sessionName, sessionSource, sessionType } =
+  const { id, sessionName, sessionSource, sessionType, backTitle } =
     useLocalSearchParams<{
       id: string;
       sessionName?: string;
       sessionSource?: string;
       sessionType?: string;
+      backTitle?: string;
     }>();
 
   const [currentName, setCurrentName] = useState(sessionName || id || "Agent");
   const [sdkMode, setSdkMode] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
+  const [isForking, setIsForking] = useState(false);
+  const menuButtonRef = useRef<View>(null);
   const isDispatchApi = sessionType === "dispatch-api";
 
   // Mark this agent session as read when opened
@@ -106,6 +115,30 @@ export default function AgentConversationScreen() {
   }, [id, currentName]);
 
   // -----------------------------------------------------------------------
+  // Fork to Chat (all session types)
+  // -----------------------------------------------------------------------
+
+  const handleForkToChat = useCallback(async () => {
+    if (!id) return;
+
+    const forkTitle = await showPrompt("Fork to Chat", "Title for the new chat:", `${currentName} (fork)`);
+    if (!forkTitle) return;
+
+    setIsForking(true);
+    try {
+      const forked = await forkAgentToChat(id, forkTitle);
+      router.push({
+        pathname: "/chat/[id]",
+        params: { id: forked.id, chatTitle: forked.title },
+      });
+    } catch (err) {
+      showAlert("Error", err instanceof Error ? err.message : "Failed to fork to chat");
+    } finally {
+      setIsForking(false);
+    }
+  }, [id, currentName, router]);
+
+  // -----------------------------------------------------------------------
   // Delete (dispatch-api sessions only)
   // -----------------------------------------------------------------------
 
@@ -148,22 +181,34 @@ export default function AgentConversationScreen() {
 
 
   // -----------------------------------------------------------------------
-  // Header right buttons
+  // Header right — ellipsis menu button
   // -----------------------------------------------------------------------
 
-  const headerRight = useCallback(() => {
-    if (!isDispatchApi) return null;
-    return (
-      <View style={headerStyles.rightContainer}>
-        <Pressable onPress={handleRename} hitSlop={8} style={headerStyles.button}>
-          <Text style={headerStyles.buttonText}>Rename</Text>
-        </Pressable>
-        <Pressable onPress={handleDelete} hitSlop={8} style={headerStyles.button}>
-          <Text style={headerStyles.deleteText}>Delete</Text>
-        </Pressable>
-      </View>
-    );
-  }, [isDispatchApi, handleRename, handleDelete]);
+  const handleMenuPress = useCallback(() => {
+    menuButtonRef.current?.measureInWindow((x, y, width, height) => {
+      setMenuPosition({ x: x + width - 160, y: y + height + 8 });
+      setMenuVisible(true);
+    });
+  }, []);
+
+  const headerRight = useCallback(
+    () => (
+      <Pressable
+        ref={menuButtonRef}
+        onPress={handleMenuPress}
+        hitSlop={8}
+        style={headerStyles.menuButton}
+      >
+        <SymbolView
+          name={{ ios: "ellipsis.circle", android: "more_vert", web: "more_vert" }}
+          tintColor={branding.accentColor}
+          size={22}
+          weight="medium"
+        />
+      </Pressable>
+    ),
+    [handleMenuPress],
+  );
 
   // -----------------------------------------------------------------------
   // Header title with badges
@@ -197,7 +242,7 @@ export default function AgentConversationScreen() {
       <Stack.Screen
         options={{
           headerTitle,
-          headerBackTitle: "Sessions",
+          headerBackTitle: backTitle || "Sessions",
           headerRight,
           headerStyle: { backgroundColor: "#09090b" },
           headerTintColor: "#fafafa",
@@ -296,6 +341,79 @@ export default function AgentConversationScreen() {
           </View>
         )}
       </KeyboardAvoidingView>
+
+      {/* Dropdown menu */}
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+      >
+        <Pressable
+          style={menuStyles.overlay}
+          onPress={() => setMenuVisible(false)}
+        >
+          <View
+            style={[
+              menuStyles.dropdown,
+              { top: menuPosition.y, left: menuPosition.x },
+            ]}
+          >
+            {/* Fork to Chat — available for all session types */}
+            <Pressable
+              style={[menuStyles.item, (isForking || messages.length === 0) && { opacity: 0.5 }]}
+              disabled={isForking || messages.length === 0}
+              onPress={() => {
+                setMenuVisible(false);
+                InteractionManager.runAfterInteractions(handleForkToChat);
+              }}
+            >
+              <SymbolView
+                name={{ ios: "arrow.triangle.branch", android: "fork_right", web: "fork_right" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={menuStyles.itemText}>{isForking ? "Forking..." : "Fork to Chat"}</Text>
+            </Pressable>
+
+            {/* Dispatch-API only options */}
+            {isDispatchApi && (
+              <>
+                <View style={menuStyles.divider} />
+                <Pressable
+                  style={menuStyles.item}
+                  onPress={() => {
+                    setMenuVisible(false);
+                    InteractionManager.runAfterInteractions(handleRename);
+                  }}
+                >
+                  <SymbolView
+                    name={{ ios: "pencil", android: "edit", web: "edit" }}
+                    tintColor="#fafafa"
+                    size={16}
+                  />
+                  <Text style={menuStyles.itemText}>Rename</Text>
+                </Pressable>
+                <View style={menuStyles.divider} />
+                <Pressable
+                  style={menuStyles.item}
+                  onPress={() => {
+                    setMenuVisible(false);
+                    InteractionManager.runAfterInteractions(handleDelete);
+                  }}
+                >
+                  <SymbolView
+                    name={{ ios: "trash", android: "delete", web: "delete" }}
+                    tintColor="#ef4444"
+                    size={16}
+                  />
+                  <Text style={[menuStyles.itemText, { color: "#ef4444" }]}>Delete</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </Pressable>
+      </Modal>
     </>
   );
 }
@@ -318,23 +436,43 @@ const headerStyles = StyleSheet.create({
     flexDirection: "row",
     gap: 6,
   },
-  rightContainer: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  button: {
+  menuButton: {
+    paddingHorizontal: 4,
     paddingVertical: 4,
-    paddingHorizontal: 8,
   },
-  buttonText: {
-    color: branding.accentColor,
-    fontSize: 14,
-    fontWeight: "500",
+});
+
+const menuStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
   },
-  deleteText: {
-    color: "#ef4444",
-    fontSize: 14,
-    fontWeight: "500",
+  dropdown: {
+    position: "absolute",
+    width: 180,
+    backgroundColor: "#2a2a2e",
+    borderRadius: 12,
+    paddingVertical: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  item: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#3f3f46",
+    marginHorizontal: 12,
+  },
+  itemText: {
+    color: "#fafafa",
+    fontSize: 16,
   },
 });
 

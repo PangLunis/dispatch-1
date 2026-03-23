@@ -1,15 +1,38 @@
-import React, { useCallback, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, Share, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, Animated, Pressable, Share, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import * as FileSystem from "expo-file-system/legacy";
 import * as WebBrowser from "expo-web-browser";
+import Markdown from "@ronradtke/react-native-markdown-display";
 import type { DisplayMessage } from "../hooks/useMessages";
 import { branding } from "../config/branding";
 import { buildImageUrl } from "../api/images";
 import { relativeTime } from "../utils/time";
 
 const URL_REGEX = /https?:\/\/[^\s<>\"'\])},]+/gi;
+
+/**
+ * Convert bare URLs in text to markdown links [url](url).
+ * Skips URLs already inside markdown link syntax [text](url) or <url>.
+ */
+function autoLinkUrls(text: string): string {
+  // Match bare URLs that aren't already inside markdown link parens or angle brackets
+  return text.replace(
+    /(?<!\]\()(?<!\<)https?:\/\/[^\s<>\"'\])},]+/gi,
+    (url) => {
+      // Strip trailing punctuation that's likely not part of the URL
+      let cleanUrl = url;
+      const trailingPunct = /[.,:;!?)]+$/.exec(cleanUrl);
+      let suffix = "";
+      if (trailingPunct) {
+        suffix = trailingPunct[0];
+        cleanUrl = cleanUrl.slice(0, -suffix.length);
+      }
+      return `[${cleanUrl}](${cleanUrl})${suffix}`;
+    },
+  );
+}
 
 /** Parse text into segments of plain text and URLs */
 function parseLinks(text: string): Array<{ type: "text" | "link"; value: string }> {
@@ -88,8 +111,10 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ message, audioState, onRetry }: MessageBubbleProps) {
-  const { role, content, timestamp, isPending, sendFailed, audioUrl, imageUrl, localImageUri } = message;
+  const { role, content, timestamp, isPending, sendFailed, audioUrl, imageUrl, localImageUri, status } = message;
   const isUser = role === "user";
+  const isGenerating = status === "generating";
+  const isFailed = status === "failed";
   const router = useRouter();
 
   // Determine image source: optimistic local preview takes priority over server URL
@@ -189,6 +214,7 @@ export function MessageBubble({ message, audioState, onRetry }: MessageBubblePro
             isUser ? styles.bubbleUser : styles.bubbleAssistant,
             isPending && styles.bubblePending,
             sendFailed && styles.bubbleFailed,
+            isFailed && styles.bubbleGenerationFailed,
             isPlayingThis && styles.bubblePlaying,
           ]}
         >
@@ -210,14 +236,22 @@ export function MessageBubble({ message, audioState, onRetry }: MessageBubblePro
               />
             </Pressable>
           )}
-          <LinkedText
-            text={displayText}
-            style={[
-              styles.text,
-              isUser ? styles.textUser : styles.textAssistant,
-            ]}
-            linkColor={isUser ? "#d4e8ff" : branding.accentColor}
-          />
+          {isGenerating ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <GeneratingDots />
+              <Text style={[styles.text, { color: "#a1a1aa" }]}>Generating image…</Text>
+            </View>
+          ) : isUser ? (
+            <LinkedText
+              text={displayText}
+              style={[styles.text, styles.textUser]}
+              linkColor="#d4e8ff"
+            />
+          ) : (
+            <Markdown style={markdownStyles} onLinkPress={(url) => { WebBrowser.openBrowserAsync(url); return false; }}>
+              {autoLinkUrls(displayText)}
+            </Markdown>
+          )}
           {isLong && (
             <Pressable
               onPress={() => setExpanded((v) => !v)}
@@ -287,6 +321,37 @@ export function MessageBubble({ message, audioState, onRetry }: MessageBubblePro
           {relativeTime(timestamp)}
         </Text>
       )}
+    </View>
+  );
+}
+
+/** Pulsing dots for "generating" state */
+function GeneratingDots() {
+  const dot1 = useRef(new Animated.Value(0.3)).current;
+  const dot2 = useRef(new Animated.Value(0.3)).current;
+  const dot3 = useRef(new Animated.Value(0.3)).current;
+
+  useEffect(() => {
+    const createPulse = (dot: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(dot, { toValue: 1, duration: 400, useNativeDriver: true }),
+          Animated.timing(dot, { toValue: 0.3, duration: 400, useNativeDriver: true }),
+        ]),
+      );
+    const a1 = createPulse(dot1, 0);
+    const a2 = createPulse(dot2, 200);
+    const a3 = createPulse(dot3, 400);
+    a1.start(); a2.start(); a3.start();
+    return () => { a1.stop(); a2.stop(); a3.stop(); };
+  }, [dot1, dot2, dot3]);
+
+  return (
+    <View style={{ flexDirection: "row", gap: 4 }}>
+      <Animated.View style={[iconStyles.genDot, { opacity: dot1 }]} />
+      <Animated.View style={[iconStyles.genDot, { opacity: dot2 }]} />
+      <Animated.View style={[iconStyles.genDot, { opacity: dot3 }]} />
     </View>
   );
 }
@@ -375,6 +440,116 @@ const iconStyles = StyleSheet.create({
     backgroundColor: "#71717a",
     borderRadius: 1,
   },
+  genDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#a78bfa",
+  },
+});
+
+/** Markdown styles for assistant message bubbles — matches dark theme */
+const markdownStyles = StyleSheet.create({
+  body: {
+    color: "#fafafa",
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  heading1: {
+    color: "#fafafa",
+    fontSize: 20,
+    fontWeight: "700",
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  heading2: {
+    color: "#fafafa",
+    fontSize: 18,
+    fontWeight: "700",
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  heading3: {
+    color: "#fafafa",
+    fontSize: 16,
+    fontWeight: "700",
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  strong: {
+    fontWeight: "700",
+    color: "#fafafa",
+  },
+  em: {
+    fontStyle: "italic",
+    color: "#fafafa",
+  },
+  link: {
+    color: branding.accentColor,
+    textDecorationLine: "underline",
+  },
+  blockquote: {
+    backgroundColor: "#1e1e22",
+    borderLeftWidth: 3,
+    borderLeftColor: "#52525b",
+    paddingLeft: 10,
+    paddingVertical: 4,
+    marginVertical: 4,
+  },
+  code_inline: {
+    backgroundColor: "#1e1e22",
+    color: "#e4e4e7",
+    fontFamily: "SpaceMono",
+    fontSize: 14,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  code_block: {
+    backgroundColor: "#1e1e22",
+    color: "#e4e4e7",
+    fontFamily: "SpaceMono",
+    fontSize: 13,
+    lineHeight: 18,
+    padding: 10,
+    borderRadius: 8,
+    marginVertical: 4,
+  },
+  fence: {
+    backgroundColor: "#1e1e22",
+    color: "#e4e4e7",
+    fontFamily: "SpaceMono",
+    fontSize: 13,
+    lineHeight: 18,
+    padding: 10,
+    borderRadius: 8,
+    marginVertical: 4,
+  },
+  list_item: {
+    color: "#fafafa",
+    fontSize: 16,
+    lineHeight: 22,
+    marginVertical: 2,
+  },
+  bullet_list: {
+    marginVertical: 4,
+  },
+  ordered_list: {
+    marginVertical: 4,
+  },
+  hr: {
+    backgroundColor: "#3f3f46",
+    height: 1,
+    marginVertical: 8,
+  },
+  paragraph: {
+    marginTop: 0,
+    marginBottom: 4,
+  },
+  // Remove extra margins on the last paragraph
+  textgroup: {
+    color: "#fafafa",
+  },
 });
 
 const styles = StyleSheet.create({
@@ -421,12 +596,17 @@ const styles = StyleSheet.create({
   bubbleAssistant: {
     backgroundColor: "#27272a",
     borderBottomLeftRadius: 4,
+    flexGrow: 1,
   },
   bubblePending: {
     opacity: 0.55,
   },
   bubbleFailed: {
     opacity: 0.7,
+  },
+  bubbleGenerationFailed: {
+    borderLeftWidth: 2,
+    borderLeftColor: "#ef4444",
   },
   failedRow: {
     flexDirection: "row",

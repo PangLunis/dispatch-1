@@ -98,6 +98,36 @@ export async function sendPromptWithImage(
   });
 }
 
+/** Generate a cover image for a chat by summarizing its conversation. POST /generate-image */
+export async function generateChatImage(
+  chatId: string,
+): Promise<{ chat_id: string; status: string }> {
+  return apiRequest<{ chat_id: string; status: string }>("/generate-image", {
+    method: "POST",
+    body: { chat_id: chatId },
+  });
+}
+
+/** Fork a chat. POST /chats/:chatId/fork */
+export async function forkChat(
+  chatId: string,
+  title: string,
+): Promise<Conversation> {
+  return apiRequest<Conversation>(`/chats/${chatId}/fork`, {
+    method: "POST",
+    body: { token: getDeviceToken() ?? "", title },
+  });
+}
+
+/** Mark a chat as manually unread. POST /chats/:chatId/unread */
+export async function markChatAsUnread(
+  chatId: string,
+): Promise<{ ok: boolean }> {
+  return apiRequest<{ ok: boolean }>(`/chats/${chatId}/unread`, {
+    method: "POST",
+  });
+}
+
 /** Mark a chat as opened (for unread tracking). POST /chats/:chatId/open */
 export async function markChatAsOpened(
   chatId: string,

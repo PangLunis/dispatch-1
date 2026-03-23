@@ -10,12 +10,34 @@ import {
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import Swipeable from "react-native-gesture-handler/Swipeable";
-import { useChatList, isChatRead } from "@/src/hooks/useChatList";
+import * as Haptics from "expo-haptics";
+import { useChatList, getChatOptimisticState } from "@/src/hooks/useChatList";
 import { ChatRow } from "@/src/components/ChatRow";
 import { EmptyState } from "@/src/components/EmptyState";
 import { branding } from "@/src/config/branding";
 import { showDestructiveConfirm } from "@/src/utils/alert";
 import type { Conversation } from "@/src/api/types";
+
+/** Check if a chat is currently unread (server data + optimistic) */
+function isCurrentlyUnread(conversation: Conversation): boolean {
+  const opt = getChatOptimisticState(conversation.id);
+  if (opt === "read") return false;
+  if (opt === "unread") return true;
+  if (conversation.marked_unread) return true;
+  if (
+    conversation.last_message_role === "assistant" &&
+    conversation.last_message_at
+  ) {
+    if (conversation.last_opened_at) {
+      return (
+        new Date(conversation.last_message_at) >
+        new Date(conversation.last_opened_at)
+      );
+    }
+    return true;
+  }
+  return false;
+}
 
 export default function ChatListScreen() {
   const router = useRouter();
@@ -26,6 +48,7 @@ export default function ChatListScreen() {
     loadConversations,
     createConversation,
     deleteConversation,
+    markAsUnread,
   } = useChatList();
 
   // Force re-render when screen gains focus (e.g., coming back from chat detail)
@@ -40,6 +63,8 @@ export default function ChatListScreen() {
 
   // Track open swipeable refs to close them
   const openSwipeableRef = useRef<Swipeable | null>(null);
+  // Suppress press events during/after swipe to prevent accidental navigation
+  const swipeActiveRef = useRef(false);
 
   const handleNewChat = useCallback(async () => {
     const chat = await createConversation();
@@ -50,6 +75,11 @@ export default function ChatListScreen() {
 
   const handleOpenChat = useCallback(
     (conversation: Conversation) => {
+      // Don't navigate if a swipe just happened
+      if (swipeActiveRef.current) {
+        swipeActiveRef.current = false;
+        return;
+      }
       // Close any open swipeable
       openSwipeableRef.current?.close();
       router.push({
@@ -74,12 +104,26 @@ export default function ChatListScreen() {
     [deleteConversation],
   );
 
+  const handleMarkUnread = useCallback(
+    async (conversation: Conversation, swipeable: Swipeable | null) => {
+      // Close swipeable first
+      swipeable?.close();
+      // Haptic feedback
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      // Optimistic update + API call
+      await markAsUnread(conversation.id);
+    },
+    [markAsUnread],
+  );
+
   const renderRightActions = useCallback(
     (conversation: Conversation) => {
       return (
         <Pressable
           onPress={() => handleDeleteChat(conversation)}
           style={styles.deleteAction}
+          accessibilityLabel="Delete chat"
+          accessibilityRole="button"
         >
           <Text style={styles.deleteActionText}>Delete</Text>
         </Pressable>
@@ -90,30 +134,59 @@ export default function ChatListScreen() {
 
   const renderItem = useCallback(
     ({ item }: { item: Conversation }) => {
-      const isRead = isChatRead(item.id);
+      const optState = getChatOptimisticState(item.id);
+      const unread = isCurrentlyUnread(item);
+      const swipeableRef = React.createRef<Swipeable>();
 
       return (
         <Swipeable
-          ref={(_ref) => {
-            // Track opened swipeable for cleanup
+          ref={swipeableRef}
+          onSwipeableWillOpen={() => {
+            swipeActiveRef.current = true;
           }}
           onSwipeableOpen={(direction, swipeable) => {
             openSwipeableRef.current = swipeable;
+            // Full-swipe execution: mark unread when left actions revealed
+            if (direction === "left") {
+              handleMarkUnread(item, swipeable);
+            }
+          }}
+          onSwipeableClose={() => {
+            // Reset after a short delay to let press events pass
+            setTimeout(() => {
+              swipeActiveRef.current = false;
+            }, 300);
           }}
           renderRightActions={() => renderRightActions(item)}
+          {...(!unread
+            ? {
+                renderLeftActions: () => (
+                  <Pressable
+                    onPress={() => handleMarkUnread(item, swipeableRef.current)}
+                    style={styles.unreadAction}
+                    accessibilityLabel="Mark as unread"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.unreadActionText}>Unread</Text>
+                  </Pressable>
+                ),
+              }
+            : {})}
           overshootRight={false}
+          overshootLeft={false}
+          leftThreshold={40}
           friction={2}
         >
           <ChatRow
             conversation={item}
             onPress={() => handleOpenChat(item)}
             onLongPress={() => handleDeleteChat(item)}
-            forceRead={isRead}
+            readOverride={optState}
           />
         </Swipeable>
       );
     },
-    [handleOpenChat, handleDeleteChat, renderRightActions],
+    [handleOpenChat, handleDeleteChat, handleMarkUnread, renderRightActions],
   );
 
   if (isLoading) {
@@ -215,6 +288,17 @@ const styles = StyleSheet.create({
     width: 80,
   },
   deleteActionText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  unreadAction: {
+    backgroundColor: "#3478f6",
+    justifyContent: "center",
+    alignItems: "center",
+    width: 80,
+  },
+  unreadActionText: {
     color: "#ffffff",
     fontSize: 14,
     fontWeight: "600",

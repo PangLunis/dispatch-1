@@ -68,6 +68,7 @@ from assistant.bus_helpers import (
     health_check_payload, service_restarted_payload, service_spawned_payload,
     reminder_payload, healme_payload,
     compaction_triggered_payload, message_sent_payload, session_injected_payload,
+    produce_read_receipt,
 )
 
 # Import SignalDB for message persistence (lazy import to avoid startup errors)
@@ -1742,55 +1743,223 @@ class Manager:
     _TAPBACK_STALENESS_MS = 30_000  # 30s
     _TYPING_STALENESS_MS = 5_000   # 5s
 
+    # Emoji → tapback reaction name mapping for Messages.app UI automation
+    _EMOJI_TO_TAPBACK = {
+        "❤️": "heart", "♥️": "heart", "❤": "heart",
+        "👍": "thumbsup", "👍🏻": "thumbsup", "👍🏼": "thumbsup",
+        "👍🏽": "thumbsup", "👍🏾": "thumbsup", "👍🏿": "thumbsup",
+        "👎": "thumbsdown", "👎🏻": "thumbsdown", "👎🏼": "thumbsdown",
+        "👎🏽": "thumbsdown", "👎🏾": "thumbsdown", "👎🏿": "thumbsdown",
+        "😂": "haha", "😆": "haha",
+        "❗": "exclamation", "‼️": "exclamation", "!!": "exclamation",
+        "❓": "question", "?": "question",
+    }
+
+    # Track the currently visible chat to avoid redundant navigation
+    _current_chat_id: Optional[str] = None
+
+    def _navigate_to_chat(self, chat_id: str) -> bool:
+        """Navigate Messages.app to the specified chat.
+
+        Uses `open imessage://` URL scheme for individual chats.
+        Skips navigation if already on the target chat.
+        Returns True if navigation succeeded (or was unnecessary).
+        """
+        if self._current_chat_id == chat_id:
+            log.debug(f"IMESSAGE_UI | already on chat {chat_id}, skipping navigation")
+            return True
+
+        is_group = not chat_id.startswith("+")
+        if is_group:
+            log.warning(f"IMESSAGE_UI | group chat navigation not yet supported: {chat_id}")
+            return False
+
+        open_result = subprocess.run(
+            ["open", f"imessage://{chat_id}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if open_result.returncode != 0:
+            log.error(f"IMESSAGE_UI | failed to open chat for {chat_id}: {open_result.stderr}")
+            return False
+
+        # Wait for Messages to navigate to the chat
+        time.sleep(1.0)
+        self._current_chat_id = chat_id
+        return True
+
+    def _execute_tapback(self, chat_id: str, reaction: str, guid: str) -> bool:
+        """Execute a tapback reaction via Messages.app UI automation.
+
+        Returns True if tapback was sent successfully.
+        """
+        # Map emoji to reaction name (also accept raw names like "thumbsup")
+        reaction_name = self._EMOJI_TO_TAPBACK.get(reaction, reaction.lower().strip())
+        valid_names = {"heart", "thumbsup", "thumbsdown", "haha", "exclamation", "question"}
+        if reaction_name not in valid_names:
+            log.warning(f"IMESSAGE_UI | unknown reaction '{reaction}' (mapped to '{reaction_name}'), skipping")
+            return False
+
+        tapback_script = Path.home() / ".claude/skills/sms-assistant/scripts/tapback.scpt"
+        if not tapback_script.exists():
+            log.error(f"IMESSAGE_UI | tapback.scpt not found at {tapback_script}")
+            return False
+
+        if not self._navigate_to_chat(chat_id):
+            return False
+
+        result = subprocess.run(
+            ["osascript", str(tapback_script), reaction_name],
+            capture_output=True, text=True, timeout=10
+        )
+
+        if result.returncode == 0 and "TAPBACK" in result.stdout:
+            log.info(f"IMESSAGE_UI | tapback {reaction_name} sent successfully for {chat_id}")
+            return True
+        else:
+            log.error(f"IMESSAGE_UI | tapback failed: rc={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
+            return False
+
+    def _execute_read_receipt(self, chat_id: str) -> bool:
+        """Mark a chat as read by navigating to it in Messages.app.
+
+        When Messages.app displays a chat, it automatically marks messages
+        as read and sends read receipts to the sender. So simply navigating
+        to the chat is sufficient.
+
+        Returns True if navigation (and thus read receipt) succeeded.
+        """
+        if not self._navigate_to_chat(chat_id):
+            return False
+
+        log.info(f"IMESSAGE_UI | read receipt sent for {chat_id} (navigated to chat)")
+        return True
+
+    def _execute_typing(self, chat_id: str, start: bool) -> bool:
+        """Send typing indicator by simulating keystroke in Messages.app.
+
+        For typing.start: navigate to chat, type a space to trigger the
+        typing indicator, then immediately delete it.
+        For typing.stop: just delete any leftover characters (no-op if clean).
+
+        Returns True if the typing indicator was sent successfully.
+        """
+        if not self._navigate_to_chat(chat_id):
+            return False
+
+        if start:
+            # Type a character to trigger the typing indicator, then delete it
+            script = '''
+            tell application "System Events"
+                tell process "Messages"
+                    keystroke " "
+                    delay 0.1
+                    key code 51
+                end tell
+            end tell
+            return "TYPING|start"
+            '''
+        else:
+            # Press backspace to clear any leftover and stop typing indicator
+            script = '''
+            tell application "System Events"
+                tell process "Messages"
+                    key code 51
+                end tell
+            end tell
+            return "TYPING|stop"
+            '''
+
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=10
+        )
+
+        if result.returncode == 0:
+            log.info(f"IMESSAGE_UI | typing {'start' if start else 'stop'} sent for {chat_id}")
+            return True
+        else:
+            log.error(f"IMESSAGE_UI | typing failed: rc={result.returncode} stderr={result.stderr.strip()}")
+            return False
+
+    _READ_STALENESS_MS = 10_000  # 10s — read receipts are less time-sensitive
+
     def _handle_imessage_ui_records(self, records):
-        """Bus consumer handler for imessage.ui events (tapback reactions, typing indicators).
+        """Bus consumer handler for imessage.ui events (tapback, read, typing).
 
         Serializes all Messages.app UI automation through a single consumer
         to prevent contention. One topic per UI-exclusive resource.
 
+        Events are batched by chat_id to minimize chat switching — all actions
+        for the same chat are executed together before moving to the next.
+
         NOTE: No per-record try/except — let exceptions propagate so the
         ConsumerRunner framework handles retry (max_retries=1) and DLQ.
         """
+        now_ms = int(time.time() * 1000)
+
+        # Phase 1: Filter stale records and group valid ones by chat_id
+        # Use list to preserve insertion order within each chat
+        chat_actions: Dict[str, list] = {}
         for record in records:
             payload = record.payload if isinstance(record.payload, dict) else json.loads(record.payload)
-            now_ms = int(time.time() * 1000)
             age_ms = now_ms - record.timestamp if record.timestamp else 0
+            chat_id = payload.get("chat_id", "")
 
             if record.type == "tapback":
-                # Staleness check
                 if age_ms > self._TAPBACK_STALENESS_MS:
                     log.info(f"IMESSAGE_UI | discarding stale tapback ({age_ms}ms old): {record.key}")
                     continue
-
                 guid = payload.get("message_guid", "")
                 reaction = payload.get("reaction", "")
-                chat_id = payload.get("chat_id", "")
-
-                # GUID format validation
                 if not guid or not self._IMESSAGE_UI_GUID_PATTERN.match(guid):
                     log.warning(f"IMESSAGE_UI | invalid/missing GUID, discarding tapback: {guid}")
                     continue
-
                 if not reaction or not chat_id:
                     log.warning(f"IMESSAGE_UI | missing reaction or chat_id, discarding")
                     continue
+                chat_actions.setdefault(chat_id, []).append(
+                    ("tapback", {"reaction": reaction, "guid": guid})
+                )
 
-                log.info(f"IMESSAGE_UI | tapback {reaction} on {guid[:20]}... for {chat_id}")
-                # TODO: execute tapback via UI automation
-                # For now, log the intent. The executor will be implemented next.
-                log.info(f"IMESSAGE_UI | tapback queued (executor not yet implemented)")
+            elif record.type == "read":
+                if age_ms > self._READ_STALENESS_MS:
+                    log.debug(f"IMESSAGE_UI | discarding stale read ({age_ms}ms old): {record.key}")
+                    continue
+                if not chat_id:
+                    log.warning(f"IMESSAGE_UI | missing chat_id for read event, discarding")
+                    continue
+                chat_actions.setdefault(chat_id, []).append(("read", {}))
 
             elif record.type in ("typing.start", "typing.stop"):
-                # Staleness check
                 if age_ms > self._TYPING_STALENESS_MS:
                     log.debug(f"IMESSAGE_UI | discarding stale {record.type} ({age_ms}ms old)")
                     continue
-
-                # TODO: execute typing indicator via UI automation (Phase 2)
-                log.debug(f"IMESSAGE_UI | {record.type} for {payload.get('chat_id', '?')}")
+                if not chat_id:
+                    log.warning(f"IMESSAGE_UI | missing chat_id for typing event, discarding")
+                    continue
+                is_start = record.type == "typing.start"
+                chat_actions.setdefault(chat_id, []).append(
+                    ("typing", {"start": is_start})
+                )
 
             else:
                 log.warning(f"IMESSAGE_UI | unknown event type: {record.type}")
+
+        # Phase 2: Execute actions grouped by chat_id
+        for chat_id, actions in chat_actions.items():
+            log.info(f"IMESSAGE_UI | processing {len(actions)} action(s) for {chat_id}")
+            for action_type, params in actions:
+                try:
+                    if action_type == "read":
+                        self._execute_read_receipt(chat_id)
+                    elif action_type == "tapback":
+                        success = self._execute_tapback(chat_id, params["reaction"], params["guid"])
+                        if not success:
+                            log.warning(f"IMESSAGE_UI | tapback failed for {chat_id}")
+                    elif action_type == "typing":
+                        self._execute_typing(chat_id, params["start"])
+                except Exception as e:
+                    log.error(f"IMESSAGE_UI | {action_type} execution error for {chat_id}: {e}")
 
     def _handle_compaction_completed_records(self, records):
         """Bus consumer handler for compaction.completed events.
@@ -3502,6 +3671,10 @@ You have 15 minutes. Work efficiently.
                 message_timestamp=message_timestamp,
                 message_guid=message_guid,
             )
+            # Produce read receipt for iMessage chats (navigates Messages.app
+            # to this chat, which marks messages as read for the sender)
+            if source == "imessage":
+                produce_read_receipt(self._producer, phone, source="daemon")
         else:
             # Contact exists but has unknown/unrecognized tier
             log.warning(f"Contact {sender_name} has unexpected tier '{sender_tier}', ignoring")

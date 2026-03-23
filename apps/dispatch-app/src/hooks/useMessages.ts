@@ -21,6 +21,7 @@ export interface DisplayMessage {
   audioUrl?: string | null;
   imageUrl?: string | null;
   localImageUri?: string | null; // optimistic preview (local file URI)
+  status?: string; // "generating" | "complete" | "failed"
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,7 @@ function chatMessageToDisplay(m: ChatMessage): DisplayMessage {
     timestamp: m.created_at,
     audioUrl: m.audio_url,
     imageUrl: m.image_url,
+    status: m.status,
   };
 }
 
