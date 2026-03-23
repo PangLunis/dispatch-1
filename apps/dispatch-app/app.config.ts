@@ -93,15 +93,13 @@ export default ({ config: _config }: ConfigContext): ExpoConfig => ({
       ...(merged.developmentTeam
         ? [
             [
-              "expo-build-properties",
+              "./plugins/withSigningConfig",
               {
-                ios: {
-                  developmentTeam: merged.developmentTeam,
-                  codeSignStyle: merged.codeSignStyle || "Automatic",
-                  ...(merged.provisioningProfile && {
-                    provisioningProfileSpecifier: merged.provisioningProfile,
-                  }),
-                },
+                developmentTeam: merged.developmentTeam,
+                codeSignStyle: merged.codeSignStyle || "Automatic",
+                ...(merged.provisioningProfile && {
+                  provisioningProfile: merged.provisioningProfile,
+                }),
               },
             ],
           ]
