@@ -81,10 +81,17 @@ export async function sendPromptWithImage(
   formData.append("chat_id", chatId);
   formData.append("message_id", messageId ?? generateUUID());
 
-  // For React Native, we need to pass the image as a file-like object
+  // For React Native, we need to pass the file as a file-like object
   const filename = imageUri.split("/").pop() || "image.jpg";
   const match = /\.(\w+)$/.exec(filename);
-  const mimeType = match ? `image/${match[1]}` : "image/jpeg";
+  const ext = match ? match[1].toLowerCase() : "jpg";
+  const videoExts = ["mp4", "mov", "m4v", "avi", "mkv"];
+  const audioExts = ["mp3", "m4a", "wav", "aac", "ogg", "flac", "opus", "wma", "caf"];
+  const mimeType = videoExts.includes(ext)
+    ? `video/${ext}`
+    : audioExts.includes(ext)
+      ? `audio/${ext === "mp3" ? "mpeg" : ext}`
+      : `image/${ext}`;
 
   formData.append("image", {
     uri: imageUri,

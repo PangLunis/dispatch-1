@@ -393,6 +393,11 @@ To reload the Chrome Control extension after making changes:
 echo '{"command": "_reload_extension"}' | nc -U /tmp/chrome_control_*.sock
 ```
 
+## Known Issues Fixed
+
+- **`iframe-type` double-typing bug (fixed):** The `iframeType` function previously sent a `keyDown` event with `text` properties AND a separate `char` event, both of which caused character insertion. This resulted in every character being typed twice. Fixed by changing `keyDown` to `rawKeyDown` and removing `text`/`unmodifiedText` from it, so only the `char` event inserts text.
+- **Prefer `insert-text` for cross-origin payment iframes:** When typing into cross-origin iframes (e.g., payment forms), use `chrome insert-text` instead of `iframe-type`. The `insert-text` command uses `Input.insertText` which is more reliable for these contexts.
+
 ## Notes
 
 - Tab IDs are integers shown by `chrome tabs`

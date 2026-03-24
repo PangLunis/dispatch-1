@@ -76,6 +76,8 @@ def init_db():
         conn.execute("ALTER TABLE messages ADD COLUMN chat_id TEXT NOT NULL DEFAULT 'voice'")
     if "image_path" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN image_path TEXT")
+    if "video_path" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN video_path TEXT")
     if "status" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'complete'")
     if "failure_reason" not in columns:

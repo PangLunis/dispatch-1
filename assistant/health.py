@@ -482,3 +482,155 @@ def should_send_disk_alert() -> bool:
         _last_disk_alert_time = now
         return True
     return False
+
+
+# ──────────────────────────────────────────────────────────────
+# Quota monitoring — alert admin when approaching usage limits
+# ──────────────────────────────────────────────────────────────
+
+# Thresholds to alert at (ascending order)
+QUOTA_THRESHOLDS = [80, 90, 95]
+
+# Track which thresholds have been alerted per quota type per reset cycle.
+# Key: (quota_type, resets_at_iso) → set of thresholds already alerted
+_quota_alerts_sent: dict[tuple[str, str], set[int]] = {}
+
+
+def _get_oauth_token() -> str | None:
+    """Get OAuth access token from macOS keychain."""
+    try:
+        raw = subprocess.check_output(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        import json as _json
+        data = _json.loads(raw)
+        return data.get("claudeAiOauth", {}).get("accessToken")
+    except Exception:
+        return None
+
+
+def fetch_quota_oauth() -> dict | None:
+    """Fetch usage quota via OAuth API. Returns raw usage dict or None."""
+    token = _get_oauth_token()
+    if not token:
+        log.warning("QUOTA_CHECK | No OAuth token available")
+        return None
+
+    import ssl
+    import urllib.request
+    ctx = ssl.create_default_context()
+    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("anthropic-beta", "oauth-2025-04-20")
+    req.add_header("Accept", "application/json")
+
+    try:
+        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+        return json.loads(resp.read().decode())
+    except Exception as e:
+        log.warning(f"QUOTA_CHECK | OAuth fetch failed: {e}")
+        return None
+
+
+def check_quota_thresholds(usage: dict) -> list[dict[str, Any]]:
+    """Check all quota blocks against thresholds.
+
+    Returns list of alerts to send, each with:
+        quota_type, utilization, threshold, resets_at
+    Only returns alerts that haven't been sent yet for this reset cycle.
+    """
+    global _quota_alerts_sent
+
+    alerts: list[dict[str, Any]] = []
+
+    # Define which blocks to check
+    blocks = [
+        ("5-hour", usage.get("five_hour", {})),
+        ("7-day all", usage.get("seven_day", {})),
+        ("7-day sonnet", usage.get("seven_day_sonnet", {})),
+        ("7-day opus", usage.get("seven_day_opus", {})),
+    ]
+
+    for quota_type, block in blocks:
+        if not block:
+            continue
+        util = block.get("utilization")
+        if util is None:
+            continue
+        resets_at = block.get("resets_at", "unknown")
+
+        cache_key = (quota_type, resets_at)
+
+        # Clean up old entries: if resets_at has passed, remove from cache
+        if resets_at != "unknown":
+            try:
+                reset_dt = datetime.fromisoformat(resets_at)
+                if reset_dt.tzinfo is None:
+                    reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+                if reset_dt < datetime.now(timezone.utc):
+                    _quota_alerts_sent.pop(cache_key, None)
+                    continue  # Block has reset, skip
+            except (ValueError, TypeError):
+                pass
+
+        sent = _quota_alerts_sent.get(cache_key, set())
+
+        # Find all newly crossed thresholds
+        newly_crossed = [t for t in QUOTA_THRESHOLDS if util >= t and t not in sent]
+
+        if newly_crossed:
+            # Only alert for the highest newly crossed threshold
+            # (e.g. if first seen at 92%, alert 90% not both 80% and 90%)
+            highest = max(newly_crossed)
+            alerts.append({
+                "quota_type": quota_type,
+                "utilization": util,
+                "threshold": highest,
+                "resets_at": resets_at,
+            })
+            # Mark ALL crossed thresholds as sent (including lower ones)
+            sent.update(newly_crossed)
+
+        if sent:
+            _quota_alerts_sent[cache_key] = sent
+
+    # Prune stale entries (keep only entries with future reset times)
+    stale_keys = []
+    for key in _quota_alerts_sent:
+        qt, ra = key
+        if ra == "unknown":
+            continue
+        try:
+            reset_dt = datetime.fromisoformat(ra)
+            if reset_dt.tzinfo is None:
+                reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+            if reset_dt < datetime.now(timezone.utc):
+                stale_keys.append(key)
+        except (ValueError, TypeError):
+            stale_keys.append(key)
+    for k in stale_keys:
+        _quota_alerts_sent.pop(k, None)
+
+    return alerts
+
+
+def format_quota_alert(alert: dict[str, Any]) -> str:
+    """Format a single quota alert into an SMS message."""
+    util = alert["utilization"]
+    threshold = alert["threshold"]
+    quota_type = alert["quota_type"]
+    resets_at = alert["resets_at"]
+
+    # Format reset time
+    reset_str = "unknown"
+    if resets_at and resets_at != "unknown":
+        try:
+            dt = datetime.fromisoformat(resets_at)
+            local = dt.astimezone()
+            reset_str = local.strftime("%I:%M %p %Z").lstrip("0")
+        except (ValueError, TypeError):
+            reset_str = resets_at
+
+    emoji = "🔴" if threshold >= 95 else "🟠" if threshold >= 90 else "🟡"
+    return f"{emoji} {quota_type}: {util:.0f}% used (resets {reset_str})"

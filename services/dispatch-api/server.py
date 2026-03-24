@@ -141,6 +141,7 @@ APNS_TOKENS_FILE = _STATE_DIR / "dispatch-apns-tokens.json"
 DB_PATH = _STATE_DIR / "dispatch-messages.db"
 AUDIO_DIR = _STATE_DIR / "dispatch-audio"
 IMAGE_DIR = _STATE_DIR / "dispatch-images"
+VIDEO_DIR = _STATE_DIR / "dispatch-videos"
 
 # Backward compatibility: migrate old sven-* file names to dispatch-*
 _LEGACY_RENAMES = {
@@ -176,9 +177,67 @@ def _is_valid_image(data: bytes) -> bool:
     if any(header.startswith(sig) for sig in _IMAGE_SIGNATURES):
         return True
     # HEIC/HEIF/AVIF: ISO BMFF container has 'ftyp' at byte offset 4
-    if header[4:8] == b"ftyp":
+    if header[4:8] == b"ftyp" and not _is_valid_video(data):
         return True
     return False
+
+
+# Video format signatures
+_VIDEO_FTYP_BRANDS = {b"isom", b"iso2", b"mp41", b"mp42", b"M4V ", b"M4VH", b"M4VP", b"avc1", b"qt  "}
+
+def _is_valid_video(data: bytes) -> bool:
+    """Check magic bytes to verify data is a recognized video format (MP4/MOV/M4V)."""
+    if len(data) < 12:
+        return False
+    header = data[:12]
+    # ISO BMFF: ftyp box at byte offset 4
+    if header[4:8] == b"ftyp":
+        brand = header[8:12]
+        if brand in _VIDEO_FTYP_BRANDS:
+            return True
+    # QuickTime MOV: can start with various atoms
+    # 'moov', 'mdat', 'wide', 'free', 'skip' at offset 4
+    mov_atoms = {b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot"}
+    if header[4:8] in mov_atoms:
+        return True
+    return False
+
+# Audio format signatures
+_AUDIO_SIGNATURES = [
+    b"ID3",           # MP3 with ID3 tag
+    b"\xff\xfb",      # MP3 frame sync
+    b"\xff\xf3",      # MP3 frame sync (MPEG 2)
+    b"\xff\xf2",      # MP3 frame sync
+    b"RIFF",          # WAV (RIFF container — also WebP, but we check audio subtype)
+    b"fLaC",          # FLAC
+    b"OggS",          # OGG Vorbis/Opus
+]
+_AUDIO_FTYP_BRANDS = {b"M4A ", b"M4B ", b"mp42", b"dash"}
+_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ".opus", ".wma", ".caf"}
+
+
+def _is_valid_audio(data: bytes, filename: str = "") -> bool:
+    """Check magic bytes + extension to verify data is a recognized audio format."""
+    if len(data) < 4:
+        return False
+    header = data[:12]
+    # Check extension first — most reliable for audio
+    ext = Path(filename).suffix.lower() if filename else ""
+    if ext in _AUDIO_EXTENSIONS:
+        return True
+    # MP3, FLAC, OGG signatures
+    if any(header.startswith(sig) for sig in _AUDIO_SIGNATURES):
+        # Disambiguate RIFF: WAV has "WAVE" at byte 8
+        if header.startswith(b"RIFF") and header[8:12] != b"WAVE":
+            return False
+        return True
+    # M4A: ISO BMFF with audio ftyp brand
+    if header[4:8] == b"ftyp":
+        brand = header[8:12]
+        if brand in _AUDIO_FTYP_BRANDS:
+            return True
+    return False
+
 
 # In-memory rate limiting (reset on restart)
 request_counts: dict[str, list[float]] = {}
@@ -281,6 +340,9 @@ def init_db():
     # Migration: add image_path column if missing
     if "image_path" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN image_path TEXT")
+    # Migration: add video_path column if missing
+    if "video_path" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN video_path TEXT")
     # Migration: add status/failure_reason for async image generation
     if "status" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'complete'")
@@ -401,12 +463,12 @@ def get_db():
     return conn
 
 
-def store_user_message(message_id: str, content: str, chat_id: str = "voice", image_path: str | None = None):
+def store_user_message(message_id: str, content: str, chat_id: str = "voice", image_path: str | None = None, video_path: str | None = None, audio_path: str | None = None):
     """Store user message in SQLite database."""
     conn = get_db()
     conn.execute(
-        "INSERT INTO messages (id, role, content, chat_id, image_path) VALUES (?, ?, ?, ?, ?)",
-        (message_id, "user", content, chat_id, image_path)
+        "INSERT INTO messages (id, role, content, chat_id, image_path, video_path, audio_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (message_id, "user", content, chat_id, image_path, video_path, audio_path)
     )
     conn.execute(
         "UPDATE chats SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -737,39 +799,60 @@ async def receive_prompt_with_image(
         except Exception as e:
             logger.warning(f"POST /prompt-with-image: dedup check failed: {e} — proceeding normally")
 
-    # Handle image upload
+    # Handle image/video/audio upload
     image_path = None
+    video_path = None
+    audio_path = None
     if image and image.filename:
         try:
-            IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-            # Preserve file extension
+            # Read file data (file-first, DB-second for crash safety)
+            media_data = await image.read()
+
+            # Size validation: reject uploads over 50MB for video, 10MB for images/audio
             ext = Path(image.filename).suffix.lower() or ".jpg"
-            image_path = str(IMAGE_DIR / f"{request_id}{ext}")
 
-            # Read and save image (file-first, DB-second for crash safety)
-            image_data = await image.read()
-
-            # Size validation: reject uploads over 10MB
-            if len(image_data) > 10_000_000:
-                raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
-
-            # Magic bytes validation: verify this is actually an image
-            if not _is_valid_image(image_data):
-                raise HTTPException(status_code=400, detail="Invalid image format")
-
-            with open(image_path, "wb") as f:
-                f.write(image_data)
-
-            logger.info(f"POST /prompt-with-image: saved image to {image_path} ({len(image_data)} bytes)")
+            if _is_valid_audio(media_data, image.filename):
+                # It's an audio file
+                if len(media_data) > 50_000_000:
+                    raise HTTPException(status_code=413, detail="Audio too large (max 50MB)")
+                AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+                if ext not in _AUDIO_EXTENSIONS:
+                    ext = ".m4a"
+                audio_path = str(AUDIO_DIR / f"{request_id}{ext}")
+                with open(audio_path, "wb") as f:
+                    f.write(media_data)
+                logger.info(f"POST /prompt-with-image: saved audio to {audio_path} ({len(media_data)} bytes)")
+            elif _is_valid_video(media_data):
+                # It's a video
+                if len(media_data) > 50_000_000:
+                    raise HTTPException(status_code=413, detail="Video too large (max 50MB)")
+                VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+                if ext not in (".mp4", ".mov", ".m4v"):
+                    ext = ".mp4"
+                video_path = str(VIDEO_DIR / f"{request_id}{ext}")
+                with open(video_path, "wb") as f:
+                    f.write(media_data)
+                logger.info(f"POST /prompt-with-image: saved video to {video_path} ({len(media_data)} bytes)")
+            elif _is_valid_image(media_data):
+                # It's an image
+                if len(media_data) > 10_000_000:
+                    raise HTTPException(status_code=413, detail="Image too large (max 10MB)")
+                IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+                image_path = str(IMAGE_DIR / f"{request_id}{ext}")
+                with open(image_path, "wb") as f:
+                    f.write(media_data)
+                logger.info(f"POST /prompt-with-image: saved image to {image_path} ({len(media_data)} bytes)")
+            else:
+                raise HTTPException(status_code=400, detail="Invalid image/video/audio format")
         except HTTPException:
             raise  # Re-raise validation errors (413, 400) — don't swallow them
         except Exception as e:
-            logger.error(f"POST /prompt-with-image: failed to save image: {e}")
-            # Continue without image - don't fail the whole request
+            logger.error(f"POST /prompt-with-image: failed to save media: {e}")
+            # Continue without media - don't fail the whole request
 
     # Store user message in message bus
     try:
-        store_user_message(request_id, transcript, chat_id=chat_id, image_path=image_path)
+        store_user_message(request_id, transcript, chat_id=chat_id, image_path=image_path, video_path=video_path, audio_path=audio_path)
         logger.info(f"POST /prompt-with-image: stored user message {request_id[:8]}...")
     except Exception as e:
         logger.error(f"POST /prompt-with-image: failed to store message: {e}")
@@ -1008,7 +1091,7 @@ async def get_messages(since: Optional[str] = None, token: Optional[str] = None,
             # Convert ISO 8601 back to SQLite format for comparison
             since_sqlite = since.replace("T", " ").replace("Z", "") if since else since
             cursor = conn.execute(
-                "SELECT id, role, content, image_path, audio_path, created_at, status, failure_reason FROM messages "
+                "SELECT id, role, content, image_path, video_path, audio_path, created_at, status, failure_reason FROM messages "
                 "WHERE chat_id = ? AND created_at > ? ORDER BY created_at ASC LIMIT 500",
                 (chat_id, since_sqlite)
             )
@@ -1016,7 +1099,7 @@ async def get_messages(since: Optional[str] = None, token: Optional[str] = None,
             # Subquery gets newest 200 messages, outer query re-orders ASC for display
             cursor = conn.execute(
                 "SELECT * FROM ("
-                "  SELECT id, role, content, image_path, audio_path, created_at, status, failure_reason FROM messages "
+                "  SELECT id, role, content, image_path, video_path, audio_path, created_at, status, failure_reason FROM messages "
                 "  WHERE chat_id = ? ORDER BY created_at DESC LIMIT 200"
                 ") ORDER BY created_at ASC",
                 (chat_id,)
@@ -1037,6 +1120,13 @@ async def get_messages(since: Optional[str] = None, token: Optional[str] = None,
             else:
                 msg["image_url"] = None
             del msg["image_path"]
+            # Expose video_url if video exists on disk
+            vp = msg.get("video_path")
+            if vp and Path(vp).exists():
+                msg["video_url"] = f"/video/{msg['id']}"
+            else:
+                msg["video_url"] = None
+            del msg["video_path"]
             # Expose status and failure_reason for async operations
             msg["status"] = msg.get("status") or "complete"
             msg["failure_reason"] = msg.get("failure_reason")
@@ -1076,6 +1166,23 @@ async def get_audio(message_id: str, token: Optional[str] = None):
         if allowed_tokens and token not in allowed_tokens:
             logger.warning(f"GET /audio: unauthorized token={token_short}")
             raise HTTPException(status_code=401, detail="Unknown device token")
+
+    # Check if we have a pre-existing audio file (uploaded or previously generated)
+    conn = get_db()
+    row = conn.execute("SELECT audio_path FROM messages WHERE id = ?", (message_id,)).fetchone()
+    conn.close()
+    db_audio_path = row[0] if row and row[0] else None
+
+    if db_audio_path and Path(db_audio_path).exists():
+        audio_file = Path(db_audio_path)
+        mime_type = mimetypes.guess_type(str(audio_file))[0] or "audio/wav"
+        logger.info(f"GET /audio: serving existing {audio_file.name} ({audio_file.stat().st_size} bytes, {mime_type})")
+        return FileResponse(
+            path=audio_file,
+            media_type=mime_type,
+            filename=audio_file.name,
+            headers={"Cache-Control": "max-age=86400"},
+        )
 
     audio_path = AUDIO_DIR / f"{message_id}.wav"
 
@@ -1366,6 +1473,52 @@ async def get_image(message_id: str, token: Optional[str] = None):
     )
 
 
+@app.get("/video/{message_id}")
+async def get_video(message_id: str, token: Optional[str] = None):
+    """Serve a video attachment for a message.
+
+    Looks up video_path from the messages DB and serves the file.
+    Mirrors the GET /image/{message_id} pattern.
+    """
+    token_short = token[:8] if token else "none"
+    logger.info(f"GET /video/{message_id[:8]}...: token={token_short}...")
+
+    if token:
+        allowed_tokens = load_allowed_tokens()
+        if allowed_tokens and token not in allowed_tokens:
+            logger.warning(f"GET /video: unauthorized token={token_short}")
+            raise HTTPException(status_code=401, detail="Unknown device token")
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT video_path FROM messages WHERE id = ?", (message_id,)
+    ).fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_path = Path(row[0]).resolve()
+
+    if not video_path.is_relative_to(VIDEO_DIR.resolve()):
+        logger.warning(f"GET /video: path traversal attempt: {video_path}")
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not video_path.exists():
+        logger.warning(f"GET /video: file missing on disk: {video_path}")
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    mime_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
+
+    logger.info(f"GET /video: serving {video_path.name} ({video_path.stat().st_size} bytes, {mime_type})")
+    return FileResponse(
+        path=video_path,
+        media_type=mime_type,
+        filename=video_path.name,
+        headers={"Cache-Control": "max-age=86400"},
+    )
+
+
 @app.get("/chat-image/{chat_id}")
 async def get_chat_image(chat_id: str, token: Optional[str] = None):
     """Serve the cover image for a chat."""
@@ -1412,16 +1565,16 @@ async def clear_messages(token: Optional[str] = None, chat_id: str = "voice"):
     conn = get_db()
     # Get media paths before deleting
     media_rows = conn.execute(
-        "SELECT audio_path, image_path FROM messages WHERE chat_id = ?",
+        "SELECT audio_path, image_path, video_path FROM messages WHERE chat_id = ?",
         (chat_id,)
     ).fetchall()
     conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
     conn.commit()
     conn.close()
 
-    # Clean up audio and image files for this chat
-    for audio_path, image_path in media_rows:
-        for media_path in (audio_path, image_path):
+    # Clean up audio, image, and video files for this chat
+    for row in media_rows:
+        for media_path in row:
             if media_path:
                 p = Path(media_path)
                 if p.exists():
@@ -1712,7 +1865,7 @@ async def fork_chat(chat_id: str, request: ForkChatRequest, token: str = None):
 
         # Copy messages from source chat (limit 5000, ordered by created_at + rowid tiebreaker)
         source_messages = conn.execute(
-            """SELECT role, content, audio_path, image_path, created_at
+            """SELECT role, content, audio_path, image_path, video_path, created_at
                FROM messages WHERE chat_id = ?
                ORDER BY created_at ASC, rowid ASC LIMIT 5000""",
             (chat_id,),
@@ -1721,10 +1874,10 @@ async def fork_chat(chat_id: str, request: ForkChatRequest, token: str = None):
         # Generate new UUIDs in Python and bulk insert
         new_messages = []
         for row in source_messages:
-            new_messages.append((str(uuid.uuid4()), row[0], row[1], row[2], row[3], new_chat_id, row[4]))
+            new_messages.append((str(uuid.uuid4()), row[0], row[1], row[2], row[3], row[4], new_chat_id, row[5]))
 
         conn.executemany(
-            "INSERT INTO messages (id, role, content, audio_path, image_path, chat_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (id, role, content, audio_path, image_path, video_path, chat_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             new_messages,
         )
 
@@ -1867,15 +2020,15 @@ async def delete_chat(chat_id: str, token: str = None):
     conn = get_db()
     # Clean up media files for this chat
     media_rows = conn.execute(
-        "SELECT audio_path, image_path FROM messages WHERE chat_id = ?",
+        "SELECT audio_path, image_path, video_path FROM messages WHERE chat_id = ?",
         (chat_id,)
     ).fetchall()
     conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
     conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
     conn.commit()
     conn.close()
-    for audio_path, image_path in media_rows:
-        for media_path in (audio_path, image_path):
+    for row in media_rows:
+        for media_path in row:
             if media_path:
                 p = Path(media_path)
                 if p.exists():
@@ -2812,6 +2965,88 @@ async def client_logs(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────
+# Server-Side Quota (OAuth) — separate cache, fast endpoint
+# ─────────────────────────────────────────────────────────────
+_quota_cache: dict = {"data": None, "updated_at": None, "loading": False, "error": None}
+_quota_lock = threading.Lock()
+
+
+def _get_oauth_token() -> str | None:
+    """Get OAuth access token from macOS keychain."""
+    import platform as _platform
+    if _platform.system() == "Darwin":
+        try:
+            raw = subprocess.check_output(
+                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            data = json.loads(raw)
+            return data.get("claudeAiOauth", {}).get("accessToken")
+        except Exception:
+            return None
+    else:
+        creds_path = Path.home() / ".claude" / ".credentials.json"
+        if not creds_path.exists():
+            return None
+        try:
+            data = json.loads(creds_path.read_text())
+            return data.get("claudeAiOauth", {}).get("accessToken")
+        except Exception:
+            return None
+
+
+def _quota_fetch():
+    """Fetch server-side quota via OAuth endpoint."""
+    import ssl
+    import urllib.request
+    try:
+        token = _get_oauth_token()
+        if not token:
+            with _quota_lock:
+                _quota_cache["loading"] = False
+                _quota_cache["error"] = "No OAuth token available"
+            return
+
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage")
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("anthropic-beta", "oauth-2025-04-20")
+        req.add_header("Accept", "application/json")
+
+        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+        usage = json.loads(resp.read().decode())
+
+        with _quota_lock:
+            _quota_cache["data"] = usage
+            _quota_cache["updated_at"] = datetime.now().isoformat()
+            _quota_cache["loading"] = False
+            _quota_cache["error"] = None
+
+        logger.info("Quota cache refreshed via OAuth")
+    except Exception as e:
+        logger.error(f"Quota fetch error: {e}")
+        with _quota_lock:
+            _quota_cache["loading"] = False
+            _quota_cache["error"] = str(e)
+
+
+def _quota_maybe_refresh(max_age_seconds: int = 30):
+    """Trigger background refresh if quota cache is stale."""
+    with _quota_lock:
+        if _quota_cache["loading"]:
+            return
+        updated = _quota_cache["updated_at"]
+        if updated:
+            age = (datetime.now() - datetime.fromisoformat(updated)).total_seconds()
+            if age < max_age_seconds:
+                return
+        _quota_cache["loading"] = True
+
+    t = threading.Thread(target=_quota_fetch, daemon=True)
+    t.start()
+
+
+# ─────────────────────────────────────────────────────────────
 # CCU (Claude Code Usage) — background-cached to avoid blocking
 # ─────────────────────────────────────────────────────────────
 _ccu_cache: dict = {"data": None, "updated_at": None, "loading": False}
@@ -2921,6 +3156,7 @@ def _ccu_maybe_refresh(max_age_seconds: int = 60):
 async def dashboard_ccu():
     """Claude Code Usage — returns cached data, triggers background refresh."""
     _ccu_maybe_refresh(max_age_seconds=60)
+    _quota_maybe_refresh(max_age_seconds=30)
 
     with _ccu_lock:
         data = _ccu_cache["data"]
@@ -2928,11 +3164,15 @@ async def dashboard_ccu():
         loading = _ccu_cache["loading"]
         error = _ccu_cache.get("error")
 
+    with _quota_lock:
+        quota = _quota_cache["data"]
+        quota_error = _quota_cache.get("error")
+
     if data is None:
         # First request ever — no cache yet
-        return {"active_block": None, "recent_blocks": [], "daily": [], "daily_totals": {}, "_loading": True, "_updated_at": None, "_error": None}
+        return {"active_block": None, "recent_blocks": [], "daily": [], "daily_totals": {}, "quota": quota, "_loading": True, "_updated_at": None, "_error": None}
 
-    return {**data, "_loading": loading, "_updated_at": updated, "_error": error}
+    return {**data, "quota": quota, "_quota_error": quota_error, "_loading": loading, "_updated_at": updated, "_error": error}
 
 
 # Usage per session — background-cached like CCU

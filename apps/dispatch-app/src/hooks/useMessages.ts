@@ -24,6 +24,7 @@ export interface DisplayMessage {
   serverMessageId?: string; // idempotency key sent to server — reused on retry to prevent duplicates
   audioUrl?: string | null;
   imageUrl?: string | null;
+  videoUrl?: string | null;
   localImageUri?: string | null; // optimistic preview (local file URI)
   retryChatId?: string; // chatId for image message retry
   status?: string; // "generating" | "complete" | "failed"
@@ -82,6 +83,7 @@ function chatMessageToDisplay(m: ChatMessage): DisplayMessage {
     timestamp: m.created_at,
     audioUrl: m.audio_url,
     imageUrl: m.image_url,
+    videoUrl: m.video_url,
     status: m.status,
   };
 }
@@ -414,7 +416,7 @@ export function useMessages(adapter: MessageAdapter, _cacheKey?: string): UseMes
       setError(null);
 
       try {
-        await sendPromptWithImage(trimmed, imageUri, chatId);
+        await sendPromptWithImage(trimmed, imageUri, chatId, serverMessageId);
       } catch {
         if (!mountedRef.current) return;
         // Mark as failed — consistent with text send failure UX

@@ -3257,6 +3257,32 @@ class Manager:
             except Exception as e:
                 log.error(f"Disk space check failed: {e}")
 
+            # Quota monitoring — alert admin when approaching usage limits
+            try:
+                from assistant.health import (
+                    fetch_quota_oauth, check_quota_thresholds, format_quota_alert,
+                )
+                from assistant import config
+                usage = fetch_quota_oauth()
+                if usage:
+                    alerts = check_quota_thresholds(usage)
+                    if alerts:
+                        admin_phone = config.get("owner.phone")
+                        if admin_phone:
+                            # Group all alerts into one message
+                            lines = [format_quota_alert(a) for a in alerts]
+                            msg = "[SVEN] Usage alert:\n" + "\n".join(lines)
+                            self._send_sms(admin_phone, msg)
+                            log.warning(f"QUOTA_ALERT | Sent {len(alerts)} alert(s) to admin")
+
+                    # Log current utilization for perf tracking
+                    for key in ("five_hour", "seven_day"):
+                        util = usage.get(key, {}).get("utilization")
+                        if util is not None:
+                            perf.gauge(f"quota_{key}_pct", util, component="daemon")
+            except Exception as e:
+                log.error(f"Quota check failed: {e}")
+
             log.info("Health check completed (background)")
 
         except Exception as e:

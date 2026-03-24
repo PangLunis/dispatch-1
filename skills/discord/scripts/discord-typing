@@ -1,0 +1,87 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx"]
+# ///
+"""
+discord-typing - Show typing indicator in a Discord channel.
+
+Runs in background, refreshing every 9 seconds (indicator expires after 10s).
+Kill the process when done.
+
+Usage:
+    discord-typing <channel_id> &
+    PID=$!
+    # ... do work ...
+    kill $PID
+"""
+import sys
+import os
+import subprocess
+import time
+import signal
+import httpx
+
+DISCORD_API = "https://discord.com/api/v10"
+
+
+def get_token() -> str:
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", "discord_bot_token", "-w"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if token:
+        return token
+
+    secrets_path = os.path.expanduser("~/.claude/secrets.env")
+    if os.path.exists(secrets_path):
+        for line in open(secrets_path):
+            if line.startswith("DISCORD_BOT_TOKEN="):
+                return line.strip().split("=", 1)[1].strip('"').strip("'")
+
+    print("Error: DISCORD_BOT_TOKEN not found", file=sys.stderr)
+    sys.exit(1)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: discord-typing <channel_id>", file=sys.stderr)
+        sys.exit(1)
+
+    channel_id = sys.argv[1]
+    token = get_token()
+    headers = {"Authorization": f"Bot {token}"}
+
+    # Graceful shutdown
+    running = True
+    def handle_signal(sig, frame):
+        nonlocal running
+        running = False
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    while running:
+        try:
+            httpx.post(
+                f"{DISCORD_API}/channels/{channel_id}/typing",
+                headers=headers,
+                timeout=5.0,
+            )
+        except Exception:
+            pass
+        # Sleep in small increments so we can respond to signals quickly
+        for _ in range(90):
+            if not running:
+                break
+            time.sleep(0.1)
+
+
+if __name__ == "__main__":
+    main()

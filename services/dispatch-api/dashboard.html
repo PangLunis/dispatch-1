@@ -1092,6 +1092,16 @@ body {
         </div>
       </div>
 
+      <!-- Server-Side Quota -->
+      <div class="panel" style="margin-bottom:12px" id="ccu-quota-panel">
+        <div class="panel-header">Server Quota <span id="ccu-quota-method" style="font-size:0.625rem;color:var(--text-tertiary);margin-left:8px"></span></div>
+        <div class="panel-body" style="padding:16px">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:16px" id="ccu-quota-bars">
+            <div class="state-message" style="grid-column:1/-1">Waiting for quota data...</div>
+          </div>
+        </div>
+      </div>
+
       <!-- Block Progress Bar -->
       <div class="panel" style="margin-bottom:12px">
         <div class="panel-header">Current Block</div>
@@ -2249,6 +2259,64 @@ function renderCcuFreshness(data) {
   }
 }
 
+function renderCcuQuota(data) {
+  const container = document.getElementById('ccu-quota-bars');
+  const methodEl = document.getElementById('ccu-quota-method');
+  const quota = data.quota;
+
+  if (!quota) {
+    container.innerHTML = '<div class="state-message" style="grid-column:1/-1">' +
+      (data._quota_error ? 'Quota error: ' + escapeHtml(data._quota_error) : 'Loading quota...') + '</div>';
+    return;
+  }
+
+  methodEl.textContent = '(OAuth)';
+
+  function quotaBar(label, util, resetsAt) {
+    if (util == null) return '';
+    const pct = Math.min(util, 100);
+    const color = pct > 80 ? 'var(--accent-red)' : pct > 50 ? 'var(--accent-amber)' : 'var(--accent-green)';
+    let resetStr = '';
+    if (resetsAt) {
+      const dt = new Date(resetsAt);
+      const now = new Date();
+      const diffMs = dt - now;
+      if (diffMs > 0) {
+        const h = Math.floor(diffMs / 3600000);
+        const m = Math.floor((diffMs % 3600000) / 60000);
+        resetStr = h > 24
+          ? Math.floor(h/24) + 'd ' + (h%24) + 'h'
+          : h + 'h ' + m + 'm';
+      } else {
+        resetStr = 'resetting...';
+      }
+    }
+    return `<div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary)">${label}</span>
+        <span style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-tertiary)">${resetStr ? 'resets in ' + resetStr : ''}</span>
+      </div>
+      <div style="background:var(--bg-tertiary);border-radius:2px;height:20px;position:relative;overflow:hidden">
+        <div style="height:100%;background:${color};transition:width 0.5s ease;width:${pct}%"></div>
+        <div style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:0.6875rem;color:var(--text-primary)">${util.toFixed(0)}%</div>
+      </div>
+    </div>`;
+  }
+
+  const fh = quota.five_hour || {};
+  const sd = quota.seven_day || {};
+  const ss = quota.seven_day_sonnet || {};
+  const so = quota.seven_day_opus || {};
+
+  let html = '';
+  html += quotaBar('5-Hour Block', fh.utilization, fh.resets_at);
+  html += quotaBar('7-Day All Models', sd.utilization, sd.resets_at);
+  if (ss && ss.utilization != null) html += quotaBar('7-Day Sonnet', ss.utilization, ss.resets_at);
+  if (so && so.utilization != null) html += quotaBar('7-Day Opus', so.utilization, so.resets_at);
+
+  container.innerHTML = html || '<div class="state-message" style="grid-column:1/-1">No quota data</div>';
+}
+
 function renderCcuStats(data) {
   const ab = data.active_block;
   const daily = data.daily || [];
@@ -2381,6 +2449,7 @@ async function loadCcu() {
   const data = await api('/api/dashboard/ccu');
   if (!data) return;
   renderCcuFreshness(data);
+  renderCcuQuota(data);
   renderCcuStats(data);
   renderCcuCharts(data);
   renderCcuTables(data);

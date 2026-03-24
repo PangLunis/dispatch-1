@@ -6,6 +6,7 @@ import {
   Image,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -49,7 +50,7 @@ interface InputBarProps {
 
 export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConversation, clearTextRef }: InputBarProps) {
   const [text, setText] = useState("");
-  const [selectedAttachment, setSelectedAttachment] = useState<string | null>(null);
+  const [selectedAttachments, setSelectedAttachments] = useState<string[]>([]);
   const [activePanel, setActivePanel] = useState<ActivePanel>("none");
   const speech = useSpeechRecognition();
   const insets = useSafeAreaInsets();
@@ -76,14 +77,14 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
 
   // Check clipboard for images on focus and app foreground (no polling)
   const checkClipboard = useCallback(async () => {
-    if (!onSendWithImage || selectedAttachment) return;
+    if (!onSendWithImage || selectedAttachments.length > 0) return;
     try {
       const hasImage = await Clipboard.hasImageAsync();
       setClipboardHasImage(hasImage);
     } catch {
       setClipboardHasImage(false);
     }
-  }, [onSendWithImage, selectedAttachment]);
+  }, [onSendWithImage, selectedAttachments]);
 
   useEffect(() => {
     if (!isFocused) {
@@ -106,7 +107,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
         await FileSystem.writeAsStringAsync(uri, clipImage.data, {
           encoding: FileSystem.EncodingType.Base64,
         });
-        setSelectedAttachment(uri);
+        setSelectedAttachments((prev) => [...prev, uri]);
         setClipboardHasImage(false);
         impactLight();
       }
@@ -115,8 +116,8 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
     }
   }, []);
 
-  const canSend = !!(text.trim().length > 0 || selectedAttachment) && !disabled;
-  const showMic = !text.trim() && !selectedAttachment && speech.isAvailable && !disabled && !speech.isListening;
+  const canSend = !!(text.trim().length > 0 || selectedAttachments.length > 0) && !disabled;
+  const showMic = !text.trim() && selectedAttachments.length === 0 && speech.isAvailable && !disabled && !speech.isListening;
 
   // Send button pop-in animation
   const sendButtonScale = useRef(new Animated.Value(0)).current;
@@ -161,17 +162,20 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
     impactLight();
     if (speech.isListening) speech.stop();
 
-    if (selectedAttachment && onSendWithImage) {
-      onSendWithImage(text.trim(), selectedAttachment);
+    if (selectedAttachments.length > 0 && onSendWithImage) {
+      // Send first attachment with the text, rest with empty text
+      selectedAttachments.forEach((uri, i) => {
+        onSendWithImage(i === 0 ? text.trim() : "", uri);
+      });
     } else if (text.trim()) {
       onSend(text.trim());
     }
 
     setText("");
-    setSelectedAttachment(null);
+    setSelectedAttachments([]);
     setPreDictationText("");
     speech.reset();
-  }, [canSend, onSend, onSendWithImage, text, selectedAttachment, speech]);
+  }, [canSend, onSend, onSendWithImage, text, selectedAttachments, speech]);
 
   const handleMicPress = useCallback(() => {
     impactLight();
@@ -191,9 +195,10 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
         mediaTypes: ["images", "videos"],
         quality: 0.8,
         allowsEditing: false,
+        allowsMultipleSelection: true,
       });
       if (!result.canceled && result.assets.length > 0) {
-        setSelectedAttachment(result.assets[0].uri);
+        setSelectedAttachments((prev) => [...prev, ...result.assets.map((a) => a.uri)]);
       }
     } catch (err) {
       console.error("[InputBar] Gallery error:", err);
@@ -212,7 +217,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
         copyToCacheDirectory: true,
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        setSelectedAttachment(result.assets[0].uri);
+        setSelectedAttachments((prev) => [...prev, ...result.assets!.map((a) => a.uri)]);
       }
     } catch (err) {
       console.error("[InputBar] DocumentPicker error:", err);
@@ -232,7 +237,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
         allowsEditing: false,
       });
       if (!result.canceled && result.assets.length > 0) {
-        setSelectedAttachment(result.assets[0].uri);
+        setSelectedAttachments((prev) => [...prev, result.assets[0].uri]);
       }
     } catch (err) {
       console.error("[InputBar] Camera error:", err);
@@ -299,13 +304,13 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
     onSend("Use /bug-finder — run in a subagent to find bugs with the above.");
   }, [onSend]);
 
-  const handleRemoveAttachment = useCallback(() => {
-    setSelectedAttachment(null);
+  const handleRemoveAttachment = useCallback((index: number) => {
+    setSelectedAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
   return (
     <>
-      {clipboardHasImage && !selectedAttachment ? (
+      {clipboardHasImage && selectedAttachments.length === 0 ? (
         <Pressable
           onPress={handlePasteImage}
           style={styles.pasteBar}
@@ -352,24 +357,28 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
         />
       ) : null}
 
-      {selectedAttachment ? (
+      {selectedAttachments.length > 0 ? (
         <View style={styles.imagePreviewContainer}>
-          <View style={styles.imagePreviewWrapper}>
-            <Image
-              source={{ uri: selectedAttachment }}
-              style={styles.imagePreview}
-              accessibilityLabel="Selected attachment preview"
-            />
-            <Pressable
-              onPress={handleRemoveAttachment}
-              style={styles.imageRemoveButton}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Remove attachment"
-            >
-              <SymbolView name={{ ios: "xmark", android: "close", web: "close" }} tintColor="#fafafa" size={10} weight="bold" />
-            </Pressable>
-          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+            {selectedAttachments.map((uri, index) => (
+              <View key={`${uri}-${index}`} style={styles.imagePreviewWrapper}>
+                <Image
+                  source={{ uri }}
+                  style={styles.imagePreview}
+                  accessibilityLabel={`Selected attachment ${index + 1}`}
+                />
+                <Pressable
+                  onPress={() => handleRemoveAttachment(index)}
+                  style={styles.imageRemoveButton}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove attachment ${index + 1}`}
+                >
+                  <SymbolView name={{ ios: "xmark", android: "close", web: "close" }} tintColor="#fafafa" size={10} weight="bold" />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
         </View>
       ) : null}
 

@@ -2,15 +2,13 @@
 """
 Set up nightly ephemeral tasks via the reminder/scheduler system.
 
-Creates six cron reminders that fire task.requested events:
-1. Vacation house scraper (agent mode, 1:45am) - runs nightly-scraper + builds HTML report
-2. Memory consolidation (script mode, 2:00am) - runs consolidate_3pass + consolidate_chat
-3. Skillify analysis (agent mode, 2:10am) - runs /skillify --nightly
-4. Bug finder scan (agent mode, 2:20am) - runs /bug-finder --nightly
-5. Latency finder scan (agent mode, 2:30am) - runs /latency-finder --nightly
-6. Sven Times gazette (agent mode, 2:40am) - generates daily gazette from system activity
+Creates five cron reminders that fire task.requested events:
+1. Memory consolidation (script mode, 2:00am) - runs consolidate_3pass + consolidate_chat
+2. Skillify analysis (agent mode, 2:10am) - runs /skillify --nightly
+3. Quota scheduler (agent mode, 2:00am) - dynamically triggers bugfinder + latency finder
+4. Sven Times gazette (agent mode, 2:40am) - generates daily gazette from system activity
 
-These replace the hardcoded 2am consolidation in manager.py.
+Note: Vacation house scraper is registered separately via claude-assistant remind.
 
 Usage:
     setup-nightly-tasks.py           # Add all reminders
@@ -40,44 +38,13 @@ def _get_admin_phone() -> str:
 
 
 # Task IDs are stable so we can detect duplicates
-VACATION_SCRAPER_TASK_ID = "nightly-vacation-scraper"
 CONSOLIDATION_TASK_ID = "nightly-consolidation"
 SKILLIFY_TASK_ID = "nightly-skillify"
 BUGFINDER_TASK_ID = "nightly-bugfinder"
 LATENCYFINDER_TASK_ID = "nightly-latencyfinder"
 SVENTIMES_TASK_ID = "nightly-sventimes"
 
-NIGHTLY_TASK_IDS = {VACATION_SCRAPER_TASK_ID, CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID, BUGFINDER_TASK_ID, LATENCYFINDER_TASK_ID, SVENTIMES_TASK_ID}
-
-# Vacation house scraper prompt
-VACATION_SCRAPER_PROMPT = (
-    "Run the nightly vacation house scraper: "
-    "~/.claude/skills/vacation-house/scripts/nightly-scraper --notify "
-    "Then build a beautiful HTML report from the results using the bus dashboard "
-    "design pattern (Space Grotesk + warm papery palette) with photo carousels, "
-    "exec summary, and score badges. Publish to sven-pages as vacation-scraper-YYYY-MM-DD. "
-    "Send a short SMS summary + link to the group chat 95fa934b84bc4f9aa4dfe22ac9d72afb."
-)
-
-# Bug finder prompt
-BUGFINDER_PROMPT = (
-    "Run /bug-finder --nightly to scan ~/dispatch/ for bugs. "
-    "Focus on code changed since last run but scan the whole codebase. "
-    "Use the full 3-phase pipeline: parallel discovery explorers, "
-    "parallel refinement reviewers (ACCEPT/REFINE/REFUTE), then compile report. "
-    "All subagents must use opus. "
-    "Send the bug report to admin via SMS only if there are ACCEPT or REFINE verdicts. "
-    "If clean scan, log silently."
-)
-
-LATENCYFINDER_PROMPT = (
-    "Run /latency-finder --nightly to scan for performance bottlenecks. "
-    "Analyze perf JSONL, bus.db sdk_events, bus.db records, and system resources "
-    "for slow queries, tool executions, and processing delays. "
-    "Use the full discovery→refinement pipeline with opus subagents. "
-    "Send the report to admin via SMS only if there are ACCEPT or REFINE verdicts. "
-    "If clean scan (all metrics within baselines), log silently."
-)
+NIGHTLY_TASK_IDS = {CONSOLIDATION_TASK_ID, SKILLIFY_TASK_ID, BUGFINDER_TASK_ID, LATENCYFINDER_TASK_ID, SVENTIMES_TASK_ID, "quota-scheduler"}
 
 # Sven Times daily gazette prompt
 SVENTIMES_PROMPT = (
@@ -133,33 +100,6 @@ SKILLIFY_PROMPT = (
     "This runs the full discovery→refinement pipeline. "
     "When done, send a concise summary of findings to the admin via SMS."
 )
-
-
-def _build_vacation_scraper_reminder(admin_phone: str) -> dict:
-    """Build the vacation house scraper reminder config."""
-    return {
-        "title": "Nightly vacation house scraper",
-        "schedule_type": "cron",
-        "schedule_value": "45 1 * * *",  # 1:45am daily (before consolidation)
-        "tz_name": "America/New_York",
-        "event": {
-            "topic": "tasks",
-            "type": "task.requested",
-            "key": admin_phone,
-            "payload": {
-                "task_id": VACATION_SCRAPER_TASK_ID,
-                "title": "Nightly vacation house scraper",
-                "requested_by": admin_phone,
-                "instructions": VACATION_SCRAPER_PROMPT,
-                "notify": True,
-                "timeout_minutes": 120,
-                "execution": {
-                    "mode": "agent",
-                    "prompt": VACATION_SCRAPER_PROMPT,
-                },
-            },
-        },
-    }
 
 
 def _build_consolidation_reminder(admin_phone: str) -> dict:
@@ -220,54 +160,47 @@ def _build_skillify_reminder(admin_phone: str) -> dict:
     }
 
 
-def _build_bugfinder_reminder(admin_phone: str) -> dict:
-    """Build the bug finder reminder config."""
+QUOTA_SCHEDULER_TASK_ID = "quota-scheduler"
+
+QUOTA_SCHEDULER_PROMPT = (
+    "You are the quota-aware task scheduler. Your job is to check the weekly quota reset time "
+    "and schedule bugfinder + latency finder to run 5 hours before reset.\n\n"
+    "1. Run: ~/.claude/skills/ccusage/scripts/server-usage --hours-until-reset\n"
+    "2. If the result is between 5.0 and 29.0 hours (reset is today or tomorrow), "
+    "create two one-shot reminders via the reminders system:\n"
+    "   - Bug finder: fires at (reset_time - 5 hours)\n"
+    "   - Latency finder: fires at (reset_time - 5 hours + 10 minutes)\n"
+    "3. If > 29 hours until reset, log 'Reset not within scheduling window' and exit.\n"
+    "4. If <= 5 hours, the window has already started — fire both tasks immediately by running:\n"
+    "   - /bug-finder --nightly (scan ~/dispatch/, full pipeline, opus subagents, SMS if ACCEPT/REFINE)\n"
+    "   - /latency-finder --nightly (same pipeline, SMS if ACCEPT/REFINE)\n"
+    "5. If < 0 or error, log and exit.\n\n"
+    "IMPORTANT: Check if bugfinder/latency-finder already ran this week (check reminders fired_count or "
+    "last_fired timestamp). If they already ran within the last 5 days, skip to avoid double-running."
+)
+
+
+def _build_quota_scheduler_reminder(admin_phone: str) -> dict:
+    """Build the daily quota scheduler that dynamically triggers heavy tasks."""
     return {
-        "title": "Weekly bug finder scan",
+        "title": "Daily quota scheduler check",
         "schedule_type": "cron",
-        "schedule_value": "20 2 * * 6",  # 2:20am Saturdays
+        "schedule_value": "0 2 * * *",  # 2:00am daily — lightweight check
         "tz_name": "America/New_York",
         "event": {
             "topic": "tasks",
             "type": "task.requested",
             "key": admin_phone,
             "payload": {
-                "task_id": BUGFINDER_TASK_ID,
-                "title": "Weekly bug finder scan",
+                "task_id": QUOTA_SCHEDULER_TASK_ID,
+                "title": "Daily quota scheduler check",
                 "requested_by": admin_phone,
-                "instructions": BUGFINDER_PROMPT,
-                "notify": True,
-                "timeout_minutes": 90,
+                "instructions": QUOTA_SCHEDULER_PROMPT,
+                "notify": False,
+                "timeout_minutes": 30,
                 "execution": {
                     "mode": "agent",
-                    "prompt": BUGFINDER_PROMPT,
-                },
-            },
-        },
-    }
-
-
-def _build_latencyfinder_reminder(admin_phone: str) -> dict:
-    """Build the latency finder reminder config."""
-    return {
-        "title": "Weekly latency finder scan",
-        "schedule_type": "cron",
-        "schedule_value": "30 2 * * 6",  # 2:30am Saturdays
-        "tz_name": "America/New_York",
-        "event": {
-            "topic": "tasks",
-            "type": "task.requested",
-            "key": admin_phone,
-            "payload": {
-                "task_id": LATENCYFINDER_TASK_ID,
-                "title": "Weekly latency finder scan",
-                "requested_by": admin_phone,
-                "instructions": LATENCYFINDER_PROMPT,
-                "notify": True,
-                "timeout_minutes": 90,
-                "execution": {
-                    "mode": "agent",
-                    "prompt": LATENCYFINDER_PROMPT,
+                    "prompt": QUOTA_SCHEDULER_PROMPT,
                 },
             },
         },
@@ -354,11 +287,6 @@ def cmd_add():
             print("\nUse --remove first to replace them.")
             return
 
-        # Create vacation scraper reminder
-        r0 = create_reminder(**_build_vacation_scraper_reminder(admin_phone))
-        data["reminders"].append(r0)
-        print(f"  Added: {r0['title']} (id={r0['id']}, cron=45 1 * * *, mode=agent)")
-
         # Create consolidation reminder
         r1 = create_reminder(**_build_consolidation_reminder(admin_phone))
         data["reminders"].append(r1)
@@ -369,15 +297,10 @@ def cmd_add():
         data["reminders"].append(r2)
         print(f"  Added: {r2['title']} (id={r2['id']}, cron=0 2 * * *, mode=agent)")
 
-        # Create bug finder reminder
-        r3 = create_reminder(**_build_bugfinder_reminder(admin_phone))
+        # Create quota-aware scheduler (replaces fixed bugfinder + latency finder crons)
+        r3 = create_reminder(**_build_quota_scheduler_reminder(admin_phone))
         data["reminders"].append(r3)
-        print(f"  Added: {r3['title']} (id={r3['id']}, cron=20 2 * * *, mode=agent)")
-
-        # Create latency finder reminder
-        r4 = create_reminder(**_build_latencyfinder_reminder(admin_phone))
-        data["reminders"].append(r4)
-        print(f"  Added: {r4['title']} (id={r4['id']}, cron=30 2 * * *, mode=agent)")
+        print(f"  Added: {r3['title']} (id={r3['id']}, cron=0 2 * * *, mode=agent)")
 
         # Create Sven Times gazette reminder
         r5 = create_reminder(**_build_sventimes_reminder(admin_phone))
@@ -387,12 +310,11 @@ def cmd_add():
         save_reminders(data)
 
     print("\n✅ All nightly tasks scheduled (staggered, ET):")
-    print("  1:45am - Vacation house scraper (120min timeout, agent mode)")
     print("  2:00am - Memory consolidation (60min timeout, script mode)")
+    print("  2:00am - Quota scheduler check (30min timeout, agent mode)")
     print("  2:10am - Skillify analysis (90min timeout, agent mode)")
-    print("  2:20am - Bug finder scan (90min timeout, agent mode)")
-    print("  2:30am - Latency finder scan (90min timeout, agent mode)")
     print("  2:40am - Sven Times gazette (60min timeout, agent mode)")
+    print("\nNote: Vacation house scraper is registered separately via claude-assistant remind.")
 
 
 def main():

@@ -12,3 +12,13 @@ export function buildImageUrl(imageUrl: string): string {
   const params = token ? `?token=${encodeURIComponent(token)}` : "";
   return `${getApiBaseUrl()}${imageUrl}${params}`;
 }
+
+/**
+ * Build the full URL for a video resource.
+ * Mirrors buildImageUrl pattern above.
+ */
+export function buildVideoUrl(videoUrl: string): string {
+  const token = getDeviceToken();
+  const params = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${getApiBaseUrl()}${videoUrl}${params}`;
+}

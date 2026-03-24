@@ -5,6 +5,7 @@ export interface ChatMessage {
   content: string;
   audio_url: string | null;
   image_url: string | null;
+  video_url: string | null;
   created_at: string;
   status?: string; // "generating" | "complete" | "failed"
   failure_reason?: string | null; // "timeout" | "generation_error" | "server_restart" | "storage_error"

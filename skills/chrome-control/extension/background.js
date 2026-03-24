@@ -744,8 +744,7 @@ async function insertText(tabId, text) {
       // No iframe found, type directly using Input.dispatchKeyEvent on main page
       for (const char of text) {
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-          type: 'keyDown',
-          text: char,
+          type: 'rawKeyDown',
           key: char
         });
         await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
@@ -864,12 +863,10 @@ async function iframeType(tabId, text) {
 
     // Type each character using Input.dispatchKeyEvent
     for (const char of text) {
-      // Key down with text
+      // rawKeyDown (no text insertion - avoids double-typing with char event)
       await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-        type: 'keyDown',
+        type: 'rawKeyDown',
         key: char,
-        text: char,
-        unmodifiedText: char,
         windowsVirtualKeyCode: char.charCodeAt(0),
         nativeVirtualKeyCode: char.charCodeAt(0)
       });
@@ -1364,10 +1361,8 @@ async function iframeTargetType(tabId, urlPattern, text) {
     for (const char of text) {
       // keyDown
       await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-        type: 'keyDown',
+        type: 'rawKeyDown',
         key: char,
-        text: char,
-        unmodifiedText: char,
         windowsVirtualKeyCode: char.charCodeAt(0),
         nativeVirtualKeyCode: char.charCodeAt(0)
       }, sessionId);

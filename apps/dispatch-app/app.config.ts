@@ -81,6 +81,7 @@ export default ({ config: _config }: ConfigContext): ExpoConfig => ({
   plugins: [
       "expo-router",
       "expo-secure-store",
+      "expo-video",
       [
         "@jamsch/expo-speech-recognition",
         {

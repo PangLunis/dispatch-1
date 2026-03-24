@@ -1,0 +1,756 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["curl_cffi"]
+# ///
+"""
+Instagram CLI - Interact with Instagram via authenticated API calls.
+
+Authentication uses Chrome session cookies (no API keys needed).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.parse import quote, urlencode
+
+from curl_cffi import requests
+
+# Instagram web app ID (Facebook App ID for web client)
+IG_APP_ID = "936619743392459"
+
+
+def get_cookies():
+    """Extract Instagram cookies from Chrome via chrome-control extension."""
+    chrome = os.path.expanduser("~/.claude/skills/chrome-control/scripts/chrome")
+    result = subprocess.run([chrome, "cookies", "instagram.com"], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error getting cookies: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    cookies = json.loads(result.stdout)
+    return {c["name"]: c["value"] for c in cookies}
+
+
+def make_headers(cookies):
+    """Build required headers for Instagram API calls."""
+    return {
+        "x-csrftoken": cookies.get("csrftoken", ""),
+        "x-ig-app-id": IG_APP_ID,
+        "x-ig-www-claim": cookies.get("ig_www_claim", "0"),
+        "x-requested-with": "XMLHttpRequest",
+        "x-instagram-ajax": "1",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "origin": "https://www.instagram.com",
+        "referer": "https://www.instagram.com/",
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+    }
+
+
+def make_cookie_str(cookies):
+    return "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+
+def api_get(url, cookies, headers, params=None):
+    h = {**headers, "cookie": make_cookie_str(cookies)}
+    resp = requests.get(url, headers=h, params=params, impersonate="chrome")
+    if resp.status_code != 200:
+        print(f"API error {resp.status_code}: {resp.text[:500]}", file=sys.stderr)
+        sys.exit(1)
+    return resp.json()
+
+
+def api_post(url, cookies, headers, data=None, json_body=None, content_type=None, raw_body=None, extra_headers=None):
+    h = {**headers, "cookie": make_cookie_str(cookies)}
+    if extra_headers:
+        h.update(extra_headers)
+    if content_type:
+        h["content-type"] = content_type
+    if json_body is not None:
+        h["content-type"] = "application/json"
+        resp = requests.post(url, headers=h, data=json.dumps(json_body), impersonate="chrome")
+    elif raw_body is not None:
+        resp = requests.post(url, headers=h, data=raw_body, impersonate="chrome")
+    elif data is not None:
+        if not content_type:
+            h["content-type"] = "application/x-www-form-urlencoded"
+        resp = requests.post(url, headers=h, data=data, impersonate="chrome")
+    else:
+        h["content-type"] = "application/x-www-form-urlencoded"
+        resp = requests.post(url, headers=h, data="", impersonate="chrome")
+    return resp
+
+
+def get_user_id(username, cookies, headers):
+    """Look up a user's numeric ID by username."""
+    data = api_get(
+        f"https://www.instagram.com/api/v1/users/web_profile_info/?username={quote(username)}",
+        cookies, headers
+    )
+    user = data.get("data", {}).get("user", {})
+    if not user:
+        print(f"User @{username} not found.", file=sys.stderr)
+        sys.exit(1)
+    return user.get("id"), user
+
+
+def shortcode_to_media_id(shortcode):
+    """Convert Instagram shortcode to numeric media ID."""
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    media_id = 0
+    for char in shortcode:
+        media_id = media_id * 64 + alphabet.index(char)
+    return str(media_id)
+
+
+def extract_shortcode(url_or_code):
+    """Extract shortcode from URL or return as-is if already a shortcode."""
+    match = re.search(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)", url_or_code)
+    if match:
+        return match.group(1)
+    return url_or_code
+
+
+def format_user(user):
+    """Format user info for display."""
+    username = user.get("username", "?")
+    full_name = user.get("full_name", "")
+    bio = user.get("biography", "")
+    followers = user.get("edge_followed_by", {}).get("count", user.get("follower_count", "?"))
+    following = user.get("edge_follow", {}).get("count", user.get("following_count", "?"))
+    posts = user.get("edge_owner_to_timeline_media", {}).get("count", user.get("media_count", "?"))
+    is_private = user.get("is_private", False)
+    is_verified = user.get("is_verified", False)
+
+    badges = []
+    if is_verified:
+        badges.append("\u2705")
+    if is_private:
+        badges.append("\U0001f512")
+
+    lines = [
+        f"@{username} {' '.join(badges)}".strip(),
+        f"  {full_name}" if full_name else "",
+        f"  {bio}" if bio else "",
+        f"  \U0001f4f7 {posts} posts \u00b7 {followers} followers \u00b7 {following} following",
+    ]
+    return "\n".join(l for l in lines if l)
+
+
+def format_post(item):
+    """Format a post/media item for display."""
+    try:
+        # Handle both timeline and user feed formats
+        caption_obj = item.get("caption", {})
+        if isinstance(caption_obj, dict):
+            caption = caption_obj.get("text", "")
+        else:
+            caption = str(caption_obj) if caption_obj else ""
+
+        # Try edge_media_to_caption for graphql format
+        if not caption:
+            edges = item.get("edge_media_to_caption", {}).get("edges", [])
+            if edges:
+                caption = edges[0].get("node", {}).get("text", "")
+
+        pk = item.get("pk", item.get("id", "?"))
+        shortcode = item.get("code", item.get("shortcode", "?"))
+        taken_at = item.get("taken_at", "")
+        if isinstance(taken_at, (int, float)):
+            taken_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(taken_at))
+
+        like_count = item.get("like_count", item.get("edge_media_preview_like", {}).get("count", "?"))
+        comment_count = item.get("comment_count", item.get("edge_media_to_comment", {}).get("count", "?"))
+        media_type = item.get("media_type", 1)
+        type_emoji = {1: "\U0001f4f7", 2: "\U0001f3ac", 8: "\U0001f5bc\ufe0f"}.get(media_type, "\U0001f4f7")
+
+        user = item.get("user", {})
+        username = user.get("username", "?")
+
+        lines = [
+            f"{type_emoji} @{username} \u00b7 {taken_at}",
+            f"  {caption}" if caption else "  (no caption)",
+            f"  \u2764\ufe0f {like_count}  \U0001f4ac {comment_count}  [ID: {pk}]",
+            f"  https://www.instagram.com/p/{shortcode}/",
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[Error formatting post: {e}]"
+
+
+# ─── Commands ───────────────────────────────────────────────────────────────
+
+def cmd_user(args, cookies, headers):
+    """Get user info."""
+    _, user = get_user_id(args.username, cookies, headers)
+    print(format_user(user))
+
+
+def cmd_search(args, cookies, headers):
+    """Search for users."""
+    data = api_get(
+        "https://www.instagram.com/api/v1/web/search/topsearch/",
+        cookies, headers,
+        params={"context": "blended", "query": args.query, "include_reel": "true"}
+    )
+    users = data.get("users", [])
+    if not users:
+        print("No users found.")
+        return
+    for item in users[:args.limit]:
+        u = item.get("user", {})
+        username = u.get("username", "?")
+        full_name = u.get("full_name", "")
+        followers = u.get("follower_count", "?")
+        private = "\U0001f512" if u.get("is_private") else ""
+        verified = "\u2705" if u.get("is_verified") else ""
+        print(f"@{username} {verified}{private} - {full_name} ({followers} followers)")
+
+
+def cmd_follow(args, cookies, headers):
+    """Follow a user."""
+    user_id, user = get_user_id(args.username, cookies, headers)
+    resp = api_post(f"https://www.instagram.com/api/v1/friendships/create/{user_id}/", cookies, headers)
+    if resp.status_code == 200:
+        result = resp.json()
+        status = result.get("friendship_status", {})
+        if status.get("outgoing_request"):
+            print(f"Follow request sent to @{args.username} (private account)")
+        else:
+            print(f"Now following @{args.username}")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_unfollow(args, cookies, headers):
+    """Unfollow a user."""
+    user_id, _ = get_user_id(args.username, cookies, headers)
+    resp = api_post(f"https://www.instagram.com/api/v1/friendships/destroy/{user_id}/", cookies, headers)
+    if resp.status_code == 200:
+        print(f"Unfollowed @{args.username}")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_like(args, cookies, headers):
+    """Like a post by media ID."""
+    media_id = args.media_id
+    resp = api_post(f"https://www.instagram.com/api/v1/web/likes/{media_id}/like/", cookies, headers)
+    if resp.status_code == 200:
+        print(f"Liked post {media_id}")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_unlike(args, cookies, headers):
+    """Unlike a post."""
+    media_id = args.media_id
+    resp = api_post(f"https://www.instagram.com/api/v1/web/likes/{media_id}/unlike/", cookies, headers)
+    if resp.status_code == 200:
+        print(f"Unliked post {media_id}")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_like_url(args, cookies, headers):
+    """Like a post by URL or shortcode."""
+    shortcode = extract_shortcode(args.url)
+    media_id = shortcode_to_media_id(shortcode)
+    resp = api_post(f"https://www.instagram.com/api/v1/web/likes/{media_id}/like/", cookies, headers)
+    if resp.status_code == 200:
+        print(f"Liked post {shortcode} (ID: {media_id})")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_comment(args, cookies, headers):
+    """Comment on a post."""
+    media_id = args.media_id
+    resp = api_post(
+        f"https://www.instagram.com/api/v1/web/comments/{media_id}/add/",
+        cookies, headers,
+        data=f"comment_text={quote(args.text)}"
+    )
+    if resp.status_code == 200:
+        result = resp.json()
+        comment_id = result.get("id", "?")
+        print(f"Comment posted (ID: {comment_id})")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_feed(args, cookies, headers):
+    """Get own timeline/feed."""
+    data = api_get("https://www.instagram.com/api/v1/feed/timeline/", cookies, headers)
+    items = data.get("feed_items", data.get("items", []))
+    if not items:
+        print("No feed items found.")
+        return
+    count = 0
+    for item in items:
+        media = item.get("media_or_ad", item)
+        if not media.get("pk") and not media.get("id"):
+            continue
+        if count > 0:
+            print("\u2500" * 60)
+        print(format_post(media))
+        count += 1
+        if count >= args.limit:
+            break
+
+
+def cmd_user_posts(args, cookies, headers):
+    """Get a user's posts."""
+    user_id, user = get_user_id(args.username, cookies, headers)
+    data = api_get(
+        f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
+        cookies, headers,
+        params={"count": str(args.limit)}
+    )
+    items = data.get("items", [])
+    if not items:
+        print(f"No posts found for @{args.username}.")
+        return
+    for i, item in enumerate(items[:args.limit]):
+        if i > 0:
+            print("\u2500" * 60)
+        print(format_post(item))
+
+
+def cmd_post_info(args, cookies, headers):
+    """Get info about a post by URL or shortcode."""
+    shortcode = extract_shortcode(args.url)
+    data = api_get(
+        f"https://www.instagram.com/api/v1/media/{shortcode_to_media_id(shortcode)}/info/",
+        cookies, headers
+    )
+    items = data.get("items", [])
+    if not items:
+        print("Post not found.")
+        return
+    print(format_post(items[0]))
+
+
+def cmd_notifications(args, cookies, headers):
+    """Get notifications/activity."""
+    data = api_get("https://www.instagram.com/api/v1/news/inbox/", cookies, headers)
+
+    # Old stories format
+    stories = data.get("old_stories", data.get("new_stories", []))
+    if not stories:
+        print("No recent notifications.")
+        return
+
+    count = 0
+    for story in stories:
+        args_list = story.get("args", {})
+        text = args_list.get("text", "")
+        timestamp = args_list.get("timestamp", "")
+        if isinstance(timestamp, (int, float)):
+            timestamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+        if text:
+            print(f"  {timestamp}  {text}")
+            count += 1
+            if count >= args.limit:
+                break
+
+    if count == 0:
+        # Try alternate format
+        counts = data.get("counts", {})
+        if counts:
+            print(f"Notifications summary:")
+            for k, v in counts.items():
+                if v:
+                    print(f"  {k}: {v}")
+
+
+def cmd_update_profile(args, cookies, headers):
+    """Update profile info."""
+    # First get current profile
+    data = api_get("https://www.instagram.com/api/v1/accounts/edit_profile/", cookies, headers)
+    form_data = data.get("form_data", data) if isinstance(data, dict) else {}
+
+    # Build update payload with current values as defaults
+    fields = {
+        "first_name": args.name if args.name else form_data.get("first_name", ""),
+        "biography": args.bio if args.bio else form_data.get("biography", ""),
+        "username": form_data.get("username", ""),
+        "email": form_data.get("email", ""),
+        "phone_number": form_data.get("phone_number", ""),
+        "external_url": args.url if args.url else form_data.get("external_url", ""),
+    }
+
+    encoded = urlencode(fields)
+    resp = api_post(
+        "https://www.instagram.com/api/v1/accounts/edit_profile/",
+        cookies, headers, data=encoded
+    )
+    if resp.status_code == 200:
+        print("Profile updated!")
+        result = resp.json()
+        user = result.get("user", {})
+        if user:
+            print(f"  Name: {user.get('full_name', '?')}")
+            print(f"  Bio: {user.get('biography', '?')}")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_update_avatar(args, cookies, headers):
+    """Update profile picture."""
+    image_path = Path(args.image).expanduser()
+    if not image_path.exists():
+        print(f"File not found: {image_path}", file=sys.stderr)
+        sys.exit(1)
+
+    image_data = image_path.read_bytes()
+
+    h = {**headers, "cookie": make_cookie_str(cookies)}
+
+    from curl_cffi import CurlMime
+    mp = CurlMime()
+    mp.addpart(
+        name="profile_pic",
+        content_type="image/jpeg",
+        filename=image_path.name,
+        data=image_data,
+    )
+
+    resp = requests.post(
+        "https://www.instagram.com/api/v1/accounts/web_change_profile_picture/",
+        headers=h,
+        multipart=mp,
+        impersonate="chrome",
+    )
+    if resp.status_code == 200:
+        result = resp.json()
+        if result.get("changed"):
+            print("Profile picture updated!")
+        else:
+            print(f"Response: {json.dumps(result, indent=2)}")
+    else:
+        print(f"Error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_post(args, cookies, headers):
+    """Post a photo to Instagram."""
+    image_path = Path(args.image).expanduser()
+    if not image_path.exists():
+        print(f"File not found: {image_path}", file=sys.stderr)
+        sys.exit(1)
+
+    image_data = image_path.read_bytes()
+    upload_id = str(int(time.time() * 1000))
+
+    # Step 1: Upload the image via rupload
+    upload_name = f"{upload_id}_0_{int(time.time())}"
+    rupload_params = json.dumps({
+        "media_type": 1,
+        "upload_id": upload_id,
+        "upload_media_height": 1080,
+        "upload_media_width": 1080,
+    })
+
+    resp = api_post(
+        f"https://www.instagram.com/rupload_igphoto/{upload_name}",
+        cookies, headers,
+        raw_body=image_data,
+        content_type="image/jpeg",
+        extra_headers={
+            "x-instagram-rupload-params": rupload_params,
+            "x-entity-name": upload_name,
+            "x-entity-length": str(len(image_data)),
+            "offset": "0",
+        }
+    )
+
+    if resp.status_code != 200:
+        print(f"Upload error: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+    upload_result = resp.json()
+    print(f"Image uploaded (upload_id: {upload_id})")
+
+    # Small delay before configure
+    time.sleep(2)
+
+    # Step 2: Configure/publish
+    configure_data = {
+        "upload_id": upload_id,
+        "caption": args.caption or "",
+        "usertags": "",
+        "custom_accessibility_caption": "",
+        "retry_timeout": "",
+    }
+
+    resp = api_post(
+        "https://www.instagram.com/api/v1/media/configure/",
+        cookies, headers,
+        data=urlencode(configure_data)
+    )
+
+    if resp.status_code == 200:
+        result = resp.json()
+        media = result.get("media", {})
+        code = media.get("code", "?")
+        pk = media.get("pk", "?")
+        print(f"Posted! ID: {pk}")
+        print(f"https://www.instagram.com/p/{code}/")
+    else:
+        print(f"Configure error: {resp.status_code} {resp.text[:500]}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_post_reel(args, cookies, headers):
+    """Post a video as an Instagram Reel."""
+    video_path = Path(args.video).expanduser()
+    if not video_path.exists():
+        print(f"File not found: {video_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Extract cover photo from video if not provided
+    cover_path = getattr(args, 'cover', None)
+    if cover_path:
+        cover_path = Path(cover_path).expanduser()
+    else:
+        # Auto-extract thumbnail at 1 second
+        cover_path = Path(f"/tmp/ig_reel_cover_{int(time.time())}.jpg")
+        import subprocess as sp
+        sp.run([
+            "ffmpeg", "-y", "-i", str(video_path), "-ss", "00:00:01",
+            "-vframes", "1", "-q:v", "2", "-update", "1", str(cover_path)
+        ], capture_output=True)
+        if not cover_path.exists():
+            print("Failed to extract cover photo from video", file=sys.stderr)
+            sys.exit(1)
+        print(f"Extracted cover photo: {cover_path}")
+
+    video_data = video_path.read_bytes()
+    cover_data = cover_path.read_bytes()
+    upload_id = str(int(time.time() * 1000))
+
+    # Step 1: Upload video via rupload_igvideo
+    video_name = f"{upload_id}_0_{int(time.time())}"
+    rupload_params = json.dumps({
+        "is_clips_video": "1",
+        "retry_context": json.dumps({"num_step_auto_retry": 0, "num_reupload": 0, "num_step_manual_retry": 0}),
+        "media_type": 2,
+        "upload_id": upload_id,
+        "upload_media_duration_ms": 0,
+        "upload_media_height": 1920,
+        "upload_media_width": 1080,
+        "xsharing_user_ids": "[]",
+    })
+
+    resp = api_post(
+        f"https://www.instagram.com/rupload_igvideo/{video_name}",
+        cookies, headers,
+        raw_body=video_data,
+        content_type="video/mp4",
+        extra_headers={
+            "x-instagram-rupload-params": rupload_params,
+            "x-entity-name": video_name,
+            "x-entity-length": str(len(video_data)),
+            "offset": "0",
+        }
+    )
+
+    if resp.status_code != 200:
+        print(f"Video upload error: {resp.status_code} {resp.text[:500]}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Video uploaded (upload_id: {upload_id})")
+
+    # Step 2: Upload cover photo via rupload_igphoto
+    cover_name = f"{upload_id}_0_{int(time.time())}_cover"
+    cover_rupload_params = json.dumps({
+        "upload_id": upload_id,
+        "media_type": 2,
+        "image_compression": json.dumps({"lib_name": "moz", "lib_version": "3.1.m", "quality": "80"}),
+    })
+
+    resp = api_post(
+        f"https://www.instagram.com/rupload_igphoto/{cover_name}",
+        cookies, headers,
+        raw_body=cover_data,
+        content_type="image/jpeg",
+        extra_headers={
+            "x-instagram-rupload-params": cover_rupload_params,
+            "x-entity-name": cover_name,
+            "x-entity-length": str(len(cover_data)),
+            "offset": "0",
+        }
+    )
+
+    if resp.status_code != 200:
+        print(f"Cover upload error: {resp.status_code} {resp.text[:500]}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Cover photo uploaded")
+
+    # Wait for server-side processing
+    print("Waiting for video processing...")
+    time.sleep(10)
+
+    # Step 3: Configure as reel/clip
+    configure_data = {
+        "upload_id": upload_id,
+        "caption": args.caption or "",
+        "usertags": "",
+        "custom_accessibility_caption": "",
+        "retry_timeout": "",
+        "clips_share_preview_to_feed": "1",
+        "source_type": "4",
+    }
+
+    resp = api_post(
+        "https://www.instagram.com/api/v1/media/configure_to_clips/",
+        cookies, headers,
+        data=urlencode(configure_data)
+    )
+
+    result = resp.json()
+    if resp.status_code == 200 and result.get("status") == "ok":
+        media = result.get("media", {})
+        code = media.get("code", "")
+        pk = media.get("pk", "")
+        if code:
+            print(f"Reel posted! ID: {pk}")
+            print(f"https://www.instagram.com/reel/{code}/")
+        else:
+            print(f"Reel submitted (may be processing). Response: {json.dumps(result, indent=2)[:1000]}")
+    else:
+        print(f"Configure error: {resp.status_code}", file=sys.stderr)
+        print(f"Response: {resp.text[:1000]}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ─── Main ───────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Instagram CLI")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # user
+    p = sub.add_parser("user", help="Get user info")
+    p.add_argument("username")
+
+    # search
+    p = sub.add_parser("search", help="Search users")
+    p.add_argument("query")
+    p.add_argument("--limit", type=int, default=10)
+
+    # follow
+    p = sub.add_parser("follow", help="Follow a user")
+    p.add_argument("username")
+
+    # unfollow
+    p = sub.add_parser("unfollow", help="Unfollow a user")
+    p.add_argument("username")
+
+    # like
+    p = sub.add_parser("like", help="Like a post by media ID")
+    p.add_argument("media_id")
+
+    # unlike
+    p = sub.add_parser("unlike", help="Unlike a post")
+    p.add_argument("media_id")
+
+    # like-url
+    p = sub.add_parser("like-url", help="Like a post by URL")
+    p.add_argument("url")
+
+    # comment
+    p = sub.add_parser("comment", help="Comment on a post")
+    p.add_argument("media_id")
+    p.add_argument("text")
+
+    # feed
+    p = sub.add_parser("feed", help="Get own feed")
+    p.add_argument("--limit", type=int, default=10)
+
+    # user-posts
+    p = sub.add_parser("user-posts", help="Get a user's posts")
+    p.add_argument("username")
+    p.add_argument("--limit", type=int, default=12)
+
+    # post-info
+    p = sub.add_parser("post-info", help="Get post info by URL")
+    p.add_argument("url")
+
+    # notifications
+    p = sub.add_parser("notifications", help="Get notifications")
+    p.add_argument("--limit", type=int, default=20)
+
+    # update-profile
+    p = sub.add_parser("update-profile", help="Update profile")
+    p.add_argument("--name", help="Display name")
+    p.add_argument("--bio", help="Biography")
+    p.add_argument("--url", help="Website URL")
+
+    # update-avatar
+    p = sub.add_parser("update-avatar", help="Update profile picture")
+    p.add_argument("image", help="Path to image file")
+
+    # post
+    p = sub.add_parser("post", help="Post a photo")
+    p.add_argument("image", help="Path to image file")
+    p.add_argument("caption", nargs="?", default="", help="Post caption")
+
+    # post-reel
+    p = sub.add_parser("post-reel", help="Post a video as a Reel")
+    p.add_argument("video", help="Path to video file (mp4)")
+    p.add_argument("caption", nargs="?", default="", help="Reel caption")
+
+    args = parser.parse_args()
+
+    cookies = get_cookies()
+    headers = make_headers(cookies)
+
+    commands = {
+        "user": cmd_user,
+        "search": cmd_search,
+        "follow": cmd_follow,
+        "unfollow": cmd_unfollow,
+        "like": cmd_like,
+        "unlike": cmd_unlike,
+        "like-url": cmd_like_url,
+        "comment": cmd_comment,
+        "feed": cmd_feed,
+        "user-posts": cmd_user_posts,
+        "post-info": cmd_post_info,
+        "notifications": cmd_notifications,
+        "update-profile": cmd_update_profile,
+        "update-avatar": cmd_update_avatar,
+        "post": cmd_post,
+        "post-reel": cmd_post_reel,
+    }
+
+    cmd_fn = commands.get(args.command)
+    if cmd_fn:
+        cmd_fn(args, cookies, headers)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
