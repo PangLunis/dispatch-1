@@ -1,0 +1,316 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["browser-cookie3"]
+# ///
+"""Query Claude's server-side usage data.
+
+Primary method: OAuth token from macOS keychain (Claude Code credentials)
+  - Endpoint: api.anthropic.com/api/oauth/usage
+  - Requires header: anthropic-beta: oauth-2025-04-20
+  - Token from macOS keychain "Claude Code-credentials" or ~/.claude/.credentials.json (Linux)
+Fallback: Chrome session cookies for claude.ai
+
+Usage:
+    server-usage              # Human-readable summary
+    server-usage --json       # Raw JSON for scripting
+    server-usage --check 80   # Exit 0 if weekly < 80%, exit 1 if >= 80%
+    server-usage --reset-time # Print weekly reset time as ISO 8601
+    server-usage --hours-until-reset  # Print hours until 7-day reset
+"""
+
+import argparse
+import json
+import platform
+import ssl
+import subprocess
+import sys
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+# --- OAuth token retrieval ---
+
+def get_oauth_token() -> str | None:
+    """Get OAuth access token. macOS: keychain. Linux: ~/.claude/.credentials.json."""
+    if platform.system() == "Darwin":
+        return _get_token_macos()
+    else:
+        return _get_token_linux()
+
+
+def _get_token_macos() -> str | None:
+    """Read OAuth token from macOS keychain."""
+    try:
+        raw = subprocess.check_output(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        data = json.loads(raw)
+        return data.get("claudeAiOauth", {}).get("accessToken")
+    except Exception:
+        return None
+
+
+def _get_token_linux() -> str | None:
+    """Read OAuth token from ~/.claude/.credentials.json."""
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    if not creds_path.exists():
+        return None
+    try:
+        data = json.loads(creds_path.read_text())
+        return data.get("claudeAiOauth", {}).get("accessToken")
+    except Exception:
+        return None
+
+
+# --- OAuth API ---
+
+def fetch_usage_oauth(token: str) -> dict | None:
+    """Fetch usage via api.anthropic.com OAuth endpoint."""
+    ctx = ssl.create_default_context()
+    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("anthropic-beta", "oauth-2025-04-20")
+    req.add_header("Accept", "application/json")
+
+    try:
+        resp = urllib.request.urlopen(req, context=ctx)
+        return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        print(f"OAuth endpoint failed (HTTP {e.code}), falling back to cookies...", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"OAuth request failed: {e}, falling back to cookies...", file=sys.stderr)
+        return None
+
+
+# --- Chrome cookie fallback ---
+
+def get_claude_cookies() -> dict[str, str]:
+    """Extract Chrome cookies for claude.ai."""
+    import browser_cookie3
+    cj = browser_cookie3.chrome(domain_name=".claude.ai")
+    return {c.name: c.value for c in cj}
+
+
+def fetch_usage_cookies(cookies: dict[str, str]) -> dict:
+    """Fetch usage data from claude.ai API using Chrome cookies."""
+    org_id = cookies.get("lastActiveOrg")
+    if not org_id:
+        print("Error: No lastActiveOrg cookie found. Log into claude.ai in Chrome first.", file=sys.stderr)
+        sys.exit(1)
+
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    ctx = ssl.create_default_context()
+
+    req = urllib.request.Request(f"https://claude.ai/api/organizations/{org_id}/usage")
+    req.add_header("Cookie", cookie_str)
+    req.add_header("Accept", "application/json")
+    req.add_header("Origin", "https://claude.ai")
+    req.add_header("Referer", "https://claude.ai/settings")
+    req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+
+    try:
+        resp = urllib.request.urlopen(req, context=ctx)
+        return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            print("Error: Cloudflare blocked the request. Try refreshing claude.ai in Chrome.", file=sys.stderr)
+        elif e.code == 401:
+            print("Error: Authentication failed. Log into claude.ai in Chrome.", file=sys.stderr)
+        else:
+            print(f"Error: HTTP {e.code}", file=sys.stderr)
+        sys.exit(1)
+
+
+def fetch_rate_limits(cookies: dict[str, str]) -> dict:
+    """Fetch rate limit info from claude.ai API."""
+    org_id = cookies.get("lastActiveOrg")
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    ctx = ssl.create_default_context()
+
+    req = urllib.request.Request(f"https://claude.ai/api/organizations/{org_id}/rate_limits")
+    req.add_header("Cookie", cookie_str)
+    req.add_header("Accept", "application/json")
+    req.add_header("Origin", "https://claude.ai")
+    req.add_header("Referer", "https://claude.ai/settings")
+    req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+
+    try:
+        resp = urllib.request.urlopen(req, context=ctx)
+        return json.loads(resp.read().decode())
+    except Exception:
+        return {}
+
+
+# --- Unified fetch ---
+
+def fetch_usage() -> tuple[dict, str]:
+    """Fetch usage data. Returns (data, method_used).
+    Tries OAuth first, falls back to Chrome cookies."""
+    token = get_oauth_token()
+    if token:
+        data = fetch_usage_oauth(token)
+        if data:
+            return data, "oauth"
+
+    # Fallback to cookies
+    cookies = get_claude_cookies()
+    return fetch_usage_cookies(cookies), "cookies"
+
+
+# --- Formatting ---
+
+def format_reset_time(iso_str):
+    """Format ISO timestamp to human-readable local time."""
+    if not iso_str:
+        return "N/A"
+    dt = datetime.fromisoformat(iso_str)
+    local = dt.astimezone()
+    return local.strftime("%a %b %d %I:%M %p %Z")
+
+
+def time_until(iso_str):
+    """Return human-readable time until a timestamp."""
+    if not iso_str:
+        return ""
+    dt = datetime.fromisoformat(iso_str)
+    now = datetime.now(timezone.utc)
+    delta = dt - now
+    if delta.total_seconds() < 0:
+        return "(past)"
+
+    hours = int(delta.total_seconds() // 3600)
+    minutes = int((delta.total_seconds() % 3600) // 60)
+    if hours > 24:
+        days = hours // 24
+        hours = hours % 24
+        return f"({days}d {hours}h {minutes}m)"
+    return f"({hours}h {minutes}m)"
+
+
+def print_summary(usage, rate_limits, method):
+    """Print human-readable usage summary."""
+    print(f"\n═══ Claude Server-Side Usage (via {method}) ═══\n")
+
+    # 5-hour block
+    fh = usage.get("five_hour", {})
+    fh_util = fh.get("utilization", 0)
+    fh_reset = fh.get("resets_at")
+    if fh_util is not None and fh_util > 0:
+        print(f"  5-hour block:    {fh_util:.0f}% used  →  resets {format_reset_time(fh_reset)} {time_until(fh_reset)}")
+    else:
+        print("  5-hour block:    not active")
+
+    # 7-day all models
+    sd = usage.get("seven_day", {})
+    sd_util = sd.get("utilization", 0) or 0
+    sd_reset = sd.get("resets_at")
+    print(f"  7-day all:       {sd_util:.0f}% used  →  resets {format_reset_time(sd_reset)} {time_until(sd_reset)}")
+
+    # 7-day sonnet
+    ss = usage.get("seven_day_sonnet", {})
+    if ss:
+        ss_util = ss.get("utilization", 0) or 0
+        ss_reset = ss.get("resets_at")
+        print(f"  7-day sonnet:    {ss_util:.0f}% used  →  resets {format_reset_time(ss_reset)} {time_until(ss_reset)}")
+
+    # 7-day opus
+    so = usage.get("seven_day_opus", {})
+    if so:
+        so_util = so.get("utilization", 0) or 0
+        so_reset = so.get("resets_at")
+        print(f"  7-day opus:      {so_util:.0f}% used  →  resets {format_reset_time(so_reset)} {time_until(so_reset)}")
+
+    # Extra usage
+    eu = usage.get("extra_usage", {})
+    if eu and eu.get("is_enabled"):
+        used = eu.get("used_credits", 0) or 0
+        limit = eu.get("monthly_limit", 0) or 0
+        print(f"  extra usage:     ${used:.2f} / ${limit:.2f}")
+
+    # Rate limits (only available via cookie method)
+    if rate_limits:
+        tier = rate_limits.get("rate_limit_tier", "unknown")
+        print(f"\n  Rate limit tier: {tier}")
+
+        limiters = rate_limits.get("tier_model_rate_limiters", [])
+        if limiters:
+            models = {}
+            for l in limiters:
+                mg = l.get("model_group", "")
+                if mg not in models:
+                    models[mg] = {}
+                models[mg][l["limiter"]] = l["value"]
+
+            for model, limits in sorted(models.items()):
+                conc = limits.get("concurrents", "?")
+                rpm = limits.get("raw_thinking_requests_per_minute", "?")
+                print(f"    {model}: {conc} concurrent, {rpm} rpm")
+
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Query Claude server-side usage")
+    parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    parser.add_argument("--check", type=float, metavar="THRESHOLD",
+                        help="Exit 0 if weekly usage < threshold%%, exit 1 if >=")
+    parser.add_argument("--reset-time", action="store_true",
+                        help="Print 7-day reset time as ISO 8601")
+    parser.add_argument("--hours-until-reset", action="store_true",
+                        help="Print hours until 7-day reset")
+    args = parser.parse_args()
+
+    usage, method = fetch_usage()
+
+    if args.json:
+        rate_limits = {}
+        if method == "cookies":
+            cookies = get_claude_cookies()
+            rate_limits = fetch_rate_limits(cookies)
+        print(json.dumps({"usage": usage, "rate_limits": rate_limits, "method": method}, indent=2))
+        return
+
+    if args.reset_time:
+        reset = usage.get("seven_day", {}).get("resets_at")
+        if reset:
+            print(reset)
+        else:
+            print("unknown", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.hours_until_reset:
+        reset = usage.get("seven_day", {}).get("resets_at")
+        if reset:
+            dt = datetime.fromisoformat(reset)
+            now = datetime.now(timezone.utc)
+            hours = (dt - now).total_seconds() / 3600
+            print(f"{hours:.1f}")
+        else:
+            print("-1")
+            sys.exit(1)
+        return
+
+    if args.check is not None:
+        util = usage.get("seven_day", {}).get("utilization", 0) or 0
+        if util < args.check:
+            print(f"OK: weekly usage at {util:.0f}% (under {args.check:.0f}% threshold)")
+            sys.exit(0)
+        else:
+            print(f"OVER: weekly usage at {util:.0f}% (>= {args.check:.0f}% threshold)")
+            sys.exit(1)
+
+    rate_limits = {}
+    if method == "cookies":
+        cookies = get_claude_cookies()
+        rate_limits = fetch_rate_limits(cookies)
+
+    print_summary(usage, rate_limits, method)
+
+
+if __name__ == "__main__":
+    main()

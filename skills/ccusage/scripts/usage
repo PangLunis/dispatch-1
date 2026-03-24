@@ -1,21 +1,32 @@
 #!/bin/bash
 # Quick Claude Code usage summary
-# Usage: usage [blocks|daily|monthly|weekly]
+# Usage: usage [blocks|daily|monthly|weekly|server]
 
 set -euo pipefail
 
 CMD="${1:-blocks}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 case "$CMD" in
   blocks|daily|monthly|weekly)
     ~/.bun/bin/bun x ccusage "$CMD"
+    # Also show server-side data for blocks view
+    if [ "$CMD" = "blocks" ]; then
+      echo ""
+      "$SCRIPT_DIR/server-usage" 2>/dev/null || echo "(server-side usage unavailable — log into claude.ai in Chrome)"
+    fi
+    ;;
+  server)
+    shift
+    "$SCRIPT_DIR/server-usage" "$@"
     ;;
   *)
-    echo "Usage: usage [blocks|daily|monthly|weekly]"
-    echo "  blocks  - Current 5-hour block status (default)"
+    echo "Usage: usage [blocks|daily|monthly|weekly|server]"
+    echo "  blocks  - Current 5-hour block status + server-side (default)"
     echo "  daily   - Usage by day"
     echo "  monthly - Usage by month"
     echo "  weekly  - Usage by week"
+    echo "  server  - Server-side usage only (pass --json, --check N, --reset-time, --hours-until-reset)"
     exit 1
     ;;
 esac
