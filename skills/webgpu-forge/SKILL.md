@@ -55,10 +55,13 @@ Use ONNX Runtime Web or Transformers.js instead when:
 ## Quick Reference Index
 
 - **Shader templates:** Phase 4 — tiled matmul, two-pass reduction, fused RMSNorm
-- **Known Bug Database:** `~/.claude/skills/webgpu-forge/KNOWN_BUGS.md` — 14 failure modes with symptom/cause/fix
+- **Known Bug Database:** `~/.claude/skills/webgpu-forge/KNOWN_BUGS.md` — 24 failure modes with symptom/cause/fix
 - **iOS Safari fixes:** Phase 8 — device loss, f16 fallback, submission limits
 - **WebGPU device limits:** Between Phases 4-5 — memory estimation, buffer limits
 - **Profiling:** Phase 7 — wall-clock + GPU timestamp-query templates
+- **Vision accuracy debugging:** Vision Model Deep Dive — batch testing, coordinate math, anti-patterns
+- **Reference source methodology:** Vision Model Deep Dive — studying original C++ source code
+- **Vision anti-patterns:** Vision Model Deep Dive — things that made accuracy worse
 
 ## Reference Implementations
 
@@ -234,7 +237,11 @@ This skill operates in 9 sequential phases. Each phase has clear inputs, outputs
 
    **For Vision:**
    - Implement letterbox resize on GPU (`letterboxResizeShader`) matching the exact coordinate formula the reference model uses
+   - **Use `Math.floor` for letterbox padding offsets** — integer division matching C++ reference implementations. Fractional offsets cause ~22% error.
    - Implement affine crop on GPU for multi-model pipelines (detector → crop → landmark model)
+   - **Use `textureSampleLevel` (hardware GPU bilinear)** for image input and crop — NOT manual f32 bilinear interpolation in compute shaders. Hardware sampling matches GL_LINEAR exactly and fixes recall issues (missed detections drop to zero in tested vision pipelines).
+   - **iOS Safari video input:** `copyExternalImageToTexture` silently produces garbage from `HTMLVideoElement`. Always draw video to a canvas first, then upload the canvas to GPU texture.
+   - **Skip `createImageBitmap` for `HTMLVideoElement`** — saves ~1ms per frame, unnecessary intermediate.
    - Match the reference model's exact normalization (e.g., [0,1] vs [-1,1] vs ImageNet mean/std)
 
 3. **Validation:** Compare extracted weight values against the source model: `np.allclose(extracted, original, atol=1e-3)`.
@@ -864,3 +871,180 @@ Each project took 3-4 days:
 - Day 1: Phases 1-3 (inspect, extract, reference)
 - Day 2: Phases 4-6 (shaders, engine, activation matching + debugging)
 - Day 3: Phases 7-9 (optimize, mobile harden, publish)
+
+---
+
+## Vision Model Deep Dive
+
+Lessons learned from porting real-time vision models (detector + landmark/regression pipelines) to WebGPU. These patterns apply to any vision model port — hand pose, face mesh, body pose, object detection, etc.
+
+> **See also:** Phase 2 has vision-specific preprocessing guidance (letterbox, affine crop, iOS workarounds). KNOWN_BUGS.md has a lookup table of vision-specific failure modes with symptoms and fixes.
+
+### Vision Debugging Checklist
+
+When accuracy is wrong, work through this in order:
+
+1. **Verify weights match reference element-by-element** — if weights are wrong, nothing else matters
+2. **Feed the reference's exact crop to your model** (pipeline isolation test) — separates ROI/crop bugs from model bugs
+3. **Check coordinate space of rotation math** — pixel space vs normalized space (see Coordinate Math Gotchas #1)
+4. **Check shift-before-square ordering** — apply shift BEFORE squaring to long side (see #3 below)
+5. **Check letterbox rounding** — use `Math.floor`, not `Math.round` (see #4 below)
+6. **Check bilinear upsample formula** — `half_pixel_centers=true` for FPN layers (see #5 below)
+7. **Check sRGB / color space conversion** — reference runtimes apply sRGB-to-linear conversion; skipping it gives different input values
+8. **Reset temporal smoother in batch tests** — stale state inflates error by 10x
+9. **Render affine crop overlay** — visually verify the crop region on the source image to spot ROI bugs instantly
+10. **Check WGSL buffer alignment** — ensure 16-byte alignment for `vec4<f32>` packing; misaligned reads cause silent garbage values
+11. **Consult KNOWN_BUGS.md Error Magnitude Guide** — triage by how wrong the values are
+
+### Reference Source Methodology
+
+When reimplementing an existing model, study the original source code — not just the model weights:
+
+**What to look for in the reference codebase:**
+- **Image-to-tensor transforms** — how images get cropped, rotated, and fed to the model. The exact affine matrix math matters.
+- **ROI transformation** — how regions of interest get computed and transformed between frames (for tracking pipelines)
+- **Rotation computation** — how rotation angles are derived from keypoints (e.g., two keypoints that define the orientation of the target object)
+- **Output projection** — how crop-space predictions get projected back to image coordinates
+- **NMS implementation** — many pipelines use weighted NMS (not standard NMS). The surviving detection's coordinates are a weighted average of all overlapping detections. This is load-bearing for accuracy.
+- **Detection decode** — SSD anchor generation, box decode formulas. Extract anchor parameters (stride, aspect ratios, anchors-per-cell) from the model metadata or config files rather than hardcoding.
+- **Pipeline graph** — which models connect to which, what data flows where
+
+**Runtime shader capture technique:**
+- Hook `compileShader` in the browser to intercept the reference runtime's WebGL shaders at runtime
+- Compare your WGSL shader output against these captured shaders element-by-element
+- Invaluable for understanding what the GPU actually computes vs what the docs say
+
+**Weight verification:**
+- Extract weights from both your implementation and the reference, compare element-by-element
+- If weights don't match exactly, something is wrong with extraction — fix this BEFORE debugging accuracy
+- Don't be alarmed by mismatches in unused/padding tensors — verify that all real weights match
+
+### Vision Accuracy Debugging Methodology
+
+Phase 6 describes generic activation matching. For vision models, you need a more sophisticated approach:
+
+**1. Batch testing across diverse images (NOT just 1 reference)**
+- Use 7+ test images with varying positions, sizes, rotations, lighting, occlusion
+- Some bugs only manifest on specific inputs (e.g., rotated subjects, small targets, multi-instance)
+- Track per-image deviation to identify which images reveal which bugs
+
+**2. Best-pair matching for multi-detection comparison**
+- When comparing N detections from your model vs M from reference, match by overall output distance — NOT by a single keypoint or detection index
+- Single-keypoint matching fails when multiple instances are close together
+
+**3. Pipeline isolation test pages**
+- Build separate test pages that isolate each pipeline stage:
+  - **Crop compare** — Compare crop-space outputs (separates crop ROI error from model error)
+  - **Detection diagnostics** — Detection model only, compare raw output element-by-element
+  - **Activation compare** — Per-layer activation comparison against reference
+  - **Detection decode compare** — Element-by-element SSD/anchor decode comparison
+  - **Pipeline isolate** — Feed the reference model's exact crop to your model (bypasses ROI error entirely)
+- This tells you WHERE the error is: detection, ROI computation, crop, or the main model
+
+**4. Visual debugging of affine crops**
+- Render the computed crop region overlaid on the source image — this is the fastest way to spot ROI bugs
+- If the crop region doesn't visually match what the reference runtime crops, the ROI math is wrong
+- Build a simple diagnostic page that draws the affine transform rectangle on the input image
+
+**5. Temporal smoother reset**
+- If using temporal smoothing (one-euro filter, EMA, etc.), it causes 10x error inflation when testing on unrelated images
+- ALWAYS reset smoother state between unrelated images in batch testing
+- In our experience, error dropped from ~2.2% to ~0.9% just by resetting smoother state between test images
+
+**6. Understanding the irreducible GPU noise floor**
+- Reference runtimes' own GPU vs CPU implementations typically differ by 0.3-0.5%
+- Different shader compilation paths (WGSL→naga→Metal vs GLSL→ANGLE→Metal) produce different floating-point instruction ordering
+- Anything within ~0.5% of the reference is likely at the hardware noise floor — unfixable and acceptable
+- A well-tuned port should achieve <1% average deviation from the reference runtime
+
+### Vision Coordinate Math Gotchas
+
+These cost days of debugging. Get them right from the start:
+
+**1. Pixel-space rotation (NOT normalized space)**
+- When computing rotation from keypoints (e.g., `atan2(y1-y2, x1-x2)`), do it in PIXEL coordinates
+- Many C++ reference implementations do rotation math in pixel space, then use the result in normalized space
+- Doing atan2 in normalized [0,1] space gives wrong angles on non-square images
+
+**2. Pixel-space shift normalization**
+- When applying a center shift to an ROI, rotate the shift vector in pixel space
+- Normalize X by `imgW` and Y by `imgH` SEPARATELY after rotation
+- This correctly handles non-square images — normalizing before rotation does not
+
+**3. Shift BEFORE square_long**
+- Apply the center shift using original bounding box dimensions BEFORE squaring to long side
+- Wrong order: `square_long(box)` then `shift(squared_box)` ← WRONG
+- Right order: `shift(box)` then `square_long(shifted_box)` ← CORRECT
+- Reference C++ implementations apply shift first, then square — matching this order is critical
+
+**4. Math.floor for letterbox offsets**
+- Use integer division (`Math.floor`) for letterbox padding, matching C++ integer division behavior
+- Using Math.round or fractional offsets: ~22% error on some images
+- Using Math.floor: ~4% error (then further reduced by other fixes)
+
+**5. half_pixel_centers=true for bilinear upsample**
+- Feature Pyramid Network (FPN) and similar upsample layers often need the half-pixel-center coordinate formula
+- `src_coord = (dst_coord + 0.5) * (src_size / dst_size) - 0.5`
+- Without this, outputs are offset by half a pixel — causes 2-3% systematic error
+
+**6. NormalizeRadians**
+- Always wrap rotation angles to `[-π, π]` range
+- Unwrapped angles cause discontinuities in ROI tracking across frames
+
+### Multi-Model Pipeline Details
+
+Phase 5 mentions multi-model briefly. Here's what a real multi-model vision pipeline (detector → landmark/regression) requires:
+
+**SSD Detection Decode:**
+- Anchor generation: often a dual-grid pattern (e.g., coarse grid with many anchors + fine grid with few anchors)
+- Extract anchor parameters (stride, aspect ratios, number per cell) from model metadata or config — don't hardcode
+- Decode boxes relative to anchors: `center_x = anchor_x + box_offset_x * anchor_w`
+- Score sigmoid activation on class logits
+
+**Weighted NMS (not regular NMS):**
+- Some pipelines use weighted NMS: surviving detections' coordinates are a weighted average of all overlapping detections, not just the top-scoring one
+- IoU threshold typically 0.3
+- If the reference uses weighted NMS, standard NMS will degrade accuracy — this is load-bearing
+
+**ROI Tracking Between Frames:**
+- After the second-stage model runs, use a confidence score to decide: re-detect or track (reuse previous ROI)
+- Tracking thresholds are often lower than you'd expect (e.g., 0.1 not 0.5 — confidence scores are calibrated differently per model)
+- On tracking: compute new ROI from predictions (rotation from key points, bounding box of all outputs)
+- On loss: fall back to detection next frame
+
+**Pipelined GPU Readback:**
+- Double-buffered: submit new inference, immediately start `mapAsync` on previous frame's staging buffer
+- Removes `onSubmittedWorkDone()` sync point — reduces latency by 1-2ms
+- Critical for real-time video (>30 FPS targets)
+
+**Temporal Smoothing:**
+- One-euro filter or similar for stable overlay across frames
+- Parameters: `minCutoff`, `beta`, `dCutoff` (adaptive cutoff based on movement speed)
+- MUST have a `reset()` method for: new detections, batch testing, non-video inputs
+
+### Vision Anti-Patterns (Things That Made Accuracy Worse)
+
+Tried and measured — these all degraded accuracy or performance in practice:
+
+| Approach | Result | Why |
+|----------|--------|-----|
+| vec4 dot product accumulation in conv layers | Slightly worse | Different floating-point accumulation order than reference |
+| f16 truncation of intermediate activations | Much worse (~60% error increase) | Reference runtimes often use f32 for intermediates even on mobile |
+| BORDER_REPLICATE for crop out-of-bounds | Slightly worse | Zero-fill may match the reference's actual behavior despite documentation saying otherwise |
+| Matching the reference's exact FMA instruction order | No improvement | Different compilers optimize differently; instruction-level matching doesn't help in WGSL |
+| Skipping color space conversion on input images | Worse | Reference applies sRGB conversion; skipping gives different input values |
+| f32 weights when reference uses f16 | Slightly worse | If the reference uses mediump/f16 on mobile GPUs, matching that precision is more accurate |
+| `mix()` vs manual interpolation for bilinear upsample | No difference | Mathematically equivalent, no accuracy benefit either way |
+| Standard NMS when reference uses weighted NMS | Worse | Weighted NMS is load-bearing for multi-instance accuracy |
+| Manual bilinear interpolation in compute shader | Low recall (missed detections) | Use `textureSampleLevel` (hardware GPU bilinear) instead — see Phase 2 Vision preprocessing |
+
+### Vision Performance Lessons
+
+Key performance findings from vision model ports:
+
+- **Match the reference's precision level:** Reference runtimes may use `mediump` (fp16) for convolution layers on Apple GPUs — matching this can improve both speed and accuracy
+- **f16 compute often has no accuracy impact** if the reference also uses it — test and verify
+- **Remove `onSubmittedWorkDone()`** — unnecessary sync point, saves 1-2ms per frame
+- **Skip `createImageBitmap` for `HTMLVideoElement`** — unnecessary intermediate, saves ~1ms per frame
+- **Pipelined readback (double-buffered mapAsync)** is essential for real-time video — never block on the current frame's readback
+- **A well-tuned WebGPU port can match or beat reference runtimes** on desktop (1.5-2x faster typical) and mobile (1.3-1.5x faster on older devices, roughly equivalent on newest hardware)
