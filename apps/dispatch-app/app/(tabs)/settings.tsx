@@ -8,7 +8,13 @@ import {
   View,
 } from "react-native";
 import { router } from "expo-router";
-import * as Notifications from "expo-notifications";
+// expo-notifications is iOS/Android only — conditionally import for web compat
+let Notifications: typeof import("expo-notifications") | null = null;
+if (Platform.OS !== "web") {
+  try {
+    Notifications = require("expo-notifications") as typeof import("expo-notifications");
+  } catch { /* native module not available */ }
+}
 import { branding } from "@/src/config/branding";
 import {
   getApiBaseUrl,
@@ -133,8 +139,8 @@ export default function SettingsScreen() {
 
   // Clear notifications
   const handleClearNotifications = useCallback(async () => {
-    await Notifications.dismissAllNotificationsAsync();
-    await Notifications.setBadgeCountAsync(0);
+    await Notifications?.dismissAllNotificationsAsync();
+    await Notifications?.setBadgeCountAsync(0);
     showAlert("Done", "Notifications cleared.");
   }, []);
 

@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
-import * as Notifications from "expo-notifications";
 import type { EventSubscription } from "expo-modules-core";
 import { router } from "expo-router";
 import { registerAPNsToken } from "../api/push";
+
+// expo-notifications is iOS/Android only — conditionally import to avoid web crashes.
+// On web, Notifications is null and all notification functions are no-ops.
+let Notifications: typeof import("expo-notifications") | null = null;
+if (Platform.OS !== "web") {
+  try {
+    Notifications = require("expo-notifications") as typeof import("expo-notifications");
+  } catch {
+    // Native module not available (e.g., Expo Go without the module)
+  }
+}
 
 // Track the currently open chat ID so we can suppress push banners for it
 let _activeChatId: string | null = null;
@@ -14,20 +24,16 @@ let _activeChatId: string | null = null;
  */
 export function setActiveChatId(chatId: string | null) {
   _activeChatId = chatId;
-  console.warn("[push] Active chat set to:", chatId);
 }
 
-// Configure how notifications are handled when app is in foreground
-Notifications.setNotificationHandler({
+// Configure how notifications are handled when app is in foreground (iOS/Android only)
+Notifications?.setNotificationHandler({
   handleNotification: async (notification) => {
     // Suppress banner/sound for the chat the user currently has open
     const data = notification.request.content.data;
     const notifChatId = data && typeof data.chat_id === "string" ? data.chat_id : null;
 
-    console.warn("[push] handleNotification — notifChatId:", notifChatId, "activeChatId:", _activeChatId);
-
     if (notifChatId && notifChatId === _activeChatId) {
-      console.warn("[push] Suppressing notification for active chat:", notifChatId);
       return {
         shouldShowBanner: false,
         shouldShowList: false,
@@ -49,7 +55,7 @@ Notifications.setNotificationHandler({
  * Extract chat_id and chat_title from a notification's data payload.
  */
 function getNotificationData(
-  notification: Notifications.Notification,
+  notification: { request: { content: { data: Record<string, unknown> | null } } },
 ): { chatId: string | null; chatTitle: string | null } {
   const data = notification.request.content.data;
   const chatId = data && typeof data.chat_id === "string" ? data.chat_id : null;
@@ -59,9 +65,10 @@ function getNotificationData(
 
 /**
  * Dismiss all notifications in the notification center that belong to a specific chat.
+ * No-op on web.
  */
 export async function dismissNotificationsForChat(chatId: string | null) {
-  if (!chatId) return;
+  if (!chatId || !Notifications) return;
   try {
     const delivered = await Notifications.getPresentedNotificationsAsync();
     for (const notif of delivered) {
@@ -82,24 +89,15 @@ export async function dismissNotificationsForChat(chatId: string | null) {
  */
 const _processedIds = new Set<string>();
 
-function navigateToChat(notification: Notifications.Notification, source: string) {
+function navigateToChat(
+  notification: { request: { identifier: string; content: { title?: string | null; body?: string | null; data: Record<string, unknown> | null } } },
+  source: string,
+) {
   const responseId = notification.request.identifier;
   if (_processedIds.has(responseId)) return;
   _processedIds.add(responseId);
 
-  // Log full content for debugging
-  const content = notification.request.content;
-  console.warn(`[push] Notification tapped (${source}), full content:`, JSON.stringify({
-    title: content.title,
-    body: content.body,
-    data: content.data,
-    // Check if data is nested differently
-    contentKeys: Object.keys(content),
-    requestKeys: Object.keys(notification.request),
-  }));
-
   const { chatId, chatTitle } = getNotificationData(notification);
-  console.warn(`[push] Notification tapped (${source}), data:`, JSON.stringify(notification.request.content.data));
 
   // Dismiss all notifications for this chat
   dismissNotificationsForChat(chatId).catch(() => {});
@@ -119,19 +117,17 @@ function navigateToChat(notification: Notifications.Notification, source: string
             pathname: "/chat/[id]",
             params: { id: chatId, ...(chatTitle ? { chatTitle } : {}) },
           });
-          console.warn("[push] navigation complete: tabs -> chat");
         }, 50);
       } catch (err) {
         console.error("[push] navigation failed:", err);
       }
     }, 500);
-  } else {
-    console.warn("[push] No chat_id in notification data, skipping navigation");
   }
 }
 
 /**
  * Hook that registers for push notifications on app launch (iOS only).
+ * On web, returns { isRegistered: false } immediately.
  *
  * Uses both approaches for notification tap handling:
  * 1. useLastNotificationResponse (hook) — works for cold starts
@@ -143,8 +139,8 @@ export function usePushNotifications(): { isRegistered: boolean } {
   const notificationListener = useRef<EventSubscription | null>(null);
   const responseListener = useRef<EventSubscription | null>(null);
 
-  // Hook-based approach: catches cold start notification taps
-  const lastResponse = Notifications.useLastNotificationResponse();
+  // Hook-based approach: catches cold start notification taps (iOS/Android only)
+  const lastResponse = Notifications?.useLastNotificationResponse() ?? null;
 
   useEffect(() => {
     if (!lastResponse) return;
@@ -152,13 +148,14 @@ export function usePushNotifications(): { isRegistered: boolean } {
   }, [lastResponse]);
 
   useEffect(() => {
-    if (Platform.OS !== "ios") {
+    if (Platform.OS !== "ios" || !Notifications) {
       return;
     }
 
     let mounted = true;
 
     async function registerForPush() {
+      if (!Notifications) return;
       try {
         const { status: existingStatus } =
           await Notifications.getPermissionsAsync();
@@ -201,7 +198,6 @@ export function usePushNotifications(): { isRegistered: boolean } {
     // Listener-based approach: catches background/foreground notification taps
     responseListener.current =
       Notifications.addNotificationResponseReceivedListener((response) => {
-        console.warn("[push] Notification response received (listener)");
         navigateToChat(response.notification, "listener");
       });
 

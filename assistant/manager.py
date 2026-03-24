@@ -1644,6 +1644,7 @@ class Manager:
         """
         from bus.consumers import ConsumerRunner, ConsumerConfig, actions
         from assistant.fact_reminder_consumer import handle_fact_event
+        from assistant.tweet_consumer import handle_tweet_scheduled
 
         configs = [
             # Audit consumer for messages topic — tracks all message flow
@@ -1715,6 +1716,17 @@ class Manager:
                 max_retries=1,
                 error_action=actions.dead_letter(self._bus, "messages.dlq"),
                 commit_interval_s=1,
+            ),
+            # Tweet consumer: posts scheduled tweets from the midnight tweet planner.
+            # Listens for tweet.scheduled events, waits until the scheduled time, then posts.
+            ConsumerConfig(
+                topic="tweets",
+                group="tweet-poster",
+                filter=lambda r: r.type == "tweet.scheduled",
+                action=actions.call_function(handle_tweet_scheduled),
+                max_retries=2,
+                error_action=actions.dead_letter(self._bus, "dead-letters"),
+                commit_interval_s=5,
             ),
         ]
         return ConsumerRunner(self._bus, configs)
@@ -3777,7 +3789,7 @@ You have 15 minutes. Work efficiently.
         chat_id: str = chat_identifier if is_group and chat_identifier else phone
 
         # Build the reaction notification
-        target_preview = f': "{target_text[:100]}..."' if target_text and len(target_text) > 100 else f': "{target_text}"' if target_text else ""
+        target_preview = f': "{target_text}"' if target_text else ""
 
         # Format reaction for injection
         reaction_text = f"""

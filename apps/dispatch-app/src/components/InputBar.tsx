@@ -313,7 +313,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
           accessibilityLabel="Paste image from clipboard"
         >
           <View style={styles.pasteBarContent}>
-            <SymbolView name="doc.on.clipboard" tintColor="#a1a1aa" size={14} />
+            <SymbolView name={{ ios: "doc.on.clipboard", android: "content_paste", web: "content_paste" }} tintColor="#a1a1aa" size={14} />
             <Text style={styles.pasteBarText}>Paste image from clipboard</Text>
           </View>
         </Pressable>
@@ -367,7 +367,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
               accessibilityRole="button"
               accessibilityLabel="Remove attachment"
             >
-              <SymbolView name="xmark" tintColor="#fafafa" size={10} weight="bold" />
+              <SymbolView name={{ ios: "xmark", android: "close", web: "close" }} tintColor="#fafafa" size={10} weight="bold" />
             </Pressable>
           </View>
         </View>
@@ -402,7 +402,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
                 accessibilityState={{ expanded: activePanel === "attach" }}
               >
                 <View style={activePanel !== "none" ? { transform: [{ rotate: "45deg" }] } : undefined}>
-                  <SymbolView name="plus" tintColor="#a1a1aa" size={18} weight="medium" />
+                  <SymbolView name={{ ios: "plus", android: "add", web: "add" }} tintColor="#a1a1aa" size={18} weight="medium" />
                 </View>
               </Pressable>
             ) : null}
@@ -426,7 +426,13 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
               editable={!disabled}
               returnKeyType="default"
               blurOnSubmit={false}
-              onSubmitEditing={Platform.OS === "web" ? handleSend : undefined}
+              onKeyPress={Platform.OS === "web" ? (e: any) => {
+                // Enter sends, Shift+Enter inserts newline
+                if (e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              } : undefined}
               accessibilityLabel={speech.isListening ? "Listening for speech" : "Message input"}
             />
             {speech.isListening ? (
@@ -457,7 +463,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
                   accessibilityLabel="Send message"
                 >
                   <SymbolView
-                    name="arrow.up"
+                    name={{ ios: "arrow.up", android: "arrow_upward", web: "arrow_upward" }}
                     tintColor="#ffffff"
                     size={18}
                     weight="bold"
@@ -478,7 +484,7 @@ export function InputBar({ onSend, onSendWithImage, disabled, chatId, voiceConve
                 accessibilityLabel="Start dictation"
                 accessibilityHint="Long press for voice mode"
               >
-                <SymbolView name="mic.fill" tintColor="#8E8E93" size={18} />
+                <SymbolView name={{ ios: "mic.fill", android: "mic", web: "mic" }} tintColor="#8E8E93" size={18} />
               </Pressable>
             ) : null}
           </View>

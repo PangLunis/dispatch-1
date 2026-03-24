@@ -10,3 +10,8 @@ export function usePushNotifications(): { isRegistered: boolean } {
 export function setActiveChatId(_chatId: string | null) {
   // no-op
 }
+
+/** No-op on web. */
+export async function dismissNotificationsForChat(_chatId: string | null) {
+  // no-op
+}

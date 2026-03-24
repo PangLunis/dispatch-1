@@ -1,0 +1,625 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["curl_cffi"]
+# ///
+"""
+Twitter/X CLI - Interact with X via authenticated API calls.
+
+Authentication uses Chrome session cookies (no API keys needed).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.parse import quote
+
+from curl_cffi import CurlMime, requests
+
+# X's public web bearer token (same for all web users)
+BEARER = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+
+# Default GraphQL query IDs (may need refreshing)
+DEFAULT_QUERY_IDS = {
+    "CreateTweet": "zkcFc6F-RKRgWN8HUkJfZg",
+    "DeleteTweet": "VaenaVgh5q5ih7kvyVjgtg",
+    "HomeTimeline": "L8Lb9oomccM012S7fQ-QKA",
+    "UserByScreenName": "IGgvgiOx4QZndDHuD3x9TQ",
+    "UserTweets": "E3opETHurmVJflFsUBVuUQ",
+    "SearchTimeline": "gkjsKepM6gl_HmFWoWKfgg",
+    "FavoriteTweet": "lI07N6Otwv1PhnEgXILM7A",
+    "UnfavoriteTweet": "ZYKSe-w7KEslx3JhSIk5LA",
+    "CreateRetweet": "ojPdsZsimiJrUGLR1sjUtA",
+    "DeleteRetweet": "iQtK4dl5hBmXewYZuEOKVw",
+    "Notifications": "PsAmI_yBYKz4zVMKpOMJcg",
+}
+
+CACHE_FILE = Path.home() / ".cache" / "twitter-ids.json"
+
+
+def get_query_ids():
+    if CACHE_FILE.exists():
+        try:
+            cached = json.loads(CACHE_FILE.read_text())
+            return {**DEFAULT_QUERY_IDS, **cached}
+        except Exception:
+            pass
+    return DEFAULT_QUERY_IDS.copy()
+
+
+def get_cookies():
+    chrome = os.path.expanduser("~/.claude/skills/chrome-control/scripts/chrome")
+    result = subprocess.run([chrome, "cookies", "x.com"], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error getting cookies: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    cookies = json.loads(result.stdout)
+    return {c["name"]: c["value"] for c in cookies}
+
+
+def make_headers(cookies):
+    return {
+        "authorization": f"Bearer {BEARER}",
+        "x-csrf-token": cookies["ct0"],
+        "x-twitter-auth-type": "OAuth2Session",
+        "x-twitter-active-user": "yes",
+        "x-twitter-client-language": "en",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "origin": "https://x.com",
+        "referer": "https://x.com/",
+    }
+
+
+def make_cookie_str(cookies):
+    return "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+
+def api_get(url, cookies, headers, params=None):
+    h = {**headers, "cookie": make_cookie_str(cookies)}
+    resp = requests.get(url, headers=h, params=params, impersonate="chrome")
+    if resp.status_code != 200:
+        print(f"API error {resp.status_code}: {resp.text[:500]}", file=sys.stderr)
+        sys.exit(1)
+    return resp.json()
+
+
+def api_post(url, cookies, headers, data=None, json_body=None, content_type=None):
+    h = {**headers, "cookie": make_cookie_str(cookies)}
+    if content_type:
+        h["content-type"] = content_type
+    if json_body is not None:
+        h["content-type"] = "application/json"
+        resp = requests.post(url, headers=h, data=json.dumps(json_body), impersonate="chrome")
+    elif data is not None:
+        if not content_type:
+            h["content-type"] = "application/x-www-form-urlencoded"
+        resp = requests.post(url, headers=h, data=data, impersonate="chrome")
+    else:
+        resp = requests.post(url, headers=h, impersonate="chrome")
+    return resp
+
+
+def graphql_post(query_name, variables, cookies, headers, features=None):
+    ids = get_query_ids()
+    qid = ids.get(query_name)
+    if not qid:
+        print(f"Unknown query: {query_name}. Run 'twitter refresh-ids'.", file=sys.stderr)
+        sys.exit(1)
+
+    url = f"https://x.com/i/api/graphql/{qid}/{query_name}"
+
+    default_features = {
+        "creator_subscriptions_tweet_preview_api_enabled": True,
+        "communities_web_enable_tweet_community_results_fetch": True,
+        "c9s_tweet_anatomy_moderator_badge_enabled": True,
+        "articles_preview_enabled": True,
+        "responsive_web_edit_tweet_api_enabled": True,
+        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+        "view_counts_everywhere_api_enabled": True,
+        "longform_notetweets_consumption_enabled": True,
+        "responsive_web_twitter_article_tweet_consumption_enabled": True,
+        "tweet_awards_web_tipping_enabled": False,
+        "creator_subscriptions_quote_tweet_preview_enabled": False,
+        "freedom_of_speech_not_reach_fetch_enabled": True,
+        "standardized_nudges_misinfo": True,
+        "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+        "rweb_video_timestamps_enabled": True,
+        "longform_notetweets_rich_text_read_enabled": True,
+        "longform_notetweets_inline_media_enabled": True,
+        "responsive_web_enhance_cards_enabled": False,
+        "responsive_web_graphql_exclude_directive_enabled": True,
+        "verified_phone_label_enabled": False,
+        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+        "responsive_web_graphql_timeline_navigation_enabled": True,
+        "tweetypie_unmention_optimization_enabled": True,
+    }
+
+    if features:
+        default_features.update(features)
+
+    body = {"variables": variables, "features": default_features, "queryId": qid}
+
+    resp = api_post(url, cookies, headers, json_body=body)
+    if resp.status_code != 200:
+        print(f"GraphQL error {resp.status_code}: {resp.text[:500]}", file=sys.stderr)
+        sys.exit(1)
+    return resp.json()
+
+
+def format_tweet(tweet_result, indent=""):
+    try:
+        result = tweet_result
+        if "tweet" in result:
+            result = result["tweet"]
+
+        legacy = result.get("legacy", {})
+        core = result.get("core", {})
+        user_results = core.get("user_results", {}).get("result", {})
+        user_legacy = user_results.get("legacy", {})
+
+        name = user_legacy.get("name", "?")
+        screen_name = user_legacy.get("screen_name", "?")
+        text = legacy.get("full_text", legacy.get("text", ""))
+        created = legacy.get("created_at", "")
+        tweet_id = legacy.get("id_str", result.get("rest_id", "?"))
+        retweets = legacy.get("retweet_count", 0)
+        likes = legacy.get("favorite_count", 0)
+        replies = legacy.get("reply_count", 0)
+        views = result.get("views", {}).get("count", "?")
+
+        lines = [
+            f"{indent}{name} @{screen_name} \u00b7 {created}",
+            f"{indent}  {text}",
+            f"{indent}  \U0001f4ac {replies}  \U0001f501 {retweets}  \u2764\ufe0f {likes}  \U0001f441 {views}  [ID: {tweet_id}]",
+        ]
+
+        qt = legacy.get("quoted_status_result", {}).get("result", {})
+        if qt:
+            lines.append(format_tweet(qt, indent=indent + "  \u2502 "))
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"{indent}[Error formatting tweet: {e}]"
+
+
+def extract_tweets_from_timeline(data):
+    tweets = []
+    try:
+        instructions = (
+            data.get("data", {}).get("home", {}).get("home_timeline_urt", {}).get("instructions", [])
+        )
+        if not instructions:
+            instructions = (
+                data.get("data", {}).get("search_by_raw_query", {}).get("search_timeline", {}).get("timeline", {}).get("instructions", [])
+            )
+        if not instructions:
+            instructions = (
+                data.get("data", {}).get("user", {}).get("result", {}).get("timeline_v2", {}).get("timeline", {}).get("instructions", [])
+            )
+
+        for instruction in instructions:
+            entries = instruction.get("entries", [])
+            for entry in entries:
+                content = entry.get("content", {})
+                if content.get("entryType") == "TimelineTimelineItem":
+                    item = content.get("itemContent", {})
+                    tweet_result = item.get("tweet_results", {}).get("result", {})
+                    if tweet_result and tweet_result.get("__typename") in ("Tweet", "TweetWithVisibilityResults"):
+                        tweets.append(tweet_result)
+    except Exception:
+        pass
+    return tweets
+
+
+def cmd_post(args, cookies, headers):
+    variables = {
+        "tweet_text": args.text,
+        "dark_request": False,
+        "media": {"media_entities": [], "possibly_sensitive": False},
+        "semantic_annotation_ids": [],
+    }
+
+    if args.reply_to:
+        variables["reply"] = {"in_reply_to_tweet_id": args.reply_to, "exclude_reply_user_ids": []}
+
+    if args.quote:
+        variables["attachment_url"] = f"https://x.com/i/status/{args.quote}"
+
+    if args.media:
+        media_id = upload_media(args.media, cookies, headers)
+        variables["media"]["media_entities"].append({"media_id": media_id, "tagged_users": []})
+
+    result = graphql_post("CreateTweet", variables, cookies, headers)
+    tweet = result.get("data", {}).get("create_tweet", {}).get("tweet_results", {}).get("result", {})
+    tweet_id = tweet.get("rest_id", "unknown")
+    print(f"Tweet posted! ID: {tweet_id}")
+    print(f"https://x.com/svenflowai/status/{tweet_id}")
+
+
+def cmd_timeline(args, cookies, headers):
+    variables = {
+        "count": args.limit,
+        "includePromotedContent": False,
+        "latestControlAvailable": True,
+        "requestContext": "launch",
+    }
+    data = graphql_post("HomeTimeline", variables, cookies, headers)
+    tweets = extract_tweets_from_timeline(data)
+
+    if not tweets:
+        print("No tweets found.")
+        return
+
+    for i, tweet in enumerate(tweets[:args.limit]):
+        if i > 0:
+            print("\u2500" * 60)
+        print(format_tweet(tweet))
+
+
+def cmd_user_tweets(args, cookies, headers):
+    user_data = graphql_post("UserByScreenName", {"screen_name": args.username, "withSafetyModeUserFields": True}, cookies, headers)
+    user_id = user_data.get("data", {}).get("user", {}).get("result", {}).get("rest_id")
+    if not user_id:
+        print(f"User @{args.username} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    variables = {
+        "userId": user_id,
+        "count": args.limit,
+        "includePromotedContent": False,
+        "withQuickPromoteEligibilityTweetFields": True,
+        "withVoice": True,
+        "withV2Timeline": True,
+    }
+    data = graphql_post("UserTweets", variables, cookies, headers)
+    tweets = extract_tweets_from_timeline(data)
+
+    if not tweets:
+        print(f"No tweets found for @{args.username}.")
+        return
+
+    for i, tweet in enumerate(tweets[:args.limit]):
+        if i > 0:
+            print("\u2500" * 60)
+        print(format_tweet(tweet))
+
+
+def cmd_follow(args, cookies, headers):
+    user_data = graphql_post("UserByScreenName", {"screen_name": args.username, "withSafetyModeUserFields": True}, cookies, headers)
+    user_id = user_data.get("data", {}).get("user", {}).get("result", {}).get("rest_id")
+    if not user_id:
+        print(f"User @{args.username} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    resp = api_post("https://x.com/i/api/1.1/friendships/create.json", cookies, headers, data=f"user_id={user_id}")
+    if resp.status_code == 200:
+        print(f"Now following @{args.username}")
+    else:
+        print(f"Failed to follow: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+
+
+def cmd_unfollow(args, cookies, headers):
+    user_data = graphql_post("UserByScreenName", {"screen_name": args.username, "withSafetyModeUserFields": True}, cookies, headers)
+    user_id = user_data.get("data", {}).get("user", {}).get("result", {}).get("rest_id")
+    if not user_id:
+        print(f"User @{args.username} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    resp = api_post("https://x.com/i/api/1.1/friendships/destroy.json", cookies, headers, data=f"user_id={user_id}")
+    if resp.status_code == 200:
+        print(f"Unfollowed @{args.username}")
+    else:
+        print(f"Failed to unfollow: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+
+
+def cmd_like(args, cookies, headers):
+    graphql_post("FavoriteTweet", {"tweet_id": args.tweet_id}, cookies, headers)
+    print(f"Liked tweet {args.tweet_id}")
+
+
+def cmd_unlike(args, cookies, headers):
+    graphql_post("UnfavoriteTweet", {"tweet_id": args.tweet_id}, cookies, headers)
+    print(f"Unliked tweet {args.tweet_id}")
+
+
+def cmd_retweet(args, cookies, headers):
+    graphql_post("CreateRetweet", {"tweet_id": args.tweet_id, "dark_request": False}, cookies, headers)
+    print(f"Retweeted tweet {args.tweet_id}")
+
+
+def cmd_unretweet(args, cookies, headers):
+    graphql_post("DeleteRetweet", {"source_tweet_id": args.tweet_id, "dark_request": False}, cookies, headers)
+    print(f"Unretweeted tweet {args.tweet_id}")
+
+
+def cmd_search(args, cookies, headers):
+    variables = {"rawQuery": args.query, "count": args.limit, "querySource": "typed_query", "product": "Latest"}
+    data = graphql_post("SearchTimeline", variables, cookies, headers)
+    tweets = extract_tweets_from_timeline(data)
+
+    if not tweets:
+        print("No results found.")
+        return
+
+    for i, tweet in enumerate(tweets[:args.limit]):
+        if i > 0:
+            print("\u2500" * 60)
+        print(format_tweet(tweet))
+
+
+def cmd_notifications(args, cookies, headers):
+    data = api_get(
+        "https://x.com/i/api/2/notifications/all.json", cookies, headers,
+        params={
+            "include_profile_interstitial_type": "1", "include_blocking": "1",
+            "include_blocked_by": "1", "include_followed_by": "1",
+            "include_want_retweets": "1", "include_mute_edge": "1",
+            "include_can_dm": "1", "include_can_media_tag": "1",
+            "include_ext_is_blue_verified": "1", "include_ext_verified_type": "1",
+            "skip_status": "1", "cards_platform": "Web-12", "include_cards": "1",
+            "include_ext_alt_text": "true", "include_quote_count": "true",
+            "include_reply_count": "1", "tweet_mode": "extended",
+            "include_ext_views": "true", "include_entities": "true",
+            "count": str(args.limit),
+        },
+    )
+
+    notifications = data.get("globalObjects", {}).get("notifications", {})
+    users = data.get("globalObjects", {}).get("users", {})
+
+    if not notifications:
+        print("No notifications.")
+        return
+
+    count = 0
+    for nid, notif in sorted(notifications.items(), key=lambda x: x[1].get("timestampMs", "0"), reverse=True):
+        if count >= args.limit:
+            break
+        msg = notif.get("message", {}).get("text", "")
+        ts = notif.get("timestampMs", "")
+        ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ts) / 1000)) if ts else "?"
+
+        user_ids = [e.get("ref", {}).get("user", {}).get("id", "") for e in notif.get("message", {}).get("entities", []) if e.get("ref", {}).get("user")]
+        user_names = [f"@{users.get(uid, {}).get('screen_name', '?')}" for uid in user_ids if users.get(uid)]
+
+        print(f"[{ts_str}] {msg}")
+        if user_names:
+            print(f"  From: {', '.join(user_names)}")
+        count += 1
+        if count < args.limit:
+            print()
+
+
+def cmd_user(args, cookies, headers):
+    data = graphql_post("UserByScreenName", {"screen_name": args.username, "withSafetyModeUserFields": True}, cookies, headers)
+    user = data.get("data", {}).get("user", {}).get("result", {})
+    if not user:
+        print(f"User @{args.username} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    legacy = user.get("legacy", {})
+    print(f"Name: {legacy.get('name', '?')}")
+    print(f"Handle: @{legacy.get('screen_name', '?')}")
+    print(f"Bio: {legacy.get('description', '')}")
+    print(f"Location: {legacy.get('location', '')}")
+    print(f"Followers: {legacy.get('followers_count', 0)}")
+    print(f"Following: {legacy.get('friends_count', 0)}")
+    print(f"Tweets: {legacy.get('statuses_count', 0)}")
+    print(f"Joined: {legacy.get('created_at', '')}")
+    print(f"Verified: {user.get('is_blue_verified', False)}")
+    print(f"ID: {user.get('rest_id', '?')}")
+
+
+def upload_media(image_path, cookies, headers):
+    cookie_str = make_cookie_str(cookies)
+    upload_headers = {**headers, "cookie": cookie_str}
+
+    file_size = os.path.getsize(image_path)
+    ext = Path(image_path).suffix.lower()
+    media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime"}
+    media_type = media_types.get(ext, "image/png")
+
+    # INIT
+    resp = requests.post("https://upload.x.com/i/media/upload.json", params={"command": "INIT", "total_bytes": str(file_size), "media_type": media_type}, headers=upload_headers, impersonate="chrome")
+    if resp.status_code not in (200, 201, 202):
+        print(f"Media INIT failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+    media_id = resp.json()["media_id_string"]
+
+    # APPEND
+    with open(image_path, "rb") as f:
+        image_data = f.read()
+
+    mp = CurlMime()
+    mp.addpart(name="media", filename=Path(image_path).name, content_type=media_type, data=image_data)
+
+    resp = requests.post("https://upload.x.com/i/media/upload.json", params={"command": "APPEND", "media_id": media_id, "segment_index": "0"}, multipart=mp, headers=upload_headers, impersonate="chrome")
+    if resp.status_code not in (200, 204):
+        print(f"Media APPEND failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+    # FINALIZE
+    resp = requests.post("https://upload.x.com/i/media/upload.json", params={"command": "FINALIZE", "media_id": media_id}, headers=upload_headers, impersonate="chrome")
+    if resp.status_code not in (200, 201):
+        print(f"Media FINALIZE failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+        sys.exit(1)
+
+    return media_id
+
+
+def cmd_upload(args, cookies, headers):
+    media_id = upload_media(args.file, cookies, headers)
+    print(f"Uploaded: media_id={media_id}")
+
+
+def cmd_update_profile(args, cookies, headers):
+    data = {}
+    if args.name:
+        data["name"] = args.name
+    if args.bio:
+        data["description"] = args.bio
+    if args.location:
+        data["location"] = args.location
+    if args.url:
+        data["url"] = args.url
+
+    if not data:
+        print("No fields to update. Use --name, --bio, --location, or --url.", file=sys.stderr)
+        sys.exit(1)
+
+    resp = api_post("https://x.com/i/api/1.1/account/update_profile.json", cookies, headers, data="&".join(f"{k}={quote(v)}" for k, v in data.items()))
+    if resp.status_code == 200:
+        print("Profile updated!")
+    else:
+        print(f"Failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+
+
+def cmd_update_avatar(args, cookies, headers):
+    media_id = upload_media(args.file, cookies, headers)
+    resp = api_post("https://x.com/i/api/1.1/account/update_profile_image.json", cookies, headers, data=f"media_id={media_id}")
+    if resp.status_code == 200:
+        print("Avatar updated!")
+    else:
+        print(f"Failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+
+
+def cmd_update_banner(args, cookies, headers):
+    media_id = upload_media(args.file, cookies, headers)
+    resp = api_post("https://x.com/i/api/1.1/account/update_profile_banner.json", cookies, headers, data=f"media_id={media_id}")
+    if resp.status_code in (200, 201):
+        print("Banner updated!")
+    else:
+        print(f"Failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+
+
+def cmd_refresh_ids(args, cookies, headers):
+    print("Fetching X main.js to extract query IDs...")
+    cookie_str = make_cookie_str(cookies)
+    h = {**headers, "cookie": cookie_str}
+    resp = requests.get("https://x.com/home", headers=h, impersonate="chrome")
+
+    js_urls = re.findall(r'https://abs\.twimg\.com/responsive-web/client-web/main\.[a-f0-9]+\.js', resp.text)
+    if not js_urls:
+        js_urls = re.findall(r'https://[^"]+/main\.[a-f0-9]+[a-z]?\.js', resp.text)
+
+    if not js_urls:
+        print("Could not find main.js URL.", file=sys.stderr)
+        return
+
+    print(f"Found: {js_urls[0]}")
+    resp = requests.get(js_urls[0], headers={"user-agent": h["user-agent"]}, impersonate="chrome")
+
+    pattern = r'queryId:"([^"]+)",operationName:"([^"]+)"'
+    matches = re.findall(pattern, resp.text)
+
+    if not matches:
+        print("Could not extract query IDs.", file=sys.stderr)
+        return
+
+    new_ids = {name: qid for qid, name in matches}
+
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_FILE.write_text(json.dumps(new_ids, indent=2))
+
+    old_ids = DEFAULT_QUERY_IDS
+    changed = sum(1 for name in old_ids if old_ids.get(name) != new_ids.get(name))
+    print(f"Cached {len(new_ids)} query IDs ({changed} changed from defaults)")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Twitter/X CLI")
+    subparsers = parser.add_subparsers(dest="command", help="Command")
+
+    p = subparsers.add_parser("post", help="Post a tweet")
+    p.add_argument("text", help="Tweet text")
+    p.add_argument("--media", help="Path to media file")
+    p.add_argument("--reply-to", help="Tweet ID to reply to")
+    p.add_argument("--quote", help="Tweet ID to quote")
+
+    p = subparsers.add_parser("timeline", help="Read home timeline")
+    p.add_argument("--limit", type=int, default=20)
+
+    p = subparsers.add_parser("user-tweets", help="Get user tweets")
+    p.add_argument("username")
+    p.add_argument("--limit", type=int, default=20)
+
+    p = subparsers.add_parser("follow", help="Follow user")
+    p.add_argument("username")
+
+    p = subparsers.add_parser("unfollow", help="Unfollow user")
+    p.add_argument("username")
+
+    p = subparsers.add_parser("like", help="Like tweet")
+    p.add_argument("tweet_id")
+
+    p = subparsers.add_parser("unlike", help="Unlike tweet")
+    p.add_argument("tweet_id")
+
+    p = subparsers.add_parser("retweet", help="Retweet")
+    p.add_argument("tweet_id")
+
+    p = subparsers.add_parser("unretweet", help="Unretweet")
+    p.add_argument("tweet_id")
+
+    p = subparsers.add_parser("search", help="Search tweets")
+    p.add_argument("query")
+    p.add_argument("--limit", type=int, default=20)
+
+    p = subparsers.add_parser("notifications", help="Notifications")
+    p.add_argument("--limit", type=int, default=20)
+
+    p = subparsers.add_parser("user", help="User info")
+    p.add_argument("username")
+
+    p = subparsers.add_parser("upload", help="Upload media")
+    p.add_argument("file")
+
+    p = subparsers.add_parser("update-profile", help="Update profile")
+    p.add_argument("--name")
+    p.add_argument("--bio")
+    p.add_argument("--location")
+    p.add_argument("--url")
+
+    p = subparsers.add_parser("update-avatar", help="Update avatar")
+    p.add_argument("file")
+
+    p = subparsers.add_parser("update-banner", help="Update banner")
+    p.add_argument("file")
+
+    subparsers.add_parser("refresh-ids", help="Refresh GraphQL query IDs")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    cookies = get_cookies()
+    headers = make_headers(cookies)
+
+    commands = {
+        "post": cmd_post, "timeline": cmd_timeline, "user-tweets": cmd_user_tweets,
+        "follow": cmd_follow, "unfollow": cmd_unfollow, "like": cmd_like, "unlike": cmd_unlike,
+        "retweet": cmd_retweet, "unretweet": cmd_unretweet, "search": cmd_search,
+        "notifications": cmd_notifications, "user": cmd_user, "upload": cmd_upload,
+        "update-profile": cmd_update_profile, "update-avatar": cmd_update_avatar,
+        "update-banner": cmd_update_banner, "refresh-ids": cmd_refresh_ids,
+    }
+
+    cmd_func = commands.get(args.command)
+    if cmd_func:
+        cmd_func(args, cookies, headers)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

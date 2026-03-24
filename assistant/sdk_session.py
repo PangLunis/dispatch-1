@@ -542,7 +542,7 @@ class SDKSession:
                     chat_id=self.chat_id,
                     event_type="error",
                     is_error=True,
-                    payload=str(e)[:2048],
+                    payload=str(e),
                 )
             # Buffer overflow is fatal - the SDK connection is broken
             error_str = str(e).lower()
@@ -866,7 +866,7 @@ class SDKSession:
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "")
                 desc = tool_input.get("description", "")
-                return desc or (cmd[:120] + ("…" if len(cmd) > 120 else ""))
+                return desc or cmd
             elif tool_name in ("Read", "Write"):
                 path = tool_input.get("file_path", "")
                 # Show just filename
@@ -887,12 +887,12 @@ class SDKSession:
                 return tool_input.get("query", "")
             elif tool_name == "WebFetch":
                 url = tool_input.get("url", "")
-                return url[:120] if url else None
+                return url or None
             else:
                 # Generic: show first string value
                 for v in tool_input.values():
                     if isinstance(v, str) and v:
-                        return v[:120]
+                        return v
                 return None
         except Exception:
             return None
@@ -911,8 +911,7 @@ class SDKSession:
                     self._log.info(f"OUT | {block.text}")
                     # Emit text event so thinking indicator shows "Responding"
                     if self._producer and hasattr(self._producer, 'send_sdk_event'):
-                        # Use first 120 chars as payload preview
-                        preview = block.text[:120] if block.text else None
+                        preview = block.text if block.text else None
                         self._producer.send_sdk_event(
                             session_name=self._session_name,
                             chat_id=self.chat_id,

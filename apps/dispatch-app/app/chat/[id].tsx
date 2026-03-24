@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   InteractionManager,
   KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
+
   StyleSheet,
   Text,
   View,
@@ -33,6 +35,8 @@ import { showPrompt, showAlert, showDestructiveConfirm } from "@/src/utils/alert
 import { branding, sessionPrefix } from "@/src/config/branding";
 import { markChatAsRead } from "@/src/hooks/useChatList";
 import { setActiveChatId, dismissNotificationsForChat } from "@/src/hooks/usePushNotifications";
+import { copyToClipboard } from "@/src/utils/clipboard";
+import { impactMedium, notificationSuccess } from "@/src/utils/haptics";
 
 export default function ChatDetailScreen() {
   const { id, chatTitle } = useLocalSearchParams<{
@@ -60,6 +64,12 @@ export default function ChatDetailScreen() {
   const [isCreatingDebugSession, setIsCreatingDebugSession] = useState(false);
   const [isForking, setIsForking] = useState(false);
   const menuButtonRef = useRef<View>(null);
+
+  // Message context menu (long-press)
+  const [contextMessage, setContextMessage] = useState<DisplayMessage | null>(null);
+  const [contextMenuY, setContextMenuY] = useState(0);
+  const [copiedToast, setCopiedToast] = useState(false);
+  const copiedFadeAnim = useRef(new Animated.Value(0)).current;
 
   // Optimistically mark as read, persist to server, and track active chat for push suppression
   useEffect(() => {
@@ -204,6 +214,35 @@ export default function ChatDetailScreen() {
     }
   }, [id]);
 
+  const handleMessageLongPress = useCallback(
+    (msg: DisplayMessage, pageY: number) => {
+      impactMedium();
+      setContextMessage(msg);
+      // Position context menu near the press, clamped to screen
+      setContextMenuY(Math.max(60, pageY - 60));
+    },
+    [],
+  );
+
+  const handleCopyMessage = useCallback(async () => {
+    if (!contextMessage?.content) return;
+    const ok = await copyToClipboard(contextMessage.content);
+    setContextMessage(null);
+    if (ok) {
+      notificationSuccess();
+      setCopiedToast(true);
+      copiedFadeAnim.setValue(1);
+      Animated.timing(copiedFadeAnim, {
+        toValue: 0,
+        duration: 800,
+        delay: 600,
+        useNativeDriver: true,
+      }).start(() => setCopiedToast(false));
+    } else {
+      showAlert("Error", "Failed to copy text");
+    }
+  }, [contextMessage, copiedFadeAnim]);
+
   const handleMenuPress = useCallback(() => {
     menuButtonRef.current?.measureInWindow((x, y, width, height) => {
       setMenuPosition({ x: x + width - 160, y: y + height + 8 });
@@ -232,9 +271,9 @@ export default function ChatDetailScreen() {
 
   const renderItem = useCallback(
     ({ item }: { item: DisplayMessage }) => (
-      <MessageBubble message={item} audioState={audioPlayer} onRetry={retryMessage} />
+      <MessageBubble message={item} audioState={audioPlayer} onRetry={retryMessage} onLongPress={handleMessageLongPress} />
     ),
-    [audioPlayer, retryMessage],
+    [audioPlayer, retryMessage, handleMessageLongPress],
   );
 
   const keyExtractor = useCallback((item: DisplayMessage) => item.id, []);
@@ -342,7 +381,7 @@ export default function ChatDetailScreen() {
             ]}
           >
             <Pressable
-              style={localStyles.menuItem}
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed]}
               onPress={() => {
                 setMenuVisible(false);
                 // Longer delay needed: Modal must fully dismiss AND release the
@@ -359,7 +398,7 @@ export default function ChatDetailScreen() {
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
-              style={[localStyles.menuItem, (isForking || messages.length === 0) && { opacity: 0.5 }]}
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed, (isForking || messages.length === 0) && { opacity: 0.5 }]}
               disabled={isForking || messages.length === 0}
               onPress={() => {
                 setMenuVisible(false);
@@ -375,7 +414,7 @@ export default function ChatDetailScreen() {
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
-              style={localStyles.menuItem}
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed]}
               onPress={() => {
                 setMenuVisible(false);
                 router.push({
@@ -393,7 +432,7 @@ export default function ChatDetailScreen() {
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
-              style={localStyles.menuItem}
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed]}
               onPress={() => {
                 setMenuVisible(false);
                 InteractionManager.runAfterInteractions(handleGenerateImage);
@@ -408,7 +447,7 @@ export default function ChatDetailScreen() {
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
-              style={[localStyles.menuItem, isCreatingDebugSession && { opacity: 0.5 }]}
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed, isCreatingDebugSession && { opacity: 0.5 }]}
               disabled={isCreatingDebugSession}
               onPress={() => {
                 setMenuVisible(false);
@@ -424,7 +463,7 @@ export default function ChatDetailScreen() {
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
-              style={localStyles.menuItem}
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed]}
               onPress={() => {
                 setMenuVisible(false);
                 InteractionManager.runAfterInteractions(handleDelete);
@@ -441,7 +480,51 @@ export default function ChatDetailScreen() {
         </Pressable>
       </Modal>
 
+      {/* Message context menu (long-press) */}
+      <Modal
+        visible={!!contextMessage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setContextMessage(null)}
+      >
+        <Pressable
+          style={localStyles.menuOverlay}
+          onPress={() => setContextMessage(null)}
+        >
+          <View
+            style={[
+              localStyles.contextMenu,
+              { top: contextMenuY },
+            ]}
+          >
+            <Pressable
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed]}
+              onPress={handleCopyMessage}
+            >
+              <SymbolView
+                name={{ ios: "doc.on.doc", android: "content_copy", web: "content_copy" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={localStyles.menuItemText}>Copy</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
       {/* Loading overlay while creating debug session */}
+      {/* Copied toast */}
+      {copiedToast && (
+        <Animated.View style={[localStyles.copiedToast, { opacity: copiedFadeAnim }]}>
+          <SymbolView
+            name={{ ios: "checkmark.circle.fill", android: "check_circle", web: "check_circle" }}
+            tintColor="#34d399"
+            size={18}
+          />
+          <Text style={localStyles.copiedToastText}>Copied</Text>
+        </Animated.View>
+      )}
+
       {isCreatingDebugSession && (
         <View style={localStyles.debugLoadingOverlay}>
           <View style={localStyles.debugLoadingBox}>
@@ -474,12 +557,30 @@ const localStyles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 8,
   },
+  contextMenu: {
+    position: "absolute",
+    alignSelf: "center",
+    left: "50%",
+    marginLeft: -80,
+    width: 160,
+    backgroundColor: "#2a2a2e",
+    borderRadius: 12,
+    paddingVertical: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
   menuItem: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     paddingHorizontal: 16,
     paddingVertical: 12,
+  },
+  menuItemPressed: {
+    backgroundColor: "#3f3f46",
   },
   menuDivider: {
     height: StyleSheet.hairlineWidth,
@@ -489,6 +590,30 @@ const localStyles = StyleSheet.create({
   menuItemText: {
     color: "#fafafa",
     fontSize: 16,
+  },
+  copiedToast: {
+    position: "absolute",
+    bottom: 120,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#1c1c1e",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#34d39940",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  copiedToastText: {
+    color: "#fafafa",
+    fontSize: 15,
+    fontWeight: "600",
   },
   debugLoadingOverlay: {
     ...StyleSheet.absoluteFillObject,

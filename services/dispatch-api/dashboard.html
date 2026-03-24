@@ -774,6 +774,10 @@ body {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
         CCU
       </div>
+      <div class="nav-item" data-page="usage" tabindex="0" role="button" onclick="navigate('usage')" onkeydown="if(event.key==='Enter')navigate('usage')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        Usage
+      </div>
       <div class="nav-item" data-page="logs" tabindex="0" role="button" onclick="navigate('logs')" onkeydown="if(event.key==='Enter')navigate('logs')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         Logs
@@ -1158,6 +1162,79 @@ body {
       </div>
     </div>
 
+    <!-- Usage Page -->
+    <div class="page" id="page-usage">
+      <div class="page-header">
+        <div class="page-title">Usage by Session</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <select id="usage-period" onchange="switchUsagePeriod()" style="background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--font-mono);font-size:0.75rem">
+            <option value="today">Today</option>
+            <option value="7d">Last 7 Days</option>
+            <option value="30d">Last 30 Days</option>
+          </select>
+          <div class="live-indicator"><span class="live-dot"></span> 2m <span id="usage-freshness" style="margin-left:8px;color:var(--text-tertiary)"></span></div>
+        </div>
+      </div>
+
+      <!-- Summary Stats -->
+      <div class="stat-cards" id="usage-stats">
+        <div class="stat-card" style="--card-accent: var(--accent-cyan)">
+          <div class="stat-number" id="usage-total-cost">—</div>
+          <div class="stat-label">Total Cost</div>
+        </div>
+        <div class="stat-card" style="--card-accent: var(--accent-green)">
+          <div class="stat-number" id="usage-total-tokens">—</div>
+          <div class="stat-label">Total Tokens</div>
+        </div>
+        <div class="stat-card" style="--card-accent: var(--accent-amber)">
+          <div class="stat-number" id="usage-session-count">—</div>
+          <div class="stat-label">Active Sessions</div>
+        </div>
+        <div class="stat-card" style="--card-accent: var(--accent-purple)">
+          <div class="stat-number" id="usage-top-session">—</div>
+          <div class="stat-label">Top Session</div>
+        </div>
+      </div>
+
+      <!-- Cost by Session Chart -->
+      <div class="panels" style="grid-template-columns:1fr 1fr">
+        <div class="panel">
+          <div class="panel-header">Cost by Session (Top 15)</div>
+          <div class="panel-body" style="padding:16px;height:400px">
+            <canvas id="usage-cost-chart"></canvas>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">Token Distribution</div>
+          <div class="panel-body" style="padding:16px;height:400px">
+            <canvas id="usage-token-chart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-Session Table -->
+      <div class="panel" style="margin-top:12px">
+        <div class="panel-header">Session Breakdown</div>
+        <div class="table-scroll-x">
+          <div class="table-scroll" style="max-height:600px">
+            <table class="data-table">
+              <thead><tr>
+                <th>Contact</th>
+                <th>Source</th>
+                <th>Tier</th>
+                <th style="text-align:right">Cost</th>
+                <th style="text-align:right">Tokens</th>
+                <th style="text-align:right">Output</th>
+                <th style="text-align:right">Cache Read</th>
+                <th>Models</th>
+              </tr></thead>
+              <tbody id="usage-sessions-body"><tr><td colspan="8"><div class="state-message">Loading...</div></td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Logs Page -->
     <div class="page" id="page-logs">
       <div class="page-header">
@@ -1333,7 +1410,7 @@ function closeNav() {
   document.getElementById('nav-overlay').classList.remove('open');
 }
 
-const VALID_PAGES = ['overview','bus','sessions','sdk','perf','skills','tasks','facts','ccu','logs'];
+const VALID_PAGES = ['overview','bus','sessions','sdk','perf','skills','tasks','facts','ccu','usage','logs'];
 let activeAbortController = null;
 
 function navigate(page) {
@@ -1374,6 +1451,7 @@ function navigate(page) {
     case 'tasks': loadTasks(); pollers.tasks = setInterval(loadTasks, 10000); break;
     case 'facts': loadFacts(); pollers.facts = setInterval(loadFacts, 30000); break;
     case 'ccu': loadCcu(); pollers.ccu = setInterval(loadCcu, 30000); break;
+    case 'usage': loadUsage(); pollers.usage = setInterval(loadUsage, 120000); break;
     case 'logs': loadLogFiles(); loadLogs(); pollers.logs = setInterval(() => { if (!logsPaused) loadLogs(); }, 3000); break;
   }
 }
@@ -2103,11 +2181,8 @@ async function loadFacts() {
 }
 
 // ─────────────────────────────────────────────
-// CCU Page
+// Shared Formatters (used by CCU + Usage pages)
 // ─────────────────────────────────────────────
-let ccuDailyChart = null;
-let ccuBlocksChart = null;
-
 function fmtTokens(n) {
   if (n == null) return '—';
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
@@ -2116,6 +2191,13 @@ function fmtTokens(n) {
   return String(n);
 }
 function fmtCost(n) { return n != null ? '$' + n.toFixed(2) : '—'; }
+
+// ─────────────────────────────────────────────
+// CCU Page
+// ─────────────────────────────────────────────
+let ccuDailyChart = null;
+let ccuBlocksChart = null;
+
 function fmtMinutes(m) {
   if (m == null) return '—';
   const h = Math.floor(m / 60);
@@ -2302,6 +2384,232 @@ async function loadCcu() {
   renderCcuStats(data);
   renderCcuCharts(data);
   renderCcuTables(data);
+}
+
+// ─────────────────────────────────────────────
+// Usage Page
+// ─────────────────────────────────────────────
+function getUsageSince() {
+  const sel = document.getElementById('usage-period');
+  const now = new Date();
+  const val = sel ? sel.value : 'today';
+  if (val === '7d') {
+    now.setDate(now.getDate() - 7);
+  } else if (val === '30d') {
+    now.setDate(now.getDate() - 30);
+  }
+  // Use local date to avoid UTC midnight boundary issues
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
+function switchUsagePeriod() {
+  loadUsage();
+}
+
+// Reuses fmtCost() and fmtTokens() from Shared Formatters section above
+
+// Direct hex colors for Chart.js (CSS vars don't work in canvas)
+const TIER_COLORS = {
+  admin: '#f5a623',
+  partner: '#e879a8',
+  family: '#47d1a0',
+  favorite: '#6b8aed',
+  bots: '#b27aff',
+  system: '#4ecdc4',
+};
+
+async function loadUsage() {
+  const since = getUsageSince();
+  const data = await api(`/api/dashboard/usage?since=${since}`);
+  if (!data) return;
+
+  // Freshness
+  const el = document.getElementById('usage-freshness');
+  if (el && data._updated_at) {
+    const age = Math.round((Date.now() - new Date(data._updated_at).getTime()) / 1000);
+    el.textContent = age < 5 ? 'just now' : age + 's ago';
+    el.style.color = age > 180 ? 'var(--accent-amber)' : 'var(--text-tertiary)';
+  }
+  // Determine state flags
+  const requestedSince = getUsageSince();
+  const dataSince = data.since;
+  const periodMismatch = dataSince && requestedSince !== dataSince;
+  const hasError = !!data._error;
+  const isDimmed = hasError || (periodMismatch && data._loading);
+
+  // Dim stat cards when data may be stale/wrong
+  const statsEl = document.getElementById('usage-stats');
+  if (statsEl) statsEl.style.opacity = isDimmed ? '0.5' : '1';
+
+  if (hasError) {
+    const errEl = document.getElementById('usage-sessions-body');
+    errEl.innerHTML = `<tr><td colspan="8"><div class="state-message" style="color:var(--accent-red, #ff6b6b)">Error: ${escapeHtml(data._error)}</div></td></tr>`;
+    if (!data.sessions?.length) return;
+  }
+
+  if (data._loading && !data.sessions?.length) {
+    document.getElementById('usage-sessions-body').innerHTML = '<tr><td colspan="8"><div class="state-message">Loading usage data... (first load takes ~20s)</div></td></tr>';
+    // Retry quickly while loading
+    if (!pollers.usageRetry) {
+      pollers.usageRetry = setInterval(() => {
+        loadUsage().then(() => {
+          // Stop retrying once data arrives
+          const body = document.getElementById('usage-sessions-body');
+          if (body && !body.innerHTML.includes('Loading usage data')) {
+            clearInterval(pollers.usageRetry);
+            delete pollers.usageRetry;
+          }
+        });
+      }, 3000);
+    }
+    return;
+  }
+  if (periodMismatch && data._loading) {
+    const freshEl = document.getElementById('usage-freshness');
+    if (freshEl) {
+      freshEl.textContent = 'fetching new period...';
+      freshEl.style.color = 'var(--accent-amber)';
+    }
+  }
+
+  // Stats
+  document.getElementById('usage-total-cost').textContent = fmtCost(data.total_cost || 0);
+  document.getElementById('usage-total-tokens').textContent = fmtTokens(data.total_tokens || 0);
+  document.getElementById('usage-session-count').textContent = (data.session_count || 0).toString();
+  const top = (data.sessions || [])[0];
+  document.getElementById('usage-top-session').textContent = top ? (top.contact_name || '—') : '—';
+
+  const sessions = data.sessions || [];
+
+  // Cost chart — top 15 horizontal bar
+  const top15 = sessions.slice(0, 15);
+  const chartLabels = top15.map(s => (s.contact_name || 'Unknown').slice(0, 20));
+  const chartData = top15.map(s => s.cost);
+  const chartColors = top15.map(s => {
+    const tier = s.tier || s.source || '';
+    return TIER_COLORS[tier] || '#6b8aed';
+  });
+
+  if (typeof Chart !== 'undefined') {
+    const ctx = document.getElementById('usage-cost-chart');
+    if (ctx) {
+      if (chartInstances['usage-cost-chart']) {
+        const chart = chartInstances['usage-cost-chart'];
+        chart.data.labels = chartLabels;
+        chart.data.datasets[0].data = chartData;
+        chart.data.datasets[0].backgroundColor = chartColors.map(c => c + '40');
+        chart.data.datasets[0].borderColor = chartColors;
+        chart.update('none');
+      } else {
+        chartInstances['usage-cost-chart'] = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: chartLabels,
+            datasets: [{
+              data: chartData,
+              backgroundColor: chartColors.map(c => c + '40'),
+              borderColor: chartColors,
+              borderWidth: 1,
+              borderRadius: 0,
+            }],
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                ...CHART_TOOLTIP,
+                callbacks: { label: (ctx) => '$' + ctx.raw.toFixed(2) },
+              },
+            },
+            scales: {
+              x: { ticks: { color: '#555570', font: { size: 10 }, callback: v => '$' + v }, grid: CHART_GRID, border: CHART_BORDER },
+              y: { ticks: { color: '#e8e8f0', font: { size: 11, family: 'Fira Code' } }, grid: { display: false }, border: CHART_BORDER },
+            },
+          },
+        });
+      }
+    }
+
+    // Token distribution doughnut chart
+    const tokenCtx = document.getElementById('usage-token-chart');
+    if (tokenCtx) {
+      // Group by tier/source
+      const tierTotals = {};
+      sessions.forEach(s => {
+        const key = s.tier || s.source || 'other';
+        tierTotals[key] = (tierTotals[key] || 0) + s.tokens;
+      });
+      const tiers = Object.entries(tierTotals).sort((a, b) => b[1] - a[1]);
+      const doughnutLabels = tiers.map(([k]) => k);
+      const doughnutData = tiers.map(([, v]) => v);
+      const doughnutColors = doughnutLabels.map(k => TIER_COLORS[k] || '#6b8aed');
+
+      if (chartInstances['usage-token-chart']) {
+        const chart = chartInstances['usage-token-chart'];
+        chart.data.labels = doughnutLabels;
+        chart.data.datasets[0].data = doughnutData;
+        chart.data.datasets[0].backgroundColor = doughnutColors;
+        chart.update('none');
+      } else {
+        chartInstances['usage-token-chart'] = new Chart(tokenCtx, {
+          type: 'doughnut',
+          data: {
+            labels: doughnutLabels,
+            datasets: [{
+              data: doughnutData,
+              backgroundColor: doughnutColors.slice(0, doughnutLabels.length),
+              borderColor: '#12121e',
+              borderWidth: 2,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'right', labels: { color: '#e8e8f0', font: { size: 11, family: 'Fira Sans' }, padding: 12 } },
+              tooltip: {
+                ...CHART_TOOLTIP,
+                callbacks: { label: (ctx) => ctx.label + ': ' + fmtTokens(ctx.raw) },
+              },
+            },
+          },
+        });
+      }
+    }
+  }
+
+  // Table
+  const tbody = document.getElementById('usage-sessions-body');
+  if (!sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="8"><div class="state-message">No usage data for this period</div></td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = sessions.map(s => {
+    const tierBadge = s.tier ? `<span class="badge badge-${s.tier === 'admin' ? 'warn' : s.tier === 'partner' ? 'error' : 'info'}">${escapeHtml(s.tier)}</span>` : '<span style="color:var(--text-tertiary)">—</span>';
+    const sourceBadge = s.source ? `<span class="badge">${escapeHtml(s.source)}</span>` : '—';
+    const models = (s.models || []).map(m => {
+      const short = m.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      return `<span class="badge">${escapeHtml(short)}</span>`;
+    }).join(' ');
+
+    return `<tr>
+      <td><strong>${escapeHtml(s.contact_name || 'Unknown')}</strong></td>
+      <td>${sourceBadge}</td>
+      <td>${tierBadge}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fmtCost(s.cost)}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fmtTokens(s.tokens)}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fmtTokens(s.output_tokens)}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fmtTokens(s.cache_read_tokens)}</td>
+      <td>${models}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ─────────────────────────────────────────────

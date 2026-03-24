@@ -1,0 +1,169 @@
+#!/usr/bin/env -S uv run --script
+"""
+Set up the midnight tweet planner via the reminder/scheduler system.
+
+Creates a cron reminder that fires at midnight ET. It spawns a Claude agent
+that reads TWITTER-SOUL.md, plans a tweet, picks a posting time, and produces
+a tweet:scheduled bus event. A separate consumer posts it at the right time.
+
+Usage:
+    setup-tweet-planner           # Add the reminder
+    setup-tweet-planner --list    # Show existing tweet planner reminder
+    setup-tweet-planner --remove  # Remove it
+"""
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path.home() / "dispatch"))
+
+from assistant import config
+from assistant.reminders import (
+    create_reminder, load_reminders, save_reminders, reminders_lock,
+)
+
+
+TASK_ID = "nightly-tweet-planner"
+
+TWEET_PLANNER_PROMPT = """You are the midnight tweet planner for @svenflowai on X/Twitter.
+
+Your job: plan ONE tweet for today. Maybe skip if nothing's good enough.
+
+## Step 1: Read your twitter voice
+Read ~/.claude/TWITTER-SOUL.md — this is your personality guide for tweeting.
+
+## Step 2: Gather context about your day
+Think about what you (sven) have been doing recently. You can:
+- Check recent bus events: cd ~/dispatch && uv run python -m bus.cli tail --limit 50
+- Think about what skills/tools you used recently
+- Consider what's interesting about your existence right now
+- Don't look at private conversations or personal data
+
+## Step 3: Draft a tweet
+Write a tweet that matches the TWITTER-SOUL.md voice. Remember:
+- Funny, smart, informal, slightly sarcastic
+- AI is the setup, mundane reality is the punchline
+- NEVER use anyone's real name or leak PII
+- NEVER tweet about AI as an industry/trend
+- Skip the day if nothing's good enough (just exit without producing an event)
+
+## Step 4: Pick a posting time
+Choose a random-ish time between 9am and 9pm ET today. Vary it — don't always pick the same time.
+Format as ISO 8601: e.g. 2026-03-24T14:30:00-04:00
+
+## Step 5: Produce the bus event
+If you have a good tweet, produce it to the bus:
+
+cd ~/dispatch && uv run python -m bus.cli produce tweets '{"text": "your tweet here", "scheduled_for": "2026-03-24T14:30:00-04:00"}' --type tweet.scheduled --source tweet-planner --key svenflowai
+
+## Step 6: Confirm
+Print what you planned and when it will post. If you skipped, say why.
+
+IMPORTANT: Quality over quantity. If the tweet isn't genuinely good — if it wouldn't make someone smile or think — skip the day. Zero tweets is better than a mid tweet.
+"""
+
+
+def _get_admin_phone() -> str:
+    return config.require("owner.phone")
+
+
+def _build_reminder(admin_phone: str) -> dict:
+    return {
+        "title": "Midnight tweet planner",
+        "schedule_type": "cron",
+        "schedule_value": "0 0 * * *",  # midnight ET
+        "tz_name": "America/New_York",
+        "event": {
+            "topic": "tasks",
+            "type": "task.requested",
+            "key": admin_phone,
+            "payload": {
+                "task_id": TASK_ID,
+                "title": "Midnight tweet planner",
+                "requested_by": admin_phone,
+                "instructions": TWEET_PLANNER_PROMPT,
+                "notify": False,
+                "timeout_minutes": 15,
+                "execution": {
+                    "mode": "agent",
+                    "prompt": TWEET_PLANNER_PROMPT,
+                },
+            },
+        },
+    }
+
+
+def find_existing(reminders: list) -> list:
+    found = []
+    for r in reminders:
+        event = r.get("event", {})
+        payload = event.get("payload", {})
+        if payload.get("task_id") == TASK_ID:
+            found.append(r)
+    return found
+
+
+def cmd_list():
+    with reminders_lock():
+        data = load_reminders()
+    existing = find_existing(data["reminders"])
+    if not existing:
+        print("No tweet planner reminder found.")
+        return
+    for r in existing:
+        cron = r.get("schedule", {}).get("value", "?")
+        print(f"  [{r['id']}] {r['title']} (cron: {cron})")
+
+
+def cmd_remove():
+    with reminders_lock():
+        data = load_reminders()
+        existing = find_existing(data["reminders"])
+        if not existing:
+            print("No tweet planner reminder to remove.")
+            return
+        ids_to_remove = {r["id"] for r in existing}
+        data["reminders"] = [r for r in data["reminders"] if r["id"] not in ids_to_remove]
+        save_reminders(data)
+    for r in existing:
+        print(f"  Removed: {r['title']} ({r['id']})")
+
+
+def cmd_add():
+    admin_phone = _get_admin_phone()
+
+    with reminders_lock():
+        data = load_reminders()
+
+        existing = find_existing(data["reminders"])
+        if existing:
+            print("Tweet planner reminder already exists:")
+            for r in existing:
+                print(f"  [{r['id']}] {r['title']}")
+            print("\nUse --remove first to replace it.")
+            return
+
+        r = create_reminder(**_build_reminder(admin_phone))
+        data["reminders"].append(r)
+        save_reminders(data)
+
+    print(f"  Added: {r['title']} (id={r['id']}, cron=0 0 * * *)")
+    print("\n  Midnight ET daily — plans tweet + produces tweet:scheduled bus event")
+    print("  Make sure the tweet consumer is also set up!")
+
+
+def main():
+    if "--list" in sys.argv:
+        cmd_list()
+    elif "--remove" in sys.argv:
+        cmd_remove()
+    else:
+        cmd_add()
+
+
+if __name__ == "__main__":
+    main()

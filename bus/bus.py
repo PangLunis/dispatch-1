@@ -1156,12 +1156,8 @@ class Producer:
     ) -> None:
         """Enqueue an SDK event for writing to the sdk_events table.
 
-        Returns immediately (~microseconds). Truncates payload to 2KB max.
+        Returns immediately (~microseconds).
         """
-        # Truncate payload to 2KB
-        if payload and len(payload) > 2048:
-            payload = payload[:2048]
-
         self._write_queue.put({
             "table": "sdk_events",
             "timestamp": _now_ms(),

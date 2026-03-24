@@ -75,10 +75,10 @@ function LinkedText({
 }) {
   const segments = parseLinks(text);
   if (segments.length === 1 && segments[0].type === "text") {
-    return <Text style={style} selectable>{text}</Text>;
+    return <Text style={style}>{text}</Text>;
   }
   return (
-    <Text style={style} selectable>
+    <Text style={style}>
       {segments.map((seg, i) =>
         seg.type === "link" ? (
           <Text
@@ -109,9 +109,10 @@ interface MessageBubbleProps {
     resume: () => void;
   };
   onRetry?: (messageId: string) => void;
+  onLongPress?: (message: DisplayMessage, pageY: number) => void;
 }
 
-export function MessageBubble({ message, audioState, onRetry }: MessageBubbleProps) {
+export function MessageBubble({ message, audioState, onRetry, onLongPress }: MessageBubbleProps) {
   const { role, content, timestamp, isPending, sendFailed, audioUrl, imageUrl, localImageUri, status } = message;
   const isUser = role === "user";
   const isGenerating = status === "generating";
@@ -225,6 +226,10 @@ export function MessageBubble({ message, audioState, onRetry }: MessageBubblePro
       <View style={[styles.bubbleRow, isUser && styles.bubbleRowUser]}>
         <Pressable
           onPress={() => setShowTimestamp((v) => !v)}
+          onLongPress={(e) => {
+            onLongPress?.(message, e.nativeEvent.pageY);
+          }}
+          delayLongPress={400}
           style={[
             styles.bubble,
             isUser ? styles.bubbleUser : styles.bubbleAssistant,

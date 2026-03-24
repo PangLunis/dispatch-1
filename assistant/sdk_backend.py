@@ -167,7 +167,7 @@ Briefly describe what you see in this image, keeping the sender's context in min
                     log.info(f"Gemini vision: analyzed {path.name} ({len(description)} chars)")
                     return description
                 else:
-                    error_msg = stderr.decode()[:200] if stderr else "no output"
+                    error_msg = stderr.decode() if stderr else "no output"
                     if attempt < max_attempts - 1:
                         log.warning(f"Gemini vision failed (attempt {attempt + 1}), retrying: {error_msg}")
                         await asyncio.sleep(2.0)  # backoff before retry

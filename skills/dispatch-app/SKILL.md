@@ -806,3 +806,26 @@ npx expo run:ios --device --configuration Release --no-bundler
 ```
 
 **IMPORTANT**: Always tell the admin when EAS auth is missing so they can set up the token. Don't silently fall back without mentioning it.
+
+### Web compatibility for native modules
+
+The same guarded-import pattern applies for web builds (`npx expo export`). Modules like `expo-notifications`, `expo-haptics`, and `expo-speech-recognition` are iOS/Android only. On web, a top-level import crashes the entire module, making all its exports `undefined` — which produces confusing errors like `(0, _.functionName) is not a function`.
+
+Always guard with `Platform.OS !== "web"`:
+
+```typescript
+let Notifications: typeof import("expo-notifications") | null = null;
+if (Platform.OS !== "web") {
+  try {
+    Notifications = require("expo-notifications") as typeof import("expo-notifications");
+  } catch { /* native module not available */ }
+}
+// Use optional chaining: Notifications?.setNotificationHandler(...)
+```
+
+**Known iOS/Android-only modules that need guards:**
+- `expo-notifications` (push notifications)
+- `expo-haptics` (vibration feedback)
+- `@jamsch/expo-speech-recognition` (voice input)
+- `expo-document-picker` (file picker)
+- `expo-media-library` (save to camera roll)

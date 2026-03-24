@@ -1632,8 +1632,8 @@ class TestSDKEvents:
         assert events[0]["is_error"] is True
         producer.close()
 
-    def test_payload_truncation(self, bus):
-        """Payloads exceeding 2KB are truncated."""
+    def test_payload_no_truncation(self, bus):
+        """Large payloads are stored in full without truncation."""
         producer = bus.producer()
         long_payload = "x" * 5000
         producer.send_sdk_event(
@@ -1646,7 +1646,7 @@ class TestSDKEvents:
 
         events = bus.query_sdk_events(session_name="test/session")
         assert len(events) == 1
-        assert len(events[0]["payload"]) == 2048
+        assert len(events[0]["payload"]) == 5000
         producer.close()
 
     def test_query_sdk_events_filters(self, bus):

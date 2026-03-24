@@ -2935,6 +2935,249 @@ async def dashboard_ccu():
     return {**data, "_loading": loading, "_updated_at": updated, "_error": error}
 
 
+# Usage per session — background-cached like CCU
+# ─────────────────────────────────────────────────────────
+_usage_cache: dict = {"data": None, "updated_at": None, "loading": False, "error": None, "pending_since": None}
+_usage_lock = threading.Lock()
+_usage_home_prefix = str(Path.home()).replace("/", "-").replace("_", "-")  # e.g. -Users-sven
+
+
+def _ccusage_id_from_path(p: str) -> str:
+    """Convert filesystem path to ccusage sessionId format.
+
+    Claude Code encodes project directory names by replacing
+    both / and _ with - in the filesystem path.
+    """
+    return p.replace("/", "-").replace("_", "-")
+
+
+def _usage_fetch(since: str | None = None):
+    """Run ccusage session CLI in background thread, enrich with contact names.
+
+    Uses a loop (not recursion) to handle queued period changes.
+    """
+    while True:
+      try:
+        ccusage = str(Path.home() / ".bun/bin/ccusage")
+
+        # Default: today only
+        if not since:
+            since = datetime.now().strftime("%Y%m%d")
+
+        proc = subprocess.run(
+            [ccusage, "session", "--json", "--offline", "--since", since, "--breakdown"],
+            capture_output=True, text=True, timeout=120
+        )
+        sessions_data = []
+        if proc.returncode == 0:
+            raw = proc.stdout
+            json_start = raw.find("{")
+            json_end = raw.rfind("}") + 1
+            if json_start >= 0 and json_end > json_start:
+                try:
+                    parsed = json.loads(raw[json_start:json_end])
+                    sessions_data = parsed.get("sessions", [])
+                except json.JSONDecodeError as je:
+                    logger.warning(f"ccusage session returned rc=0 but invalid JSON: {je}")
+            else:
+                logger.warning(f"ccusage session returned rc=0 but no JSON braces found (stdout={len(raw)} chars)")
+        else:
+            error_msg = f"ccusage session failed (rc={proc.returncode}): {proc.stderr}"
+            logger.error(error_msg)
+            with _usage_lock:
+                _usage_cache["loading"] = False
+                _usage_cache["error"] = error_msg
+            return
+
+        # Load session registry for contact name mapping
+        registry = {}
+        sessions_file = Path.home() / "dispatch" / "state" / "sessions.json"
+        if sessions_file.exists():
+            try:
+                loaded = json.loads(sessions_file.read_text())
+                if isinstance(loaded, dict):
+                    registry = loaded
+                else:
+                    logger.warning(f"sessions.json is not a dict (got {type(loaded).__name__})")
+            except Exception as e:
+                logger.warning(f"Failed to load sessions.json: {e}")
+
+        # Build reverse map: ccusage sessionId → registry info
+        # ccusage sessionId encodes the project path with - as separator:
+        #   -Users-sven-transcripts-imessage--16175969496
+        # This is lossy (hyphens in real paths like "dispatch-app" get merged)
+        # So we match by checking if the transcript_dir, when encoded the same way, matches
+        sid_to_info = {}
+        for chat_id_key, info in registry.items():
+            tdir = info.get("transcript_dir", "")
+            if tdir:
+                encoded = _ccusage_id_from_path(tdir)
+                sid_to_info[encoded] = info
+
+        enriched = []
+        total_cost = 0
+        total_tokens = 0
+
+        for s in sessions_data:
+            sid = s.get("sessionId", "")
+            cost = s.get("totalCost", 0)
+            tokens = s.get("totalTokens", 0)
+            total_cost += cost
+            total_tokens += tokens
+
+            # Try to find matching registry entry via encoded path
+            contact_name = None
+            chat_id = None
+            tier = None
+            source = None
+            session_type = None
+
+            if sid in sid_to_info:
+                info = sid_to_info[sid]
+                contact_name = info.get("contact_name") or info.get("display_name")
+                chat_id = info.get("chat_id")
+                tier = info.get("tier")
+                source = info.get("source")
+                session_type = info.get("type")
+                # Clean up "Unknown (uuid)" names for dispatch-app sessions
+                if contact_name and contact_name.startswith("Unknown") and source == "dispatch-app":
+                    contact_name = f"App Chat"
+            else:
+                # Derive from session ID for non-registry paths (daemon, ephemeral, etc.)
+                # sid looks like: -Users-sven-dispatch or -Users-sven-dispatch-state-ephemeral-nightly-vacation-scraper
+                short = sid[len(_usage_home_prefix):].lstrip("-") if sid.startswith(_usage_home_prefix) else sid
+
+                if short.startswith("dispatch-state-ephemeral-"):
+                    contact_name = short.replace("dispatch-state-ephemeral-", "")
+                    source = "system"
+                elif short == "dispatch":
+                    contact_name = "Daemon"
+                    source = "system"
+                elif short.startswith("dispatch-"):
+                    # dispatch-services, dispatch-prototypes, etc.
+                    contact_name = short.replace("dispatch-", "")
+                    source = "system"
+                elif short.startswith("transcripts-"):
+                    # Unregistered transcript session — parse backend/chat_id
+                    parts = short.split("-", 2)  # ['transcripts', 'backend', 'rest']
+                    if len(parts) >= 3:
+                        source = parts[1]
+                        contact_name = parts[2]
+                    else:
+                        contact_name = short
+                else:
+                    contact_name = short or sid
+
+            enriched.append({
+                "session_id": sid,
+                "contact_name": contact_name,
+                "chat_id": chat_id,
+                "tier": tier,
+                "source": source,
+                "type": session_type,
+                "cost": round(cost, 2),
+                "tokens": tokens,
+                "input_tokens": s.get("inputTokens", 0),
+                "output_tokens": s.get("outputTokens", 0),
+                "cache_creation_tokens": s.get("cacheCreationTokens", 0),
+                "cache_read_tokens": s.get("cacheReadTokens", 0),
+                "models": s.get("modelsUsed", []),
+                "model_breakdowns": s.get("modelBreakdowns", []),
+                "last_activity": s.get("lastActivity"),
+            })
+
+        # Sort by cost descending
+        enriched.sort(key=lambda x: x["cost"], reverse=True)
+
+        result = {
+            "sessions": enriched,
+            "total_cost": round(total_cost, 2),
+            "total_tokens": total_tokens,
+            "session_count": len(enriched),
+            "since": since,
+        }
+
+        with _usage_lock:
+            _usage_cache["data"] = result
+            _usage_cache["updated_at"] = datetime.now().isoformat()
+            _usage_cache["error"] = None
+            pending = _usage_cache.get("pending_since")
+            _usage_cache["pending_since"] = None
+            if not pending or pending == since:
+                _usage_cache["loading"] = False
+
+        logger.info(f"Usage cache refreshed: {len(enriched)} sessions, ${total_cost:.2f}")
+
+        # If a period switch was queued during fetch, loop to re-fetch
+        if pending and pending != since:
+            logger.info(f"Usage: re-fetching for queued period change: {since} → {pending}")
+            since = pending
+            continue
+        return  # Done — no pending work
+
+      except Exception as e:
+        logger.error(f"Usage background fetch error: {e}")
+        with _usage_lock:
+            _usage_cache["loading"] = False
+            _usage_cache["error"] = str(e)
+            _usage_cache["pending_since"] = None
+        return  # Don't retry on error
+
+
+def _usage_maybe_refresh(since: str | None = None, max_age_seconds: int = 120):
+    """Trigger background refresh if cache is stale. Never blocks."""
+    should_fetch = False
+    with _usage_lock:
+        if _usage_cache["loading"]:
+            # Queue the since value so it's picked up after current fetch
+            cached_since = (_usage_cache.get("data") or {}).get("since")
+            if since and cached_since != since:
+                _usage_cache["pending_since"] = since
+            return
+        # If since changed, force refresh
+        cached_since = (_usage_cache.get("data") or {}).get("since")
+        if cached_since and since and cached_since != since:
+            should_fetch = True
+        else:
+            updated = _usage_cache["updated_at"]
+            if updated:
+                age = (datetime.now() - datetime.fromisoformat(updated)).total_seconds()
+                if age < max_age_seconds:
+                    return
+            should_fetch = True
+        if should_fetch:
+            _usage_cache["loading"] = True
+            _usage_cache["pending_since"] = None
+
+    if should_fetch:
+        t = threading.Thread(target=_usage_fetch, args=(since,), daemon=True)
+        t.start()
+
+
+@app.get("/api/dashboard/usage")
+async def dashboard_usage(since: str | None = None):
+    """Per-session usage breakdown — returns cached data, triggers background refresh.
+
+    Query params:
+        since: YYYYMMDD date filter (default: today)
+    """
+    if not since:
+        since = datetime.now().strftime("%Y%m%d")
+
+    _usage_maybe_refresh(since=since, max_age_seconds=120)
+
+    with _usage_lock:
+        data = _usage_cache["data"]
+        updated = _usage_cache["updated_at"]
+        loading = _usage_cache["loading"]
+        error = _usage_cache.get("error")
+
+    if data is None:
+        return {"sessions": [], "total_cost": 0, "total_tokens": 0, "session_count": 0, "since": since, "_loading": True, "_updated_at": None, "_error": None}
+
+    return {**data, "_loading": loading, "_updated_at": updated, "_error": error}
+
+
 @app.get("/api/dashboard/facts")
 async def dashboard_facts():
     """Structured contact facts."""

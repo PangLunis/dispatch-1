@@ -62,7 +62,7 @@ VACATION_SCRAPER_PROMPT = (
 # Bug finder prompt
 BUGFINDER_PROMPT = (
     "Run /bug-finder --nightly to scan ~/dispatch/ for bugs. "
-    "Focus on code changed in the last 24 hours but scan the whole codebase. "
+    "Focus on code changed since last run but scan the whole codebase. "
     "Use the full 3-phase pipeline: parallel discovery explorers, "
     "parallel refinement reviewers (ACCEPT/REFINE/REFUTE), then compile report. "
     "All subagents must use opus. "
@@ -223,9 +223,9 @@ def _build_skillify_reminder(admin_phone: str) -> dict:
 def _build_bugfinder_reminder(admin_phone: str) -> dict:
     """Build the bug finder reminder config."""
     return {
-        "title": "Nightly bug finder scan",
+        "title": "Weekly bug finder scan",
         "schedule_type": "cron",
-        "schedule_value": "20 2 * * *",  # 2:20am daily (staggered)
+        "schedule_value": "20 2 * * 6",  # 2:20am Saturdays
         "tz_name": "America/New_York",
         "event": {
             "topic": "tasks",
@@ -233,7 +233,7 @@ def _build_bugfinder_reminder(admin_phone: str) -> dict:
             "key": admin_phone,
             "payload": {
                 "task_id": BUGFINDER_TASK_ID,
-                "title": "Nightly bug finder scan",
+                "title": "Weekly bug finder scan",
                 "requested_by": admin_phone,
                 "instructions": BUGFINDER_PROMPT,
                 "notify": True,
@@ -250,9 +250,9 @@ def _build_bugfinder_reminder(admin_phone: str) -> dict:
 def _build_latencyfinder_reminder(admin_phone: str) -> dict:
     """Build the latency finder reminder config."""
     return {
-        "title": "Nightly latency finder scan",
+        "title": "Weekly latency finder scan",
         "schedule_type": "cron",
-        "schedule_value": "30 2 * * *",  # 2:30am daily (staggered)
+        "schedule_value": "30 2 * * 6",  # 2:30am Saturdays
         "tz_name": "America/New_York",
         "event": {
             "topic": "tasks",
@@ -260,7 +260,7 @@ def _build_latencyfinder_reminder(admin_phone: str) -> dict:
             "key": admin_phone,
             "payload": {
                 "task_id": LATENCYFINDER_TASK_ID,
-                "title": "Nightly latency finder scan",
+                "title": "Weekly latency finder scan",
                 "requested_by": admin_phone,
                 "instructions": LATENCYFINDER_PROMPT,
                 "notify": True,

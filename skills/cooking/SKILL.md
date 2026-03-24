@@ -518,13 +518,23 @@ Want me to add/remove anything? Say "add the sugar" or "skip the mayo"
 5. **VERIFY cart against grocery list** - cross-check each item
 6. **Send to user: screenshot + item list + skipped items reminder**
 
-**Cart Verification Checklist:**
+**Cart Verification Checklist (MANDATORY — do this BEFORE sending cart to user):**
 ```
 # After adding items, ALWAYS verify:
 1. Count items in cart vs items in grocery list
 2. For each cart item, match to original ingredient
-3. Note any items that couldn't be found
-4. Remind user what was SKIPPED (assumed in kitchen)
+3. QUANTITY/VOLUME CHECK: Compare the product size (oz, ct, lb) × quantity
+   in cart against the recipe's required amount. Examples:
+   - Recipe needs 8 cups broth → 2x 32oz = 64oz = 8 cups ✅
+   - Recipe needs 8 cups broth → 2x 16.9oz = 33.8oz ≈ 4 cups ❌ (short!)
+   - Recipe needs 3 lemons → 3 ct ✅
+   Common pitfalls:
+   - Broth/stock: cartons vary wildly (16oz, 32oz, 48oz) — always do the math
+   - Spices: small containers may not cover recipe amount
+   - Produce by weight: verify package weight covers what recipe needs
+4. Note any items that couldn't be found
+5. Remind user what was SKIPPED (assumed in kitchen)
+6. Present the cross-check to the user so they can verify before checkout
 ```
 
 **Example message format:**

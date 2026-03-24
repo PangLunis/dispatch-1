@@ -11,7 +11,7 @@ import {
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import Swipeable from "react-native-gesture-handler/Swipeable";
-import * as Haptics from "expo-haptics";
+import { impactMedium } from "@/src/utils/haptics";
 import { useChatList, isCurrentlyUnread } from "@/src/hooks/useChatList";
 import { ChatRow } from "@/src/components/ChatRow";
 import { EmptyState } from "@/src/components/EmptyState";
@@ -89,7 +89,7 @@ export default function ChatListScreen() {
       // Close swipeable first
       swipeable?.close();
       // Haptic feedback
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      impactMedium();
       // Optimistic update + API call
       await markAsUnread(conversation.id);
     },
