@@ -2,6 +2,7 @@
 config.local.yaml
 .env
 secrets.env
+.pii-blocklist
 **/allowed_tokens.json
 **/dispatch-push-config.json
 **/dispatch-apns-tokens.json
@@ -52,3 +53,6 @@ skills/broadcasthenet/
 skills/sven-pages/.api-key
 skills/sven-pages/worker/.wrangler/
 skills/chrome-control/closed_tabs.log
+
+# ── PII-heavy skills ─────────────────────────────────────────
+skills/vacation-house/
