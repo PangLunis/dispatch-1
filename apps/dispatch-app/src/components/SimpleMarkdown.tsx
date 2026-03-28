@@ -14,9 +14,9 @@ const URL_RE = /https?:\/\/[^\s<>"'\])},]+/gi;
 
 interface Props {
   children: string;
-  /** Called with the maximum line width (px) across all text blocks.
-   *  Used by MessageBubble to shrink-wrap the bubble to text content. */
-  onMaxLineWidth?: (width: number) => void;
+  /** Called with the maximum line width (px) and line count per text block.
+   *  Used by MessageBubble to shrink-wrap single-line bubbles. */
+  onMaxLineWidth?: (width: number, lineCount?: number) => void;
 }
 
 /** Top-level component: splits text into blocks and renders each. */
@@ -138,8 +138,8 @@ function parseBlocks(raw: string): Block[] {
 // Block rendering
 // ---------------------------------------------------------------------------
 
-/** Extract max line width from onTextLayout event and report it. */
-function makeTextLayoutHandler(onMaxLineWidth?: (width: number) => void) {
+/** Extract max line width and line count from onTextLayout event and report it. */
+function makeTextLayoutHandler(onMaxLineWidth?: (width: number, lineCount?: number) => void) {
   if (!onMaxLineWidth) return undefined;
   return (e: { nativeEvent: { lines: Array<{ width: number }> } }) => {
     const lines = e.nativeEvent.lines;
@@ -148,7 +148,7 @@ function makeTextLayoutHandler(onMaxLineWidth?: (width: number) => void) {
     for (const line of lines) {
       if (line.width > max) max = line.width;
     }
-    onMaxLineWidth(max);
+    onMaxLineWidth(max, lines.length);
   };
 }
 

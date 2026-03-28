@@ -162,24 +162,37 @@ export function MessageBubble({ message, audioState, onRetry, onLongPress, showD
   const [isSavingImage, setIsSavingImage] = useState(false);
 
   // -- Shrink-wrap: measure text line widths to compute tightest bubble width --
-  // Only for text-only messages (no images/video/audio attachments).
+  // Only shrink-wraps single-line text-only messages. Multi-line → 80% width.
   const hasMedia = !!(imageUrl || videoUrl || localImageUri || audioUrl);
   const [measuredBubbleWidth, setMeasuredBubbleWidth] = useState<number | undefined>(undefined);
+  const [isMultiLine, setIsMultiLine] = useState(false);
   const maxLineWidthRef = useRef(0);
+  const totalLineCountRef = useRef(0);
   // Reset measurement when content changes
   const prevContentRef = useRef(content);
   if (prevContentRef.current !== content) {
     prevContentRef.current = content;
     maxLineWidthRef.current = 0;
+    totalLineCountRef.current = 0;
     setMeasuredBubbleWidth(undefined);
+    setIsMultiLine(false);
   }
 
   /** Called by text components (LinkedText / SimpleMarkdown) with the max line
-   *  width from each text block. We track the overall max across all blocks. */
-  const handleMaxLineWidth = useCallback((lineWidth: number) => {
+   *  width from each text block. We track the overall max across all blocks,
+   *  and only shrink-wrap if the total rendered line count is 1. */
+  const handleMaxLineWidth = useCallback((lineWidth: number, lineCount?: number) => {
     if (hasMedia) return; // Don't shrink-wrap media messages
     if (lineWidth > maxLineWidthRef.current) {
       maxLineWidthRef.current = lineWidth;
+    }
+    if (lineCount !== undefined) {
+      totalLineCountRef.current += lineCount;
+    }
+    if (totalLineCountRef.current > 1) {
+      setIsMultiLine(true);
+      setMeasuredBubbleWidth(undefined);
+      return;
     }
     const newWidth = Math.ceil(maxLineWidthRef.current) + BUBBLE_PADDING_H * 2 + BUBBLE_WIDTH_BUFFER;
     if (measuredBubbleWidth === undefined || Math.abs(newWidth - measuredBubbleWidth) > 2) {
@@ -196,7 +209,7 @@ export function MessageBubble({ message, audioState, onRetry, onLongPress, showD
     for (const line of lines) {
       if (line.width > max) max = line.width;
     }
-    handleMaxLineWidth(max);
+    handleMaxLineWidth(max, lines.length);
   }, [hasMedia, handleMaxLineWidth]);
 
   const handleSaveImage = useCallback(async () => {
@@ -335,8 +348,9 @@ export function MessageBubble({ message, audioState, onRetry, onLongPress, showD
         isUser && styles.bubbleRowUser,
         // Audio messages: force full width so waveform is consistent across messages
         !!audioUrl && styles.bubbleRowFullWidth,
-        // Shrink-wrap: apply measured width if available (text-only messages)
-        !hasMedia && measuredBubbleWidth !== undefined && { width: measuredBubbleWidth, maxWidth: isUser ? "75%" : "90%" },
+        // Multi-line text: 80% width. Single-line: shrink-wrap to measured width.
+        !hasMedia && isMultiLine && styles.bubbleRowMultiLine,
+        !hasMedia && !isMultiLine && measuredBubbleWidth !== undefined && { width: measuredBubbleWidth, maxWidth: isUser ? "75%" : "90%" },
       ]}>
         {sendFailed && (
           <Pressable
@@ -356,7 +370,8 @@ export function MessageBubble({ message, audioState, onRetry, onLongPress, showD
           style={[
             styles.bubble,
             isUser ? styles.bubbleUser : styles.bubbleAssistant,
-            // Audio messages: expand bubble to fill row so waveform has consistent width
+            // Multi-line text or audio: expand bubble to fill row width
+            (!hasMedia && isMultiLine) && styles.bubbleFullWidth,
             !!audioUrl && styles.bubbleFullWidth,
             isFailed && styles.bubbleGenerationFailed,
             isPlayingThis && styles.bubblePlaying,
@@ -590,6 +605,9 @@ const styles = StyleSheet.create({
   bubbleRowUser: {
     flexDirection: "row-reverse",
     maxWidth: "75%",
+  },
+  bubbleRowMultiLine: {
+    width: "80%",
   },
   bubbleRowFullWidth: {
     width: "90%",
