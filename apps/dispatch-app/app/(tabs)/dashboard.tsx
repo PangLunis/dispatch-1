@@ -218,11 +218,6 @@ function SystemStatusSection({ health }: { health: DashboardHealth }) {
         <InfoRow label="Uptime" value={formatUptime(health.uptime_seconds)} />
         <View style={styles.separator} />
         <InfoRow
-          label="Active Sessions"
-          value={`${health.active_sessions}`}
-        />
-        <View style={styles.separator} />
-        <InfoRow
           label="Events / Hour"
           value={`${health.events_last_hour}`}
         />
