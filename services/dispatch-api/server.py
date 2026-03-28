@@ -1696,8 +1696,41 @@ async def restart_session(token: Optional[str] = None, chat_id: str = "voice"):
             logger.error(f"restart-session: stderr={result.stderr}")
             raise HTTPException(status_code=500, detail="Failed to restart session")
 
-        logger.info("restart-session: success")
-        return {"status": "ok", "message": "Session restarted"}
+        logger.info("restart-session: success, injecting context recovery prompt...")
+
+        # Inject a prompt so the new session reads its transcript and picks up context.
+        # Small delay to let the session initialize before injecting.
+        import asyncio
+        await asyncio.sleep(3)
+
+        session_name = f"{APP_SESSION_PREFIX}:{chat_id}"
+        sanitized = session_name.replace("+", "_")
+        transcript_path = f"dispatch-app/{sanitized}"
+        context_prompt = (
+            f"You were just restarted by the user. Read your transcript to recover context:\n"
+            f"uv run ~/.claude/skills/sms-assistant/scripts/read_transcript.py --session {transcript_path}\n\n"
+            f"After reading, send a brief message acknowledging you're back and summarizing "
+            f"what you were working on. Keep it short — 1-2 sentences."
+        )
+        try:
+            inject_result = subprocess.run(
+                [
+                    CLAUDE_ASSISTANT_CLI, "inject-prompt",
+                    session_name,
+                    "--admin", context_prompt,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if inject_result.returncode != 0:
+                logger.warning(f"restart-session: context inject failed: {inject_result.stderr}")
+            else:
+                logger.info("restart-session: context recovery prompt injected")
+        except Exception as e:
+            logger.warning(f"restart-session: context inject error: {e}")
+
+        return {"status": "ok", "message": "Session restarted with context recovery"}
 
     except subprocess.TimeoutExpired:
         logger.error("restart-session: timed out after 30s")
