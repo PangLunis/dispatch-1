@@ -28,7 +28,7 @@ import { EmptyState } from "@/src/components/EmptyState";
 import { useAudioPlayer } from "@/src/hooks/useAudioPlayer";
 import { useVoiceConversation } from "@/src/hooks/useVoiceConversation";
 import { useSdkEvents } from "@/src/hooks/useSdkEvents";
-import { updateChat, markChatAsOpened, forkChat, deleteChat, generateChatImage } from "@/src/api/chats";
+import { updateChat, markChatAsOpened, forkChat, deleteChat, generateChatImage, restartSession } from "@/src/api/chats";
 import { ApiError } from "@/src/api/client";
 import { startDebugSession } from "@/src/utils/debugSession";
 import { screenStyles } from "@/src/styles/shared";
@@ -181,6 +181,21 @@ export default function ChatDetailScreen() {
       setIsCreatingDebugSession(false);
     }
   }, [id, currentTitle]);
+
+  const handleRestartSession = useCallback(async () => {
+    const confirmed = await showDestructiveConfirm(
+      "Restart Session",
+      "Restart the Claude session? This will clear the conversation context.",
+      "Restart",
+    );
+    if (!confirmed) return;
+    try {
+      await restartSession(id ?? "voice");
+      showAlert("Success", "Session restarted.");
+    } catch {
+      showAlert("Error", "Failed to restart session.");
+    }
+  }, [id]);
 
   const handleDelete = useCallback(async () => {
     const confirmed = await showDestructiveConfirm(
@@ -358,6 +373,9 @@ export default function ChatDetailScreen() {
           />
         )}
         {dictationDraft !== null && <DraftBubble text={dictationDraft} />}
+        {voiceConversation.isActive && voiceConversation.voiceState === "LISTENING" && voiceConversation.sttPartial ? (
+          <DraftBubble text={voiceConversation.sttPartial} />
+        ) : null}
         <InputBar
           onSend={handleSend}
           onSendWithImage={handleSendWithImage}
@@ -465,6 +483,21 @@ export default function ChatDetailScreen() {
                 size={16}
               />
               <Text style={localStyles.menuItemText}>Debug Chat</Text>
+            </Pressable>
+            <View style={localStyles.menuDivider} />
+            <Pressable
+              style={({ pressed }) => [localStyles.menuItem, pressed && localStyles.menuItemPressed]}
+              onPress={() => {
+                setMenuVisible(false);
+                setTimeout(handleRestartSession, 400);
+              }}
+            >
+              <SymbolView
+                name={{ ios: "arrow.clockwise", android: "refresh", web: "refresh" }}
+                tintColor="#fafafa"
+                size={16}
+              />
+              <Text style={localStyles.menuItemText}>Restart Session</Text>
             </Pressable>
             <View style={localStyles.menuDivider} />
             <Pressable
