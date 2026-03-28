@@ -9,6 +9,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { SymbolView } from "expo-symbols";
@@ -225,6 +226,21 @@ export default function ChatListScreen() {
     return Array.from(groups.values());
   }, [searchResults]);
 
+  // Parse FTS5 snippet markers (<<match>>) into bold Text elements
+  const renderHighlightedSnippet = useCallback((snippet: string) => {
+    const parts = snippet.split(/(<<.*?>>)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith("<<") && part.endsWith(">>")) {
+        return (
+          <Text key={i} style={styles.searchResultHighlight}>
+            {part.slice(2, -2)}
+          </Text>
+        );
+      }
+      return part;
+    });
+  }, []);
+
   const renderSearchResult = useCallback(
     ({ item }: { item: { chatId: string; chatTitle: string; results: SearchResult[] } }) => (
       <Pressable
@@ -239,7 +255,7 @@ export default function ChatListScreen() {
           <View key={r.message_id} style={styles.searchResultRow}>
             <Text style={styles.searchResultRole}>{r.role === "user" ? "You" : "Sven"}</Text>
             <Text style={styles.searchResultSnippet} numberOfLines={2}>
-              {r.snippet.replace(/<<|>>/g, "")}
+              {renderHighlightedSnippet(r.snippet)}
             </Text>
           </View>
         ))}
@@ -260,7 +276,7 @@ export default function ChatListScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={["top"]}>
       {/* Search bar replacing header */}
       <View style={styles.searchBarContainer}>
         <View style={styles.searchBar}>
@@ -343,7 +359,7 @@ export default function ChatListScreen() {
           <AnimatedFab onPress={handleNewChat} />
         </>
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -454,6 +470,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     flex: 1,
     lineHeight: 20,
+  },
+  searchResultHighlight: {
+    color: "#fafafa",
+    fontWeight: "700",
   },
   searchMoreText: {
     color: "#52525b",
