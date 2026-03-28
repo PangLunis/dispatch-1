@@ -552,6 +552,21 @@ function UsageSection({
     bars.push({ label: "7-Day Sonnet", utilization: quota.seven_day_sonnet.utilization, resetsAt: quota.seven_day_sonnet.resets_at });
   }
 
+  // Extra usage (monthly spend) bar
+  const extraUsage = (quota as Record<string, unknown> | null)?.extra_usage as {
+    is_enabled: boolean;
+    monthly_limit: number | null;
+    used_credits: number | null;
+    utilization: number | null;
+  } | undefined;
+  const extraUsageBar = extraUsage?.is_enabled && extraUsage.utilization != null
+    ? {
+        label: "Monthly Spend",
+        value: `$${(extraUsage.used_credits ?? 0).toFixed(0)} / $${(extraUsage.monthly_limit ?? 0).toFixed(0)}`,
+        pct: extraUsage.utilization,
+      }
+    : null;
+
   // Extract active block data for estimated bars when quota is unavailable
   const activeBlock = ccu?.active_block as Record<string, unknown> | null;
   const blockTokens = (activeBlock?.totalTokens as number) ?? 0;
@@ -614,6 +629,16 @@ function UsageSection({
                 />
               </React.Fragment>
             ))}
+            {extraUsageBar && (
+              <>
+                <View style={styles.quotaSeparator} />
+                <EstimatedBar
+                  label={extraUsageBar.label}
+                  value={extraUsageBar.value}
+                  pct={extraUsageBar.pct}
+                />
+              </>
+            )}
           </View>
         ) : estimatedBars.length > 0 ? (
           <View style={styles.quotaContainer}>

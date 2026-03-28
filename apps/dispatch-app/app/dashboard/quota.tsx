@@ -622,7 +622,7 @@ export default function QuotaDetailScreen() {
                   label="Monthly Spend"
                   utilization={extraUsage.utilization}
                   resetsAt=""
-                  subtitle={`$${((extraUsage.used_credits ?? 0) / 100).toFixed(2)} of $${((extraUsage.monthly_limit ?? 0) / 100).toFixed(2)} · Resets monthly`}
+                  subtitle={`$${(extraUsage.used_credits ?? 0).toFixed(2)} of $${(extraUsage.monthly_limit ?? 0).toFixed(2)} · Resets monthly`}
                 />
               </View>
             )}
