@@ -1794,6 +1794,36 @@ async def restart_session(token: Optional[str] = None, chat_id: str = "voice"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class SetChatModelRequest(BaseModel):
+    model: str  # "opus", "sonnet", "haiku"
+    token: Optional[str] = None
+
+
+@app.post("/chats/{chat_id}/model")
+async def set_chat_model(chat_id: str, request: SetChatModelRequest, token: str = None):
+    """Change the model for a specific chat session."""
+    effective_token = token or request.token
+    validate_token(effective_token)
+
+    model = request.model.strip().lower()
+    if model not in ("opus", "sonnet", "haiku"):
+        raise HTTPException(status_code=400, detail=f"Invalid model: {model}. Use: opus, sonnet, haiku")
+
+    try:
+        result = _ipc_command(
+            {"cmd": "set_model", "chat_id": f"{APP_SESSION_PREFIX}:{chat_id}", "model": model},
+            timeout=30,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Failed to set model"))
+        return {"status": "ok", "model": model, "message": f"Model changed to {model}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"set-chat-model: exception: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/chats")
 async def create_chat(request: CreateChatRequest, token: str = None):
     """Create a new chat."""
@@ -3181,110 +3211,28 @@ async def client_logs(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────
-# Server-Side Quota (OAuth) — separate cache, fast endpoint
+# Server-Side Quota — reads from daemon-written file
 # ─────────────────────────────────────────────────────────────
-_quota_cache: dict = {"data": None, "updated_at": None, "loading": False, "error": None}
+# The daemon's health check loop (every 5 min) fetches quota from Anthropic's
+# OAuth endpoint and writes it to ~/dispatch/state/quota_cache.json.
+# We just read that file — no direct API calls from dispatch-api.
+_quota_cache: dict = {"data": None, "updated_at": None, "error": None}
 _quota_lock = threading.Lock()
+_QUOTA_FILE = Path.home() / "dispatch" / "state" / "quota_cache.json"
 
 
-def _get_oauth_token() -> str | None:
-    """Get OAuth access token from macOS keychain."""
-    import platform as _platform
-    if _platform.system() == "Darwin":
-        try:
-            raw = subprocess.check_output(
-                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                stderr=subprocess.DEVNULL,
-            ).decode().strip()
-            data = json.loads(raw)
-            return data.get("claudeAiOauth", {}).get("accessToken")
-        except Exception:
-            return None
-    else:
-        creds_path = Path.home() / ".claude" / ".credentials.json"
-        if not creds_path.exists():
-            return None
-        try:
-            data = json.loads(creds_path.read_text())
-            return data.get("claudeAiOauth", {}).get("accessToken")
-        except Exception:
-            return None
-
-
-def _quota_fetch():
-    """Fetch server-side quota via OAuth endpoint."""
-    import ssl
-    import urllib.request
+def _quota_read_from_file():
+    """Read quota data from shared file written by the daemon."""
     try:
-        token = _get_oauth_token()
-        if not token:
-            with _quota_lock:
-                _quota_cache["loading"] = False
-                _quota_cache["error"] = "No OAuth token available"
+        if not _QUOTA_FILE.exists():
             return
-
-        ctx = ssl.create_default_context()
-        req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage")
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("anthropic-beta", "oauth-2025-04-20")
-        req.add_header("Accept", "application/json")
-
-        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
-        usage = json.loads(resp.read().decode())
-
+        raw = json.loads(_QUOTA_FILE.read_text())
         with _quota_lock:
-            _quota_cache["data"] = usage
-            _quota_cache["updated_at"] = datetime.now().isoformat()
-            _quota_cache["loading"] = False
-            _quota_cache["error"] = None
-
-        logger.info("Quota cache refreshed via OAuth")
+            _quota_cache["data"] = raw.get("data")
+            _quota_cache["updated_at"] = raw.get("updated_at")
+            _quota_cache["error"] = raw.get("error")
     except Exception as e:
-        logger.error(f"Quota fetch error: {e}")
-        with _quota_lock:
-            _quota_cache["loading"] = False
-            _quota_cache["error"] = str(e)
-
-
-def _quota_maybe_refresh(max_age_seconds: int = 300):
-    """Trigger background refresh if quota cache is stale (default 5 min).
-
-    The Anthropic OAuth /api/oauth/usage endpoint has aggressive rate limits
-    (~1-2 req/min before 429 lockout that persists 30+ min). We poll every 5 min
-    in a background timer and only force-refresh on explicit user tap.
-    """
-    with _quota_lock:
-        if _quota_cache["loading"]:
-            return
-        updated = _quota_cache["updated_at"]
-        if updated:
-            age = (datetime.now() - datetime.fromisoformat(updated)).total_seconds()
-            if age < max_age_seconds:
-                return
-        _quota_cache["loading"] = True
-
-    t = threading.Thread(target=_quota_fetch, daemon=True)
-    t.start()
-
-
-_quota_timer: threading.Timer | None = None
-
-def _quota_start_background_polling():
-    """Start a repeating background timer that refreshes quota every 5 min."""
-    global _quota_timer
-
-    def _tick():
-        _quota_maybe_refresh(max_age_seconds=0)  # force refresh
-        global _quota_timer
-        _quota_timer = threading.Timer(300, _tick)
-        _quota_timer.daemon = True
-        _quota_timer.start()
-
-    # Initial fetch after 5s delay (let server finish starting)
-    _quota_timer = threading.Timer(5, _tick)
-    _quota_timer.daemon = True
-    _quota_timer.start()
-    logger.info("Quota background polling started (every 5 min)")
+        logger.error(f"Quota file read error: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3394,17 +3342,14 @@ def _ccu_maybe_refresh(max_age_seconds: int = 60):
 
 
 @app.get("/api/dashboard/ccu")
-async def dashboard_ccu(force_quota: bool = False):
-    """Claude Code Usage — returns cached data, triggers background refresh.
+async def dashboard_ccu():
+    """Claude Code Usage — returns cached CCU + daemon-polled quota data.
 
-    Quota is polled every 5 min by a background timer. Pass ?force_quota=true
-    to trigger an immediate quota refresh (e.g. on user tap-to-refresh).
+    Quota is fetched by the daemon's health check loop every 5 min and written
+    to ~/dispatch/state/quota_cache.json. We read from that file here.
     """
     _ccu_maybe_refresh(max_age_seconds=60)
-
-    # Only force-refresh quota on explicit user request (tap-to-refresh)
-    if force_quota:
-        _quota_maybe_refresh(max_age_seconds=0)
+    _quota_read_from_file()
 
     with _ccu_lock:
         data = _ccu_cache["data"]
@@ -4982,8 +4927,8 @@ if __name__ == "__main__":
     # Initialize database on startup
     init_db()
 
-    # Start background quota polling (every 5 min) to avoid rate limits
-    _quota_start_background_polling()
+    # Read initial quota from daemon's shared file
+    _quota_read_from_file()
 
     # Configure uvicorn with socket reuse to prevent "address already in use" crashes
     # when the daemon restarts and the old process hasn't fully released the port.

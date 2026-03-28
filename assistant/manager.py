@@ -1475,18 +1475,20 @@ class IPCServer:
             valid = ("opus", "sonnet", "haiku", "--clear", "clear")
             if model not in valid:
                 return {"ok": False, "error": f"Invalid model: {model}. Use: opus, sonnet, haiku, or --clear"}
-            qm = self.sessions.quota_manager
-            qm.set_global_model(model, trigger="manual_cli")
+            qm = self.backend.quota_manager
+            trigger = request.get("trigger", "manual_cli")
+            qm.set_global_model(model, trigger=trigger)
             state = qm.state
             override = qm.get_override_info()
-            # Notify admin
-            from assistant import config
-            admin_phone = config.get("owner.phone")
-            if admin_phone:
-                if model in ("--clear", "clear"):
-                    self._send_sms(admin_phone, "[SVEN] ⚡ Global model override cleared — sessions will use per-session defaults (opus)")
-                else:
-                    self._send_sms(admin_phone, f"[SVEN] ⚡ Global model switched to {model} — new sessions will use {model}")
+            # Notify admin (skip if triggered from the app — user already sees the result)
+            if not trigger.startswith("manual_app"):
+                from assistant import config
+                admin_phone = config.get("owner.phone")
+                if admin_phone:
+                    if model in ("--clear", "clear"):
+                        self._send_sms(admin_phone, "[SVEN] ⚡ Global model override cleared — sessions will use per-session defaults (opus)")
+                    else:
+                        self._send_sms(admin_phone, f"[SVEN] ⚡ Global model switched to {model} — new sessions will use {model}")
             return {
                 "ok": True,
                 "state": state,
@@ -1495,10 +1497,10 @@ class IPCServer:
             }
 
         elif cmd == "get_global_model":
-            qm = self.sessions.quota_manager
+            qm = self.backend.quota_manager
             state = qm.state
             override = qm.get_override_info()
-            cb = self.sessions.haiku_circuit_breaker
+            cb = self.backend.haiku_circuit_breaker
             # Get current quota if available
             try:
                 from assistant.health import fetch_quota_oauth
@@ -3231,15 +3233,16 @@ class Manager:
 
     def _start_discord_listener(self):
         """Start the Discord listener thread."""
-        if os.environ.get("DISPATCH_DISABLE_DISCORD", "").lower() in ("1", "true", "yes"):
-            log.info("Discord disabled via DISPATCH_DISABLE_DISCORD env var")
+        from assistant import config as app_config
+
+        # Check config-driven enable/disable (defaults to true if discord section exists)
+        if not app_config.get("discord.enabled", True):
+            log.info("Discord disabled via config (discord.enabled: false)")
             return
 
         if self.discord_listener is not None and self.discord_listener.is_alive():
             log.debug("Discord listener already running")
             return
-
-        from assistant import config as app_config
         discord_channels = app_config.get("discord.channel_ids", [])
         if not discord_channels:
             log.info("Discord not configured — skipping (set discord.channel_ids in config)")
@@ -3482,6 +3485,29 @@ class Manager:
                 from assistant import config
                 usage = fetch_quota_oauth()
                 if usage:
+                    # Persist quota to shared file for dispatch-api to serve
+                    try:
+                        import tempfile
+                        quota_path = self.state_dir / "quota_cache.json"
+                        quota_payload = json.dumps({
+                            "data": usage,
+                            "updated_at": datetime.now().isoformat(),
+                            "error": None,
+                        })
+                        fd, tmp = tempfile.mkstemp(dir=self.state_dir, suffix=".tmp")
+                        try:
+                            os.write(fd, quota_payload.encode())
+                            os.close(fd)
+                            os.replace(tmp, str(quota_path))
+                        except Exception:
+                            os.close(fd) if not os.get_inheritable(fd) else None
+                            try: os.unlink(tmp)
+                            except OSError: pass
+                            raise
+                        log.debug("Quota cache written to %s", quota_path)
+                    except Exception as e:
+                        log.error(f"Failed to write quota cache: {e}")
+
                     alerts = check_quota_thresholds(usage)
                     if alerts:
                         admin_phone = config.get("owner.phone")

@@ -84,15 +84,10 @@ export async function getDashboardSessions(): Promise<DashboardSessionsResponse>
   return withDefaults(DEFAULT_SESSIONS_RESPONSE, data);
 }
 
-/** Fetch Claude Code Usage (quota data).
- *  Pass forceQuota=true to trigger an immediate quota refresh from Anthropic.
- */
-export async function getDashboardCcu(forceQuota = false): Promise<DashboardCcuResponse> {
-  const params: Record<string, string> = {};
-  if (forceQuota) params.force_quota = "true";
+/** Fetch Claude Code Usage (quota data). */
+export async function getDashboardCcu(): Promise<DashboardCcuResponse> {
   const data = await apiRequest<Partial<DashboardCcuResponse>>(
     "/api/dashboard/ccu",
-    { params },
   );
   return withDefaults(DEFAULT_CCU_RESPONSE, data);
 }
