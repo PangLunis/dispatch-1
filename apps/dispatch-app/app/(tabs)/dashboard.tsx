@@ -223,11 +223,27 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 const CHART_HEIGHT = 48;
 const CHART_BAR_GAP = 1;
 
+function formatChartHour(iso: string): string {
+  const d = new Date(iso);
+  const h = d.getHours();
+  const ampm = h >= 12 ? "p" : "a";
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}${ampm}`;
+}
+
 function MiniAreaChart({ buckets }: { buckets: HistogramBucket[] }) {
   const max = Math.max(1, ...buckets.map((b) => b.count));
   const total = buckets.reduce((s, b) => s + b.count, 0);
 
   if (buckets.length === 0) return null;
+
+  // Pick ~5 evenly spaced labels from the bucket timestamps
+  const labelCount = 5;
+  const labels: { index: number; text: string }[] = [];
+  for (let i = 0; i < labelCount; i++) {
+    const idx = Math.round((i / (labelCount - 1)) * (buckets.length - 1));
+    labels.push({ index: idx, text: formatChartHour(buckets[idx].hour) });
+  }
 
   return (
     <View style={chartStyles.container}>
@@ -255,9 +271,9 @@ function MiniAreaChart({ buckets }: { buckets: HistogramBucket[] }) {
         })}
       </View>
       <View style={chartStyles.xLabels}>
-        <Text style={chartStyles.xLabel}>24h ago</Text>
-        <Text style={chartStyles.xLabel}>12h</Text>
-        <Text style={chartStyles.xLabel}>Now</Text>
+        {labels.map((l, i) => (
+          <Text key={i} style={chartStyles.xLabel}>{l.text}</Text>
+        ))}
       </View>
     </View>
   );
