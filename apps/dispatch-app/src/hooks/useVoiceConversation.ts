@@ -57,12 +57,16 @@ export function useVoiceConversation(
 ): VoiceConversationReturn {
   const { chatId, onSend, messages, onClearText } = options;
 
-  // iOS audio session config for STT during TTS playback — keeps mic + speaker active
-  // by using .playAndRecord with .mixWithOthers so AVPlayer and AVAudioEngine coexist.
+  // iOS audio session config for STT during TTS playback — enables hardware echo
+  // cancellation (AEC) via .voiceChat mode so the mic doesn't pick up TTS audio
+  // from the speaker. Uses .playAndRecord with .mixWithOthers so AVPlayer and
+  // AVAudioEngine coexist. Note: .voiceChat mode may route audio to earpiece
+  // instead of the loud speaker — this is expected for voice conversations (like
+  // a phone call) and is what enables Apple's built-in AEC.
   const voiceInterruptIosCategory = useRef({
     category: "playAndRecord",
     categoryOptions: ["defaultToSpeaker", "allowBluetooth", "mixWithOthers"],
-    mode: "default", // NOT "measurement" — that kills AVPlayer output
+    mode: "voiceChat", // enables AEC — prevents TTS audio from triggering STT
   }).current;
 
   // -- Sub-hooks --
