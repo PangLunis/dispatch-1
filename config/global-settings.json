@@ -14,6 +14,5 @@
     ],
     "PostToolUseFailure": []
   },
-  "skipDangerousModePermissionPrompt": true,
-  "model": "sonnet"
+  "skipDangerousModePermissionPrompt": true
 }
