@@ -96,7 +96,21 @@ def get_signal_db():
 STATE_FILE = STATE_DIR / "last_rowid.txt"
 CONSOLIDATION_STATE_FILE = STATE_DIR / "last_consolidation_date.txt"
 
-SIGNAL_ENABLED = os.environ.get("DISABLE_SIGNAL", "").lower() not in ("1", "true", "yes")
+def _backend_disabled(backend: str) -> bool:
+    """Check if a backend is in the disabled_backends list (hot-reloaded from config)."""
+    from assistant import config
+    config.reload()  # Always re-read from disk for hot-reload
+    disabled = config.get("disabled_backends", [])
+    return backend in (disabled or [])
+
+def _signal_enabled() -> bool:
+    """Check if Signal is enabled (checks disabled_backends list, then legacy env var)."""
+    if _backend_disabled("signal"):
+        return False
+    # Legacy env var fallback
+    return os.environ.get("DISABLE_SIGNAL", "").lower() not in ("1", "true", "yes")
+
+SIGNAL_ENABLED = _signal_enabled()
 
 # Dispatch API config - lives in dispatch/services/dispatch-api
 DISPATCH_API_DIR = ASSISTANT_DIR / "services" / "dispatch-api"
@@ -1974,6 +1988,9 @@ class Manager:
             alert_fn=self._alert_admin,
             producer=self._producer,
         )
+        # Track which disabled chats/backends have been notified (one-time per daemon run)
+        self._disabled_notice_sent: set[str] = set()
+
         # Backward compat: expose process refs for resource registry / external code
         self.dispatch_api_daemon = None  # Set after start() in run()
         self.metro_daemon = None
@@ -3733,7 +3750,10 @@ class Manager:
         """Start the Discord listener thread."""
         from assistant import config as app_config
 
-        # Check config-driven enable/disable (defaults to true if discord section exists)
+        # Check config-driven enable/disable (disabled_backends list or legacy discord.enabled)
+        if _backend_disabled("discord"):
+            log.info("Discord disabled via disabled_backends config")
+            return
         if not app_config.get("discord.enabled", True):
             log.info("Discord disabled via config (discord.enabled: false)")
             return
@@ -3865,10 +3885,11 @@ class Manager:
 
             # --- Service health checks (each isolated so one failure can't block others) ---
 
-            try:
-                self._check_signal_health()
-            except Exception as e:
-                log.error(f"Signal health check failed: {e}")
+            if SIGNAL_ENABLED:
+                try:
+                    self._check_signal_health()
+                except Exception as e:
+                    log.error(f"Signal health check failed: {e}")
 
             try:
                 self._check_discord_health()
@@ -4003,6 +4024,23 @@ class Manager:
         except Exception as e:
             log.warning(f"Failed to resolve Signal UUID {uuid}: {e}")
         return None
+
+    def _maybe_send_disabled_notice(self, chat_id: str, source: str, phone: str, is_group: bool):
+        """Send a one-time notice that a chat/backend is disabled. Only via iMessage."""
+        notice_key = f"{source}:{chat_id}"
+        if notice_key in self._disabled_notice_sent:
+            return
+        self._disabled_notice_sent.add(notice_key)
+
+        # Only send notice via iMessage (we can't/shouldn't reply on disabled backends)
+        # For disabled backends, the sender phone might be a Discord ID etc — skip those
+        if source != "imessage":
+            log.info(f"Disabled notice skipped for non-iMessage source '{source}' chat '{chat_id}'")
+            return
+
+        target = chat_id if is_group else phone
+        self._send_sms(target, "[Sven is currently offline for this chat. Messages won't be processed until re-enabled.]")
+        log.info(f"Sent disabled notice to {target}")
 
     def _send_sms(self, phone: str, message: str) -> bool:
         """Send an SMS message via the send-sms CLI.
@@ -4230,6 +4268,26 @@ You have 15 minutes. Work efficiently.
         attachment_info = f" + {len(attachments)} attachment(s)" if attachments else ""
         group_info = f" [GROUP: {group_name or chat_identifier}]" if is_group else ""
         log.info(f"Processing message {rowid}{group_info}: {text_preview}{attachment_info}")
+
+        # --- Hot-reloaded disabled_backends / disabled_chats check ---
+        from assistant import config as _dyn_config
+        _dyn_config.reload()  # Re-read config from disk (no daemon restart needed)
+        _disabled_backends = _dyn_config.get("disabled_backends", []) or []
+        _disabled_chats = _dyn_config.get("disabled_chats", []) or []
+
+        # Check disabled backends
+        if source in _disabled_backends:
+            chat_key = chat_identifier if is_group else phone
+            log.info(f"Dropping message from disabled backend '{source}' (chat: {chat_key})")
+            self._maybe_send_disabled_notice(chat_key, source, phone, is_group)
+            return
+
+        # Check disabled chats (by chat_id — phone for individual, chat_identifier for groups)
+        chat_id_for_check = chat_identifier if is_group else phone
+        if chat_id_for_check in _disabled_chats:
+            log.info(f"Dropping message from disabled chat '{chat_id_for_check}'")
+            self._maybe_send_disabled_notice(chat_id_for_check, source, phone, is_group)
+            return
 
         # NOTE: produce_event("message.received") is called by the poll loop,
         # not here. This method is invoked by the bus consumer after reading

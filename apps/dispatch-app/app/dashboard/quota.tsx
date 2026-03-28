@@ -182,10 +182,12 @@ function ExpandedBar({
   label,
   utilization,
   resetsAt,
+  subtitle,
 }: {
   label: string;
   utilization: number;
   resetsAt: string;
+  subtitle?: string;
 }) {
   return (
     <View style={barStyles.barRow}>
@@ -206,9 +208,13 @@ function ExpandedBar({
           ]}
         />
       </View>
-      <Text style={barStyles.resetText}>
-        Resets in {formatResetTime(resetsAt)}
-      </Text>
+      {subtitle ? (
+        <Text style={barStyles.resetText}>{subtitle}</Text>
+      ) : (
+        <Text style={barStyles.resetText}>
+          Resets in {formatResetTime(resetsAt)}
+        </Text>
+      )}
     </View>
   );
 }
@@ -537,6 +543,14 @@ export default function QuotaDetailScreen() {
     bars.push({ label: "7-Day Sonnet", utilization: quota.seven_day_sonnet.utilization, resetsAt: quota.seven_day_sonnet.resets_at });
   }
 
+  // Extra usage (overage spend)
+  const extraUsage = (quota as Record<string, unknown>)?.extra_usage as {
+    is_enabled: boolean;
+    monthly_limit: number | null;
+    used_credits: number | null;
+    utilization: number | null;
+  } | undefined;
+
   // Backoff / staleness status
   const backoff = data?.current_backoff;
   const failures = backoff?.consecutive_failures ?? 0;
@@ -599,6 +613,19 @@ export default function QuotaDetailScreen() {
                 </Text>
               )}
             </View>
+
+            {/* Extra usage card */}
+            {extraUsage?.is_enabled && extraUsage.utilization != null && (
+              <View style={styles.card}>
+                <Text style={styles.sectionHeader}>EXTRA USAGE</Text>
+                <ExpandedBar
+                  label="Monthly Spend"
+                  utilization={extraUsage.utilization}
+                  resetsAt=""
+                  subtitle={`$${((extraUsage.used_credits ?? 0) / 100).toFixed(2)} of $${((extraUsage.monthly_limit ?? 0) / 100).toFixed(2)} · Resets monthly`}
+                />
+              </View>
+            )}
 
             {/* Time range picker */}
             <TimeRangePicker

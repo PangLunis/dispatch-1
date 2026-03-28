@@ -714,6 +714,16 @@ def check_quota_thresholds(usage: dict) -> list[dict[str, Any]]:
         ("7-day opus", usage.get("seven_day_opus", {})),
     ]
 
+    # Include extra usage if enabled
+    eu = usage.get("extra_usage", {})
+    if eu and eu.get("is_enabled") and eu.get("utilization") is not None:
+        # Use current month as stable reset key (extra usage resets monthly)
+        month_key = datetime.now(timezone.utc).strftime("%Y-%m")
+        blocks.append(("extra usage", {
+            "utilization": eu["utilization"],
+            "resets_at": f"monthly:{month_key}",
+        }))
+
     for quota_type, block in blocks:
         if not block:
             continue
@@ -800,7 +810,9 @@ def format_quota_alert(alert: dict[str, Any]) -> str:
 
     # Format reset time
     reset_str = "unknown"
-    if resets_at and resets_at != "unknown":
+    if resets_at and resets_at.startswith("monthly:"):
+        reset_str = "monthly"
+    elif resets_at and resets_at != "unknown":
         try:
             dt = datetime.fromisoformat(resets_at)
             local = dt.astimezone()
