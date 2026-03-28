@@ -77,6 +77,24 @@ export interface MessagesResponse {
   is_thinking?: boolean;
 }
 
+/** A search result from FTS across chat messages */
+export interface SearchResult {
+  message_id: string;
+  chat_id: string;
+  snippet: string;
+  role: "user" | "assistant";
+  created_at: string;
+  chat_title: string;
+  rank: number;
+}
+
+/** Response from GET /chats/search */
+export interface SearchResponse {
+  query: string;
+  results: SearchResult[];
+  count: number;
+}
+
 /** Response from GET /chats */
 export interface ChatsResponse {
   chats: Conversation[];

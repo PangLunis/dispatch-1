@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -6,10 +6,12 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
+import { SymbolView } from "expo-symbols";
 import Swipeable from "react-native-gesture-handler/Swipeable";
 import { impactMedium } from "@/src/utils/haptics";
 import { useChatList, isCurrentlyUnread } from "@/src/hooks/useChatList";
@@ -17,7 +19,8 @@ import { ChatRow } from "@/src/components/ChatRow";
 import { EmptyState } from "@/src/components/EmptyState";
 import { branding } from "@/src/config/branding";
 import { showDestructiveConfirm } from "@/src/utils/alert";
-import type { Conversation } from "@/src/api/types";
+import { searchChats } from "@/src/api/chats";
+import type { Conversation, SearchResult } from "@/src/api/types";
 
 export default function ChatListScreen() {
   const router = useRouter();
@@ -30,6 +33,41 @@ export default function ChatListScreen() {
     deleteConversation,
     markAsUnread,
   } = useChatList();
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isSearchActive = searchQuery.length > 0;
+
+  // Debounced search
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await searchChats(searchQuery.trim());
+        setSearchResults(res.results);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [searchQuery]);
 
   // Force re-render when screen gains focus (e.g., coming back from chat detail)
   // This ensures optimistic read state is reflected immediately
@@ -173,6 +211,46 @@ export default function ChatListScreen() {
     [handleOpenChat, handleDeleteChat, handleMarkUnread, renderRightActions, swipeableRefs],
   );
 
+  // Group search results by chat for display
+  const groupedResults = React.useMemo(() => {
+    const groups = new Map<string, { chatId: string; chatTitle: string; results: SearchResult[] }>();
+    for (const r of searchResults) {
+      let group = groups.get(r.chat_id);
+      if (!group) {
+        group = { chatId: r.chat_id, chatTitle: r.chat_title, results: [] };
+        groups.set(r.chat_id, group);
+      }
+      group.results.push(r);
+    }
+    return Array.from(groups.values());
+  }, [searchResults]);
+
+  const renderSearchResult = useCallback(
+    ({ item }: { item: { chatId: string; chatTitle: string; results: SearchResult[] } }) => (
+      <Pressable
+        onPress={() => router.push({
+          pathname: "/chat/[id]",
+          params: { id: item.chatId, chatTitle: item.chatTitle },
+        })}
+        style={({ pressed }) => [styles.searchGroup, pressed && styles.searchGroupPressed]}
+      >
+        <Text style={styles.searchGroupTitle} numberOfLines={1}>{item.chatTitle}</Text>
+        {item.results.slice(0, 3).map((r) => (
+          <View key={r.message_id} style={styles.searchResultRow}>
+            <Text style={styles.searchResultRole}>{r.role === "user" ? "You" : "Sven"}</Text>
+            <Text style={styles.searchResultSnippet} numberOfLines={2}>
+              {r.snippet.replace(/<<|>>/g, "")}
+            </Text>
+          </View>
+        ))}
+        {item.results.length > 3 && (
+          <Text style={styles.searchMoreText}>+{item.results.length - 3} more matches</Text>
+        )}
+      </Pressable>
+    ),
+    [router],
+  );
+
   if (isLoading) {
     return (
       <View style={styles.centered}>
@@ -183,28 +261,88 @@ export default function ChatListScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Search bar replacing header */}
+      <View style={styles.searchBarContainer}>
+        <View style={styles.searchBar}>
+          <SymbolView
+            name={{ ios: "magnifyingglass", android: "search", web: "search" }}
+            tintColor="#71717a"
+            size={16}
+            style={styles.searchIcon}
+          />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search messages..."
+            placeholderTextColor="#52525b"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCorrect={false}
+            autoCapitalize="none"
+            returnKeyType="search"
+          />
+          {searchQuery.length > 0 && (
+            <Pressable onPress={() => setSearchQuery("")} hitSlop={8}>
+              <SymbolView
+                name={{ ios: "xmark.circle.fill", android: "cancel", web: "cancel" }}
+                tintColor="#71717a"
+                size={16}
+              />
+            </Pressable>
+          )}
+        </View>
+      </View>
+
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
       ) : null}
-      <FlatList
-        data={conversations}
-        keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        refreshing={isLoading}
-        onRefresh={loadConversations}
-        contentContainerStyle={
-          conversations.length === 0 ? styles.emptyContainer : undefined
-        }
-        ListEmptyComponent={
+
+      {isSearchActive ? (
+        // Search results view
+        isSearching ? (
+          <View style={styles.searchLoadingContainer}>
+            <ActivityIndicator color="#71717a" size="small" />
+          </View>
+        ) : searchResults.length === 0 ? (
           <EmptyState
-            title="No conversations yet"
-            subtitle="Tap + to start a new chat"
+            title="No results"
+            subtitle={`No messages matching "${searchQuery}"`}
           />
-        }
-      />
-      <AnimatedFab onPress={handleNewChat} />
+        ) : (
+          <FlatList
+            data={groupedResults}
+            keyExtractor={(item) => item.chatId}
+            renderItem={renderSearchResult}
+            contentContainerStyle={styles.searchResultsList}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+          />
+        )
+      ) : (
+        // Normal chat list
+        <>
+          <FlatList
+            data={conversations}
+            keyExtractor={(item) => item.id}
+            renderItem={renderItem}
+            refreshing={isLoading}
+            onRefresh={loadConversations}
+            contentContainerStyle={
+              conversations.length === 0 ? styles.emptyContainer : undefined
+            }
+            ListEmptyComponent={
+              <EmptyState
+                title="No conversations yet"
+                subtitle="Tap + to start a new chat"
+              />
+            }
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+          />
+          <AnimatedFab onPress={handleNewChat} />
+        </>
+      )}
     </View>
   );
 }
@@ -249,6 +387,78 @@ const styles = StyleSheet.create({
   },
   emptyContainer: {
     flex: 1,
+  },
+  searchBarContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 8,
+    backgroundColor: "#09090b",
+  },
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1c1c1e",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    height: 36,
+  },
+  searchIcon: {
+    width: 16,
+    height: 16,
+    marginRight: 6,
+  },
+  searchInput: {
+    flex: 1,
+    color: "#fafafa",
+    fontSize: 16,
+    paddingVertical: 0,
+  },
+  searchLoadingContainer: {
+    flex: 1,
+    alignItems: "center",
+    paddingTop: 40,
+  },
+  searchResultsList: {
+    paddingHorizontal: 0,
+  },
+  searchGroup: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#27272a",
+  },
+  searchGroupPressed: {
+    backgroundColor: "#18181b",
+  },
+  searchGroupTitle: {
+    color: "#fafafa",
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 6,
+  },
+  searchResultRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginTop: 4,
+  },
+  searchResultRole: {
+    color: "#71717a",
+    fontSize: 13,
+    fontWeight: "600",
+    width: 36,
+    marginTop: 1,
+  },
+  searchResultSnippet: {
+    color: "#a1a1aa",
+    fontSize: 14,
+    flex: 1,
+    lineHeight: 20,
+  },
+  searchMoreText: {
+    color: "#52525b",
+    fontSize: 13,
+    marginTop: 6,
   },
   errorBanner: {
     backgroundColor: "#7f1d1d",

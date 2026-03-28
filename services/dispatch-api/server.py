@@ -409,6 +409,45 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+    # FTS5 full-text search on messages
+    # Check if the FTS table exists; if not, create and populate it
+    fts_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+    ).fetchone()
+    if not fts_exists:
+        conn.execute("""
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                content, chat_id UNINDEXED, message_id UNINDEXED,
+                content_rowid='rowid'
+            )
+        """)
+        # Populate FTS from existing messages
+        conn.execute("""
+            INSERT INTO messages_fts(rowid, content, chat_id, message_id)
+            SELECT rowid, content, chat_id, id FROM messages
+        """)
+        # Triggers to keep FTS in sync
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content, chat_id, message_id)
+                VALUES (NEW.rowid, NEW.content, NEW.chat_id, NEW.id);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, chat_id, message_id)
+                VALUES ('delete', OLD.rowid, OLD.content, OLD.chat_id, OLD.id);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, chat_id, message_id)
+                VALUES ('delete', OLD.rowid, OLD.content, OLD.chat_id, OLD.id);
+                INSERT INTO messages_fts(rowid, content, chat_id, message_id)
+                VALUES (NEW.rowid, NEW.content, NEW.chat_id, NEW.id);
+            END
+        """)
+
     # Reconcile orphaned 'generating' messages from prior crashes/restarts
     conn.execute("UPDATE messages SET status='failed', failure_reason='server_restart', content='Image generation interrupted' WHERE status='generating'")
     # Reconcile orphaned image generation status from prior crashes/restarts
@@ -1774,6 +1813,58 @@ def _chat_list_fingerprint(chats: list[dict]) -> str:
 async def list_chats(token: str = None):
     """List all chats with last message previews."""
     return {"chats": _fetch_chat_list()}
+
+
+@app.get("/chats/search")
+async def search_chats(q: str = "", limit: int = 50, token: str = None):
+    """Full-text search across all chat messages using FTS5.
+
+    Returns matching messages grouped with chat context (title, snippet).
+    """
+    validate_token(token)
+    q = q.strip()
+    if not q:
+        return {"query": q, "results": [], "count": 0}
+
+    conn = get_db()
+    try:
+        # Use FTS5 MATCH with BM25 ranking
+        # Escape special FTS5 characters by wrapping each term in quotes
+        terms = q.split()
+        fts_query = " ".join(f'"{t}"' for t in terms)
+
+        rows = conn.execute("""
+            SELECT
+                f.message_id,
+                f.chat_id,
+                snippet(messages_fts, 0, '<<', '>>', '...', 40) as snippet,
+                m.role,
+                m.created_at,
+                c.title as chat_title,
+                rank
+            FROM messages_fts f
+            JOIN messages m ON m.id = f.message_id
+            LEFT JOIN chats c ON c.id = f.chat_id
+            WHERE messages_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+        """, (fts_query, limit)).fetchall()
+
+        results = []
+        for row in rows:
+            results.append({
+                "message_id": row[0],
+                "chat_id": row[1],
+                "snippet": row[2],
+                "role": row[3],
+                "created_at": row[4],
+                "chat_title": row[5] or "Untitled",
+                "rank": row[6],
+            })
+
+        return {"query": q, "results": results, "count": len(results)}
+    finally:
+        conn.close()
 
 
 @app.get("/chats/stream")
@@ -3482,6 +3573,143 @@ async def dashboard_facts():
 
 
 # ─────────────────────────────────────────────────────────────
+# Model Config API endpoints
+# ─────────────────────────────────────────────────────────────
+
+
+@app.get("/api/app/model-config")
+async def get_model_config(token: str = ""):
+    """Get current global model configuration.
+
+    Returns effective model, source (manual/default/quota_degraded),
+    active session count, and quota warning info.
+    """
+    try:
+        # Get global model state from daemon
+        result = _ipc_command({"cmd": "get_global_model"}, timeout=10)
+        if not result.get("ok"):
+            raise HTTPException(status_code=503, detail=result.get("error", "Failed to get model config"))
+
+        override = result.get("override")  # None if no override file
+        state = result.get("state", "normal")  # "normal" or "degraded"
+
+        # Determine effective model and source
+        if override and isinstance(override, dict):
+            model = override.get("model", "sonnet")
+            trigger = override.get("trigger", "")
+            if trigger.startswith("manual"):
+                source = "manual"
+            elif trigger.startswith("auto") or trigger.startswith("api_quota"):
+                source = "quota_degraded"
+            else:
+                source = "manual"  # unknown trigger = treat as manual
+            override_set_at = override.get("set_at")
+        else:
+            model = "opus"  # system default
+            source = "default"
+            override_set_at = None
+
+        # Count actually running sessions (not just registry entries)
+        status_result = _ipc_command({"cmd": "status"}, timeout=5)
+        if status_result.get("ok") and "sessions" in status_result:
+            active_session_count = len(status_result["sessions"])
+        else:
+            # Fallback: registry count if IPC fails (e.g. daemon not running)
+            active_session_count = 0
+
+        # Get quota info — use highest bucket utilization
+        quota_5h = result.get("quota_5h_pct")
+        quota_7d_opus = result.get("quota_7d_opus_pct")
+        quota_values = [v for v in [quota_5h, quota_7d_opus] if v is not None]
+        quota_pct = max(quota_values) if quota_values else None
+        quota_warning = quota_pct is not None and quota_pct >= 80
+
+        return {
+            "model": model,
+            "source": source,
+            "override_set_at": override_set_at,
+            "active_session_count": active_session_count,
+            "quota_warning": quota_warning,
+            "quota_pct": round(quota_pct, 1) if quota_pct is not None else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"get_model_config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SetModelRequest(BaseModel):
+    model: str  # "opus", "sonnet", "haiku", or "default"
+
+
+@app.post("/api/app/model-config")
+async def set_model_config(request: SetModelRequest, token: str = ""):
+    """Set global model and restart all sessions.
+
+    The override is persisted atomically before any restarts begin,
+    so even if the request times out, the system is in the correct state.
+    """
+    model = request.model.strip().lower()
+
+    # Validate
+    valid_models = ("opus", "sonnet", "haiku", "default")
+    if model not in valid_models:
+        raise HTTPException(status_code=400, detail=f"Invalid model: {model}. Use: {', '.join(valid_models)}")
+
+    try:
+        # Step 1: Set the global model override (atomic write before restarts)
+        ipc_model = "clear" if model == "default" else model
+        set_result = _ipc_command(
+            {"cmd": "set_global_model", "model": ipc_model, "trigger": "manual_app"},
+            timeout=10,
+        )
+        if not set_result.get("ok"):
+            raise HTTPException(status_code=500, detail=set_result.get("error", "Failed to set model"))
+
+        # Step 2: Restart all RUNNING sessions so they pick up the new model
+        status_result = _ipc_command({"cmd": "status"}, timeout=5)
+        running_sessions = status_result.get("sessions", []) if status_result.get("ok") else []
+        total = len(running_sessions)
+        restarted = 0
+        failed = []
+
+        for s in running_sessions:
+            chat_id = s.get("chat_id")
+            if not chat_id:
+                continue
+            try:
+                restart_result = _ipc_command(
+                    {"cmd": "restart_session", "chat_id": chat_id},
+                    timeout=30,
+                )
+                if restart_result.get("ok"):
+                    restarted += 1
+                else:
+                    failed.append(chat_id)
+            except Exception as e:
+                logger.warning(f"Failed to restart session {chat_id}: {e}")
+                failed.append(chat_id)
+
+        # Determine effective source for response
+        effective_model = model if model != "default" else "opus"
+        effective_source = "manual" if model != "default" else "default"
+
+        return {
+            "ok": True,
+            "model": effective_model,
+            "source": effective_source,
+            "restarted": restarted,
+            "total": total,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"set_model_config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────
 # Agents API endpoints
 # ─────────────────────────────────────────────────────────────
 
@@ -4603,7 +4831,9 @@ if __name__ == "__main__":
     logger.info(f"Database: {DB_PATH}")
     logger.info(f"Audio directory: {AUDIO_DIR}")
     logger.info("Listening on http://0.0.0.0:9091")
-    logger.info("Tailscale IP: 100.127.42.15:9091")
+    _ts_ip = _DISPATCH_CONFIG.get("dispatch_api", {}).get("host", "unknown")
+    _ts_port = _DISPATCH_CONFIG.get("dispatch_api", {}).get("port", 9091)
+    logger.info(f"Tailscale IP: {_ts_ip}:{_ts_port}")
     logger.info("=" * 60)
 
     # Initialize database on startup

@@ -99,6 +99,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
+          headerShown: false,
           title: "Chats",
           tabBarBadge: unreadChatCount > 0 ? unreadChatCount : undefined,
           tabBarBadgeStyle: {

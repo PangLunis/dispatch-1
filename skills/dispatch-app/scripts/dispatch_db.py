@@ -119,6 +119,42 @@ def init_db():
         except Exception:
             pass
 
+    # FTS5 full-text search on messages
+    fts_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+    ).fetchone()
+    if not fts_exists:
+        conn.execute("""
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                content, chat_id UNINDEXED, message_id UNINDEXED,
+                content_rowid='rowid'
+            )
+        """)
+        conn.execute("""
+            INSERT INTO messages_fts(rowid, content, chat_id, message_id)
+            SELECT rowid, content, chat_id, id FROM messages
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content, chat_id, message_id)
+                VALUES (NEW.rowid, NEW.content, NEW.chat_id, NEW.id);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, chat_id, message_id)
+                VALUES ('delete', OLD.rowid, OLD.content, OLD.chat_id, OLD.id);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content, chat_id, message_id)
+                VALUES ('delete', OLD.rowid, OLD.content, OLD.chat_id, OLD.id);
+                INSERT INTO messages_fts(rowid, content, chat_id, message_id)
+                VALUES (NEW.rowid, NEW.content, NEW.chat_id, NEW.id);
+            END
+        """)
+
     conn.commit()
     conn.close()
 

@@ -5,12 +5,23 @@ import type {
   Conversation,
   MessagesResponse,
   PromptResponse,
+  SearchResponse,
 } from "./types";
 
 /** List all chats with last message previews. GET /chats */
 export async function getChats(): Promise<Conversation[]> {
   const res = await apiRequest<ChatsResponse>("/chats");
   return res.chats;
+}
+
+/** Full-text search across all chat messages. GET /chats/search */
+export async function searchChats(
+  query: string,
+  limit: number = 50,
+): Promise<SearchResponse> {
+  return apiRequest<SearchResponse>("/chats/search", {
+    params: { q: query, limit: String(limit) },
+  });
 }
 
 /** Create a new chat. POST /chats */
