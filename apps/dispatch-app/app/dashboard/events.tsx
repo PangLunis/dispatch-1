@@ -49,10 +49,10 @@ export default function EventsDetailScreen() {
     const q = searchQuery.trim().toLowerCase();
     return events.filter(
       (e) =>
-        e.type.toLowerCase().includes(q) ||
-        e.source.toLowerCase().includes(q) ||
-        e.key.toLowerCase().includes(q) ||
-        e.payload_preview.toLowerCase().includes(q),
+        (e.type ?? "").toLowerCase().includes(q) ||
+        (e.source ?? "").toLowerCase().includes(q) ||
+        (e.key ?? "").toLowerCase().includes(q) ||
+        (e.payload_preview ?? "").toLowerCase().includes(q),
     );
   }, [events, searchQuery]);
 
