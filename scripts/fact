@@ -613,41 +613,28 @@ def cmd_context(args):
         conn.close()
 
 
-def cmd_inject(args):
-    """Inject active facts into a contact's CLAUDE.md."""
-    conn = get_conn(readonly=True)
-    try:
-        rows = _get_active_facts(conn, args.contact)
-    finally:
-        conn.close()
-
+def _inject_one(contact: str, conn) -> int:
+    """Inject active facts for one contact. Returns count of CLAUDE.md files updated."""
+    rows = _get_active_facts(conn, contact)
     if not rows:
-        print(f"No active facts for {args.contact}")
-        return
+        return 0
 
-    facts_section = _build_facts_section(rows, len(rows), args.contact)
+    facts_section = _build_facts_section(rows, len(rows), contact)
     display_count = min(len(rows), 15)
-
-    # Find the contact's CLAUDE.md files
     transcripts_base = Path.home() / "transcripts"
     injected = 0
 
     for backend in ("imessage", "signal"):
-        # Try both raw chat_id and sanitized versions
-        contact = args.contact
         sanitized = contact.replace("+", "_")
         for chat_dir_name in (contact, sanitized):
             claude_md = transcripts_base / backend / chat_dir_name / "CLAUDE.md"
             if claude_md.exists():
                 content = claude_md.read_text()
-
                 if FACTS_MARKER_START in content and FACTS_MARKER_END in content:
-                    # Replace between explicit markers
                     start_idx = content.index(FACTS_MARKER_START)
                     end_idx = content.index(FACTS_MARKER_END) + len(FACTS_MARKER_END)
                     content = content[:start_idx] + facts_section + content[end_idx:]
                 elif "## Active Facts" in content:
-                    # Legacy: replace old-style section (migrate to markers)
                     start_idx = content.index("## Active Facts")
                     rest = content[start_idx + len("## Active Facts"):]
                     end_idx = rest.find("\n## ")
@@ -657,14 +644,12 @@ def cmd_inject(args):
                         end_idx = len(rest)
                     content = content[:start_idx] + facts_section + "\n" + content[start_idx + len("## Active Facts") + end_idx:]
                 else:
-                    # Append before the last --- separator if it exists
                     last_sep = content.rfind("\n---\n")
                     if last_sep != -1:
                         content = content[:last_sep] + "\n\n" + facts_section + content[last_sep:]
                     else:
                         content = content.rstrip() + "\n\n" + facts_section + "\n"
 
-                # Atomic write: write to temp file then rename
                 tmp_fd, tmp_path = tempfile.mkstemp(
                     dir=claude_md.parent, suffix=".tmp", prefix=".claude_md_"
                 )
@@ -677,9 +662,39 @@ def cmd_inject(args):
                     raise
                 injected += 1
                 print(f"Injected {display_count} facts into {claude_md}")
+    return injected
 
-    if injected == 0:
-        print(f"No CLAUDE.md found for {args.contact}")
+
+def cmd_inject(args):
+    """Inject active facts into a contact's CLAUDE.md (one contact or --all)."""
+    if getattr(args, "all", False):
+        # Inject for all contacts that have active facts
+        conn = get_conn(readonly=True)
+        try:
+            contacts = conn.execute(
+                "SELECT DISTINCT contact FROM facts WHERE active=1"
+            ).fetchall()
+        finally:
+            conn.close()
+        total = 0
+        for (contact,) in contacts:
+            conn = get_conn(readonly=True)
+            try:
+                n = _inject_one(contact, conn)
+            finally:
+                conn.close()
+            total += n
+        print(f"Injected facts for {len(contacts)} contacts ({total} CLAUDE.md files updated)")
+        return
+
+    conn = get_conn(readonly=True)
+    try:
+        n = _inject_one(args.contact, conn)
+    finally:
+        conn.close()
+
+    if n == 0:
+        print(f"No active facts or no CLAUDE.md found for {args.contact}")
 
 
 def cmd_expire(args):
@@ -950,7 +965,9 @@ def main():
 
     # inject
     p = sub.add_parser("inject", help="Inject facts into contact's CLAUDE.md")
-    p.add_argument("--contact", required=True, help="Contact chat_id")
+    inject_group = p.add_mutually_exclusive_group(required=True)
+    inject_group.add_argument("--contact", help="Contact chat_id")
+    inject_group.add_argument("--all", action="store_true", help="Inject for all contacts with active facts")
 
     # expire
     p = sub.add_parser("expire", help="Expire temporal facts past their end date")
