@@ -94,10 +94,7 @@ def get_suggester_prompt(chat_id: str, contact_name: str, is_group: bool) -> str
 
     return f"""You are extracting conversation context from a {chat_type} with {contact_name}.
 
-## YOUR TOOLS
-
-You have access to the Bash tool. Use it to:
-~/.claude/skills/sms-assistant/scripts/read-sms --chat "{chat_id}" --limit 100
+Messages are provided in the user prompt. Analyze them directly.
 
 ## WHAT TO EXTRACT
 
@@ -173,17 +170,7 @@ def get_reviewer_prompt(chat_id: str, contact_name: str, existing_context: str) 
 
     return f"""You are fact-checking proposed conversation context for {contact_name}.
 
-## YOUR TOOLS
-
-You have access to the Bash tool. You can:
-
-1. Read messages via CLI:
-~/.claude/skills/sms-assistant/scripts/read-sms --chat "{chat_id}" --limit 200
-
-2. Query SQLite directly for exact quote verification:
-sqlite3 ~/Library/Messages/chat.db "SELECT text FROM message m JOIN chat_message_join cmj ON m.ROWID = cmj.message_id JOIN chat c ON cmj.chat_id = c.ROWID WHERE c.chat_identifier LIKE '%{chat_id}%' AND text LIKE '%search term%' LIMIT 10"
-
-Use SQLite queries to verify exact quotes exist. This is more reliable than grep.
+Messages are provided in the user prompt. Use them to verify quotes.
 
 ## EXISTING CONTEXT (to merge with):
 {existing_context if existing_context else "(none)"}
@@ -372,7 +359,7 @@ def prune_stale_items(items: list[dict], stale_days: int = STALE_DAYS) -> list[d
 
 
 def call_claude_agent(system_prompt: str, user_prompt: str, verbose: bool = False, pass_name: str = "") -> str:
-    """Call Claude via CLI with tool access."""
+    """Call Claude via CLI (no tools — messages are pre-fetched from bus.db)."""
 
     # Clear CLAUDECODE to allow spawning from SDK session
     clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -380,10 +367,8 @@ def call_claude_agent(system_prompt: str, user_prompt: str, verbose: bool = Fals
     cmd = [
         "claude",
         "-p",
-        "--tools", "Bash,Read",
-        "--allowed-tools", 'Bash(*/.claude/skills/sms-assistant/scripts/read-sms*)',
         "--system-prompt", system_prompt,
-        "--model", "opus",
+        "--model", "sonnet",
     ]
 
     if verbose:
@@ -472,6 +457,69 @@ def is_group_chat(chat_id: str) -> bool:
 
 
 # ============================================================
+# BUS.DB MESSAGE FETCH
+# ============================================================
+
+def fetch_messages_from_bus(chat_id: str, limit: int = 200) -> str:
+    """Fetch recent messages for a chat_id directly from bus.db.
+
+    Returns formatted message history as a string, suitable for inlining
+    into prompts. Much faster than shelling out to read-sms.
+    """
+    bus_db = DISPATCH_DIR / "state" / "bus.db"
+    if not bus_db.exists():
+        return "(bus.db not found)"
+
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(bus_db))
+        rows = conn.execute(
+            """
+            SELECT timestamp, type, payload
+            FROM records
+            WHERE topic = 'messages'
+              AND json_extract(payload, '$.chat_id') = ?
+              AND type IN ('message.received', 'message.queued', 'message.admin_inject')
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (chat_id, limit),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        return f"(bus.db query failed: {e})"
+
+    if not rows:
+        return "(no messages found in bus.db)"
+
+    # Reverse to chronological order
+    rows = list(reversed(rows))
+    lines = []
+    for ts_ms, msg_type, payload_str in rows:
+        try:
+            p = json.loads(payload_str)
+        except json.JSONDecodeError:
+            continue
+        text = p.get("text", "").strip()
+        if not text:
+            continue
+        # Determine direction
+        direction = "IN" if msg_type == "message.received" else "OUT"
+        # Format timestamp
+        try:
+            from datetime import timezone
+            dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            dt = str(ts_ms)
+        lines.append(f"[{dt}] {direction}: {text}")
+
+    if not lines:
+        return "(no text messages found)"
+
+    return "\n".join(lines)
+
+
+# ============================================================
 # MAIN CONSOLIDATION FLOW
 # ============================================================
 
@@ -515,12 +563,22 @@ def consolidate_chat(chat_id: str, dry_run: bool = False, verbose: bool = False)
     existing_content = get_existing_context(transcript_dir)
     existing_context = parse_existing_context(existing_content)
 
+    # Pre-fetch messages from bus.db (shared by both passes)
+    messages_text = fetch_messages_from_bus(chat_id, limit=200)
+    if verbose:
+        msg_count = messages_text.count("\n") + 1 if messages_text.startswith("[") else 0
+        print(f"  Fetched {msg_count} messages from bus.db")
+
     # ========== PASS A: SUGGESTER ==========
     if verbose:
         print(f"\n  === PASS A: SUGGESTER ===")
 
     suggester_system = get_suggester_prompt(chat_id, contact_name, is_group)
-    suggester_user = f"Extract conversation context for {contact_name}. Start by reading recent messages."
+    suggester_user = f"""Extract conversation context for {contact_name}.
+
+## RECENT MESSAGES
+
+{messages_text}"""
 
     try:
         suggester_output = call_claude_agent(suggester_system, suggester_user, verbose, "PASS A")
@@ -549,11 +607,17 @@ def consolidate_chat(chat_id: str, dry_run: bool = False, verbose: bool = False)
         print(f"\n  === PASS B: REVIEWER ===")
 
     reviewer_system = get_reviewer_prompt(chat_id, contact_name, existing_content)
-    reviewer_user = f"""Review these context candidates for {contact_name}:
+    reviewer_user = f"""Review these context candidates for {contact_name}.
+
+## RECENT MESSAGES (for quote verification)
+
+{messages_text}
+
+## CANDIDATES TO REVIEW
 
 {json.dumps(candidates, indent=2)}
 
-Verify quotes and merge with existing context."""
+Verify quotes exist in the messages above and merge with existing context."""
 
     try:
         reviewer_output = call_claude_agent(reviewer_system, reviewer_user, verbose, "PASS B")
@@ -700,14 +764,22 @@ def has_new_messages_since_last_consolidation(chat_id: str, transcript_dir: Path
         return True  # Can't determine, process it
 
 
-def get_active_chats() -> list[str]:
-    """Get list of active chat IDs from sessions registry."""
+def get_active_chats(groups_only: bool = False) -> list[str]:
+    """Get list of active chat IDs from sessions registry.
+
+    Args:
+        groups_only: If True, only return group chats (hex UUID chat_ids).
+                     1:1 chats (phone numbers) are excluded.
+    """
     if not SESSIONS_FILE.exists():
         return []
 
     try:
         sessions = json.loads(SESSIONS_FILE.read_text())
-        return list(sessions.keys())
+        chat_ids = list(sessions.keys())
+        if groups_only:
+            chat_ids = [cid for cid in chat_ids if is_group_chat(cid)]
+        return chat_ids
     except (json.JSONDecodeError, OSError):
         return []
 
@@ -718,14 +790,16 @@ def main():
     )
     parser.add_argument("chat_id", nargs="?", help="Chat ID to consolidate")
     parser.add_argument("--all", action="store_true", help="Run for all active chats")
+    parser.add_argument("--groups-only", action="store_true", help="Only process group chats (skip 1:1s)")
     parser.add_argument("--dry-run", action="store_true", help="Show without writing")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
     if args.all:
-        chat_ids = get_active_chats()
-        print(f"Consolidating context for {len(chat_ids)} active chats...")
+        chat_ids = get_active_chats(groups_only=args.groups_only)
+        label = "group chats" if args.groups_only else "active chats"
+        print(f"Consolidating context for {len(chat_ids)} {label}...")
         log(f"Starting batch context consolidation for {len(chat_ids)} chats")
 
         results = []

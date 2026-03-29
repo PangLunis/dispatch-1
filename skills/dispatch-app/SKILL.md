@@ -14,6 +14,44 @@ Full-stack mobile app for the dispatch personal assistant. Frontend (Expo/React 
 
 ---
 
+## ⚠️ MANDATORY PRE-FLIGHT: How to Deploy App Changes
+
+**Read this BEFORE touching any deploy command.** Sessions repeatedly fail by defaulting to TestFlight or spawning unnecessary builds.
+
+### Deploy Decision Table
+
+| Change type | Metro running? | Action |
+|-------------|---------------|--------|
+| JS/TS only (components, screens, hooks, utils) | ✅ YES | **Just save the file.** Metro Fast Refresh handles it in ~2s. Done. |
+| JS/TS only | ❌ NO | `deploy-ios --quick` |
+| New JS-only npm package | either | `scripts/metro restart --clear` |
+| Native (new pod/module, entitlements, Info.plist) | either | `deploy-ios` (full rebuild) |
+| Web UI | N/A | `npx expo export --platform web --clear && claude-assistant restart` |
+
+### Check Metro Before Spawning Any Build
+
+```bash
+# ALWAYS check this first before running deploy-ios or any build command
+pgrep -f "metro" && echo "Metro is running" || echo "Metro is NOT running"
+curl -s http://localhost:8081/status && echo "Metro healthy" || echo "Metro down"
+```
+
+If Metro is healthy and the change is JS-only — **stop here, just save the file.**
+
+### NEVER USE TESTFLIGHT OR EAS FOR THIS APP
+
+**NEVER use TestFlight or EAS for the dispatch app.** The dispatch app deploys directly to device via USB — no TestFlight, no EAS, no expo publish, no archive workflows. If you find yourself running `eas build`, `expo publish`, or opening Xcode for archiving — **stop immediately**, you are in the wrong workflow.
+
+```bash
+# Native changes only
+~/dispatch/apps/dispatch-app/scripts/deploy-ios
+
+# JS fallback (Metro unavailable)
+~/dispatch/apps/dispatch-app/scripts/deploy-ios --quick
+```
+
+---
+
 ## Setup for New Instances (e.g. Pang)
 
 To deploy the dispatch-app + dispatch-api on a new machine (e.g. Ryan's Pang), follow these steps:
@@ -355,8 +393,8 @@ When you add a new native Expo module:
 
 1. **Install**: `bun add expo-network` (or `npx expo install expo-network`)
 2. **Pod install**: `cd ios && pod install` — native modules need CocoaPods linking
-3. **Native rebuild required**: `npx expo run:ios --device "DEVICE_NAME"` — JS-only metro reload is NOT enough
-4. **Clear metro cache**: If the app still shows "Unable to resolve module", kill ALL metro processes and restart with `npx expo start --clear`
+3. **Native rebuild required**: `scripts/deploy-ios` — JS-only metro reload is NOT enough
+4. **Clear metro cache**: `scripts/metro restart --clear`
 
 **The full sequence when you hit "Unable to resolve module" for a native package:**
 ```bash
@@ -365,17 +403,14 @@ cd ~/dispatch/apps/dispatch-app
 # 1. Verify the package is in node_modules
 ls node_modules/expo-network
 
-# 2. Install pods (often the missing step)
-cd ios && pod install && cd ..
+# 2. Full rebuild (stops metro, reinstalls pods, deploys)
+scripts/deploy-ios
 
-# 3. Kill any stale metro bundlers
-pkill -f metro; pkill -f "expo start"; pkill -f "expo run"
-
-# 4. Rebuild native + start fresh metro
-npx expo run:ios --device "Owner's iPhone"
+# 3. Start metro for hot reload after deploy
+scripts/metro start --clear
 ```
 
-**Key insight**: If pods are missing but node_modules has the package, the native build will succeed but metro will fail to resolve the module at JS bundle time. Old metro processes with stale caches make this worse — always kill them before rebuilding.
+**Key insight**: If pods are missing but node_modules has the package, the native build will succeed but metro will fail to resolve the module at JS bundle time. `deploy-ios` automatically stops metro before building, preventing stale cache issues.
 
 ### Native modules not available in the running binary (Expo Go crash)
 
@@ -445,7 +480,7 @@ Fast Refresh preserves React state across file edits. `useState` initializers ar
 For hot reload to work on a physical device over Tailscale:
 
 1. Add `metroHost: "YOUR_TAILSCALE_IP"` to `app.yaml` (IP only, no port)
-2. Use `npm start` (not `expo start`) — the `scripts/start-metro.js` wrapper reads `metroHost` and sets `REACT_NATIVE_PACKAGER_HOSTNAME` automatically
+2. Use `scripts/metro start` — reads `metroHost` from `app.yaml` and sets `REACT_NATIVE_PACKAGER_HOSTNAME` automatically
 3. `npm run start:local` bypasses this and runs plain `expo start`
 
 **Mullvad VPN + Tailscale coexistence:**
@@ -798,29 +833,71 @@ Run through these 10 steps to quickly validate all major flows:
 
 **Do NOT use expo-dev-client** — it adds a floating overlay icon that clutters the UI. Expo Go with fast refresh is sufficient for development.
 
-### Dev Server Management
+### Metro Dev Server (Daemon-Managed)
 
-The Expo dev server must be running for the phone to load JS bundles during development:
+**Metro is managed by the daemon automatically.** The daemon starts Metro on boot, health-checks via `GET http://localhost:8081/status`, and auto-restarts on crash with exponential backoff. You do NOT need to start or manage Metro manually.
 
+Check Metro status:
 ```bash
-# Start dev server (hot reload + fast refresh)
-cd ~/dispatch/apps/dispatch-app && npx expo start --port 8081
+curl -sf http://localhost:8081/status && echo " Metro healthy" || echo " Metro DOWN"
 
-# Restart dev server (after code changes that need full reload)
-pkill -f "expo start"; sleep 2
-cd ~/dispatch/apps/dispatch-app && npx expo start --port 8081
+# Or use the metro CLI for more detail
+~/dispatch/apps/dispatch-app/scripts/metro status
 ```
 
-**IMPORTANT**: When making changes to the app code, ALWAYS ensure the Expo dev server is running on port 8081. The phone loads JS from this server. If it's not running, the app shows a red error screen.
+The phone connects to Metro over Tailscale WiFi (`metroHost` in app.yaml). When Metro is running and the phone is on the network, **JS changes are live in ~2 seconds on save** via Fast Refresh. No deploy step needed.
 
-### Always Start the Dev Server
-
-**When editing dispatch-app code, ALWAYS start the Expo dev server if not already running.** Check with:
+If Metro gets wedged (stale cache, syntax error recovery):
 ```bash
-lsof -ti tcp:8081 -sTCP:LISTEN && echo "dev server running" || echo "NOT RUNNING - start it!"
+~/dispatch/apps/dispatch-app/scripts/metro restart --clear
 ```
 
-This ensures the phone picks up changes via fast refresh automatically.
+### CRITICAL: How to Deploy Changes (Decision Tree)
+
+**Follow this decision tree for EVERY change to the app:**
+
+```
+What did you change?
+|
++-- JS/TS only (components, screens, styles, hooks, utils)?
+|   |
+|   +-- Metro healthy? (curl localhost:8081/status)
+|   |   +-- YES -> Just save the file. Done. Fast Refresh handles it (~2s).
+|   |   +-- NO  -> Wait for daemon auto-restart (~30s), or deploy-ios --quick
+|   |
+|   +-- Phone showing "No connection to Metro"?
+|      -> Reopen the app. If still disconnected: shake -> Dev Menu -> Change server
+|      -> Check phone is on same Tailscale network as this Mac
+|
++-- New JS-only npm package?
+|   +-- ~/dispatch/apps/dispatch-app/scripts/metro restart --clear
+|
++-- Native change (new pod/package, entitlements, Info.plist, native module)?
+|   +-- deploy-ios (full rebuild with pod install)
+|
++-- Web UI change?
+|   +-- npx expo export --platform web && claude-assistant restart
+|
++-- Not sure?
+    +-- Save the file first. If Metro picks it up -> done.
+        If red error about native module -> deploy-ios
+```
+
+**THE DEFAULT FOR JS CHANGES IS: JUST SAVE THE FILE.** Do not run `deploy-ios --quick` for JS changes when Metro is running. That takes 2+ minutes for what Metro does in 2 seconds.
+
+### Multi-Session Coordination
+
+Multiple sessions may edit the app simultaneously. Be aware:
+- Metro serves ONE bundle from ONE working directory — there is no isolation
+- If another session saves a broken file, your change won't hot-reload cleanly either
+- Check `~/dispatch/state/metro-editor.lock` — if another session is actively editing app code, coordinate or wait
+- After saving, if Metro shows errors you didn't cause, check the lock file for who else is editing
+
+When editing app code, write to the lock file:
+```bash
+echo '{"session": "'$SESSION_ID'", "file": "path/to/file.tsx", "ts": '$(date +%s)'}' > ~/dispatch/state/metro-editor.lock
+```
+Remove it when done. Lock entries older than 5 minutes are stale.
 
 ---
 
@@ -831,20 +908,23 @@ This ensures the phone picks up changes via fast refresh automatically.
 | Target | Command | When to use |
 |--------|---------|-------------|
 | **Web** | `npx expo export --platform web` then `claude-assistant restart` | Web UI at localhost:9091 |
-| **iOS** | `npx expo run:ios --device "<UDID>" --configuration Release --no-bundler` | Native iOS app |
+| **iOS (JS only)** | **Just save the file** (Metro hot reload) | JS/TS changes with Metro running |
+| **iOS (native)** | `deploy-ios` (full rebuild) | New pods, entitlements, native modules |
+| **iOS (no Metro)** | `deploy-ios --quick` (bundle JS into binary) | Metro is down and won't restart |
 
-**These are independent!** A web export does NOT update the iOS app. An iOS build does NOT update the web UI. If changes affect both, run both.
+**Metro hot reload is the primary path for JS changes.** `deploy-ios --quick` is the fallback, not the default.
 
-### iOS Device Build — ALWAYS use the deploy script
-
-**NEVER manually run `npx expo run:ios` with a hardcoded UDID.** Always use the deploy script:
+### iOS Device Build — use deploy-ios for NATIVE changes only
 
 ```bash
-# Full clean deploy (auto-detects device, cleans build + pods, fresh bundle)
+# Full clean deploy (native changes — new pods, entitlements, etc.)
 ~/dispatch/apps/dispatch-app/scripts/deploy-ios
 
-# Quick deploy (skip pod reinstall — faster when only JS changed)
+# Quick deploy (JS fallback when Metro is unavailable)
 ~/dispatch/apps/dispatch-app/scripts/deploy-ios --quick
+
+# Quick deploy + restart Metro after
+~/dispatch/apps/dispatch-app/scripts/deploy-ios --quick --metro
 ```
 
 The script handles:
@@ -853,6 +933,7 @@ The script handles:
 - **Cleaning ios/Pods** on full deploy (prevents stale pod artifacts)
 - **Exporting fresh JS bundle** with `--clear`
 - **Building and installing** to the detected device
+- **Preserving Metro** — does not kill daemon-managed Metro process
 
 **Common issues:**
 - "Device is locked" — build installed successfully, user just needs to unlock phone
@@ -869,17 +950,20 @@ claude-assistant restart           # Restart daemon to serve new bundle
 
 ### CRITICAL: NO TestFlight, NO EAS — Direct Device Deploy ONLY
 
-**NEVER use TestFlight or EAS for the dispatch app.** Always use the deploy script:
+**NEVER use TestFlight or EAS for the dispatch app.**
 
 ```bash
-# Quick deploy (JS-only changes — most common)
-~/dispatch/apps/dispatch-app/scripts/deploy-ios --quick
-
-# Full clean deploy (native changes, new pods, etc.)
+# Native changes (new pods, plugins, entitlements)
 ~/dispatch/apps/dispatch-app/scripts/deploy-ios
+
+# JS fallback (Metro unavailable)
+~/dispatch/apps/dispatch-app/scripts/deploy-ios --quick
 ```
 
-When someone says "push app" or "deploy app", use `deploy-ios`. Do NOT invoke the ios-app skill or attempt TestFlight/archive workflows.
+When someone says "push app" or "deploy app":
+- If only JS changed and Metro is running -> tell them it's already live via hot reload
+- If native changed -> use `deploy-ios`
+- Do NOT invoke the ios-app skill or attempt TestFlight/archive workflows.
 
 ### Web compatibility for native modules
 

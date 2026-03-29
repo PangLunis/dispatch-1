@@ -27,8 +27,8 @@ pf_output=$(uv run "$PERSON_FACTS" --all 2>&1) && pf_exit=0 || pf_exit=$?
 echo "$pf_output"
 
 echo ""
-echo "=== Chat Context Consolidation (→ CONTEXT.md per chat) ==="
-cc_output=$(uv run "$CHAT_CONTEXT" --all 2>&1) && cc_exit=0 || cc_exit=$?
+echo "=== Chat Context Consolidation (→ CONTEXT.md per group chat) ==="
+cc_output=$(uv run "$CHAT_CONTEXT" --all --groups-only 2>&1) && cc_exit=0 || cc_exit=$?
 echo "$cc_output"
 
 echo ""

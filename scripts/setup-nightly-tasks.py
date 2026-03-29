@@ -119,7 +119,7 @@ def _build_consolidation_reminder(admin_phone: str) -> dict:
                 "requested_by": admin_phone,
                 "instructions": "Run the nightly memory consolidation scripts",
                 "notify": True,
-                "timeout_minutes": 60,
+                "timeout_minutes": 90,
                 "execution": {
                     "mode": "script",
                     # Store $HOME-relative path; bash expands $HOME at runtime
@@ -310,7 +310,7 @@ def cmd_add():
         save_reminders(data)
 
     print("\n✅ All nightly tasks scheduled (staggered, ET):")
-    print("  2:00am - Memory consolidation (60min timeout, script mode)")
+    print("  2:00am - Memory consolidation (90min timeout, script mode)")
     print("  2:00am - Quota scheduler check (30min timeout, agent mode)")
     print("  2:10am - Skillify analysis (90min timeout, agent mode)")
     print("  2:40am - Sven Times gazette (60min timeout, agent mode)")

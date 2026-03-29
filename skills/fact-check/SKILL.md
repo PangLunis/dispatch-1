@@ -13,6 +13,8 @@ Independently verify factual claims in any text by routing each claim to the rig
 
 **Always spawn a subagent** for fact-checking. Never fact-check directly — the separation ensures the verifier only uses external sources, never its own knowledge.
 
+**Model**: Use `model="sonnet"` for all fact-check subagents. Classification/lookup task, not complex reasoning.
+
 ## How It Works
 
 ### Step 1: Extract Claims
@@ -51,6 +53,7 @@ Use this keyword-based routing table. **Order = specificity** (most-specific key
 | flight, departure, arrival, boarding, gate | **API** | Flight tracker CLI via `/flight-tracker` skill |
 | build, CI, passing, failing, test, commit, branch | **CLI** | `git log`, `gh run list`, project build commands |
 | sonos, speaker, playing, music, volume | **API** | Sonos CLI via `/sonos` skill |
+| computes, calculates, returns, outputs, result is, total is | **code-verify** | Independent re-implementation (see below) |
 | friend said, someone told me, I heard, apparently | **none** | Unverifiable — skip immediately |
 | *(anything else)* | **web** | `WebSearch` (up to 3 results) then `WebFetch` if needed |
 
@@ -108,6 +111,32 @@ Call the specific CLI from the routing table. Examples:
 
 #### Web
 Use the built-in `WebSearch` tool (native Claude Code tool) to search for the claim. Check up to 3 results. Use `WebFetch` (native Claude Code tool) for specific URLs — official docs, pricing pages, GitHub READMEs.
+
+#### Code Verification (Independent Re-Implementation)
+
+For claims that a function, script, or computation **produces a specific numeric or structured output**, verify by independently re-implementing the computation — never re-run the original code.
+
+Process:
+1. **Identify the computation** — what is being computed, what are the inputs?
+2. **Write a fresh implementation** — do NOT copy or re-run the original code. Write an independent implementation from scratch using first principles or a different approach.
+3. **Run it** via `uv run` with appropriate inline deps:
+   ```python
+   # /// script
+   # dependencies = ["numpy"]
+   # ///
+   import numpy as np
+   # ... fresh implementation ...
+   ```
+4. **Compare outputs** — use appropriate tolerance:
+   - Floats: ±0.01 (or domain-appropriate precision)
+   - Integers: exact match
+   - Strings: exact match
+5. **Verdict**:
+   - Within tolerance → **verified**
+   - Outside tolerance → **wrong** (report both values)
+   - Can't reproduce inputs → **unverified** with reason
+
+**NEVER**: re-run the original script to verify itself. That proves nothing. Always use an independent approach.
 
 #### Verification Rules
 
