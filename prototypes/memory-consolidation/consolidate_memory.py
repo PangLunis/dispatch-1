@@ -6,14 +6,14 @@ Replaces: consolidate_3pass.py + consolidate_facts.py
 Model: claude-sonnet-4-5 (not Opus — 10x cheaper, fast enough)
 Message source: bus.db records table (not read-sms subprocess)
 
-Architecture: 2 Sonnet calls per contact
-  Pass A-facts : Extract structured facts for bus.db
-  Pass B       : Verify grounding (accept/refute facts with supporting quotes)
+Architecture: tiered model per pass (right model for right task)
+  Pass A-facts : Extract fact candidates (Haiku — cheap bulk scan)
+  Pass B       : Verify grounding with quotes (Sonnet — nuance needed)
   Commit       : All-or-nothing write to DB
 
 Key design goals:
   - FACT ACCURACY: layered grounding rejects hallucinations before commit
-  - SONNET: 2 focused prompts instead of 3+ Opus calls
+  - COST: Haiku for volume scan, Sonnet only for verification
   - BUS.DB: no subprocess, direct SQLite read
 
 FIRST DEPLOY:
@@ -441,25 +441,34 @@ def validate_updated_fact(upd: dict, existing_by_id: dict) -> None:
         raise ValidationError(f"updated_fact {fid} has no mutating fields — no-op")
 
 
+# ── Model tiers ────────────────────────────────────────────────
+# Haiku: cheap bulk scan (Pass A — extraction from 300 messages)
+# Sonnet: nuanced verification (Pass B — grounding checks, quote matching)
+MODEL_PASS_A = "haiku"    # claude-haiku-4-5 via CLI shorthand
+MODEL_PASS_B = "sonnet"   # claude-sonnet-4-5 via CLI shorthand
+
+
 # ── LLM calls ─────────────────────────────────────────────────
 def call_claude(
     system_prompt: str,
     user_prompt: str,
+    model: str = MODEL_PASS_B,
     timeout: int = 90,
     verbose: bool = False,
 ) -> str:
     """
-    Call claude -p CLI with Sonnet. Returns raw text output.
+    Call claude -p CLI. Returns raw text output.
+    model: use MODEL_PASS_A (haiku) for extraction, MODEL_PASS_B (sonnet) for verification.
     Raises AbortContactRun("timeout") on timeout, RuntimeError on other failures.
     """
     clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     cmd = [
         "claude", "-p",
-        "--model", "claude-sonnet-4-5",
+        "--model", model,
         "--system-prompt", system_prompt,
     ]
     if verbose:
-        log(f"  [LLM] system={len(system_prompt)}c user={len(user_prompt)}c", verbose=verbose)
+        log(f"  [LLM/{model}] system={len(system_prompt)}c user={len(user_prompt)}c", verbose=verbose)
 
     try:
         result = subprocess.run(
@@ -476,7 +485,7 @@ def call_claude(
         if not output:
             raise RuntimeError("claude CLI returned empty output")
         if verbose:
-            log(f"  [LLM] response={len(output)}c: {output[:200]}", verbose=verbose)
+            log(f"  [LLM/{model}] response={len(output)}c: {output[:200]}", verbose=verbose)
         return output
     except subprocess.TimeoutExpired:
         raise AbortContactRun("timeout", f"claude CLI timed out after {timeout}s")
@@ -606,7 +615,7 @@ Existing active facts (id + summary for dedup):
 
 Extract structured facts. Output JSON only."""
 
-    raw = call_claude(_PASS_A_FACTS_SYSTEM, user_prompt, verbose=verbose)
+    raw = call_claude(_PASS_A_FACTS_SYSTEM, user_prompt, model=MODEL_PASS_A, verbose=verbose)
     result = parse_json_response(raw)
     if not isinstance(result, dict):
         raise RuntimeError(f"Pass A-facts returned {type(result).__name__}, expected dict")
@@ -656,7 +665,7 @@ Proposed facts to verify:
 
 Verify each fact against the messages. Output JSON only."""
 
-    raw = call_claude(_PASS_B_SYSTEM, user_prompt, verbose=verbose)
+    raw = call_claude(_PASS_B_SYSTEM, user_prompt, model=MODEL_PASS_B, verbose=verbose)
     result = parse_json_response(raw)
     if not isinstance(result, dict):
         raise RuntimeError(f"Pass B returned {type(result).__name__}, expected dict")
