@@ -20,21 +20,21 @@ Query live locations of people who have shared their location with this Mac via 
 
 ### `findmy-location` — Get current location (city-level, works now)
 ```bash
-~/.claude/skills/findmy/scripts/findmy-location "Nikhil Thorat"
-# → Nikhil Thorat: San Francisco, CA • Now
-# → Nikhil Thorat: Boston, MA • 3 min ago
+~/.claude/skills/findmy/scripts/findmy-location "!`identity owner.name`"
+# → !`identity owner.name`: San Francisco, CA • Now
+# → !`identity owner.name`: Boston, MA • 3 min ago
 ```
 Uses Find My app accessibility API. Always works. City-level precision.
 
 ### `findmy-gps` — Get real-time GPS (street-level precision) ✅ LIVE
 ```bash
 ~/.claude/skills/findmy/scripts/findmy-gps
-# → 📍 Nikhil Thorat
+# → 📍 !`identity owner.name`
 # →    123 Example Street, Neighborhood, City, State
 # →    (42.348541, -71.156790), ±12m
 # →    stationary • 2026-04-04 01:03:42
 
-~/.claude/skills/findmy/scripts/findmy-gps "Nikhil Thorat"
+~/.claude/skills/findmy/scripts/findmy-gps "!`identity owner.name`"
 ~/.claude/skills/findmy/scripts/findmy-gps --raw   # JSON output
 ```
 Decrypts `LocalStorage.db` on demand with extracted key. Sub-20m precision.
@@ -113,14 +113,14 @@ The local DB is encrypted with Apple's custom `sqliteCodecCCCrypto` (AES-256 key
 ### City-level (works now)
 ```bash
 # Poll every 10 min, alert on city change
-~/.claude/skills/findmy/scripts/findmy-location "Nikhil Thorat"
+~/.claude/skills/findmy/scripts/findmy-location "!`identity owner.name`"
 # Compare "San Francisco" → "Boston" = fire alert
 ```
 
 Config at `~/.claude/skills/findmy/geofences.json`:
 ```json
 {
-  "Nikhil Thorat": [
+  "!`identity owner.name`": [
     {"name": "Boston arrival", "city": "Boston", "on": "enter", "action": "sms"},
     {"name": "SFO departure", "city": "San Francisco", "on": "exit", "action": "sms"}
   ]

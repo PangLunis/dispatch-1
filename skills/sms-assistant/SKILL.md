@@ -43,7 +43,7 @@ if [ ! -f "$TRANSCRIPT_DIR/CONTEXT.md" ]; then
 fi
 ```
 
-Skip this step for individual chats (phone number chat_ids like `_1XXXXXXXXXX`). Only run for group chats (hex UUID chat_ids like `b3d258b9a4de447ca412eb335c82a077`).
+Skip this step for individual chats (phone number chat_ids like `_1XXXXXXXXXX`). Only run for group chats (hex UUID chat_ids).
 
 ### After Reading Messages
 

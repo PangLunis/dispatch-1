@@ -23,7 +23,21 @@ import sys
 import urllib.parse
 
 PORT = 8444
-HOSTNAME = os.environ.get("DISPATCH_HOSTNAME", "localhost")
+
+def _load_hostname() -> str:
+    """Read tailscale hostname from config.local.yaml, fall back to env/localhost."""
+    import pathlib
+    config_path = pathlib.Path("~/dispatch/config.local.yaml").expanduser()
+    if config_path.exists():
+        import re
+        text = config_path.read_text()
+        # Simple YAML parse for tailscale.hostname
+        m = re.search(r'hostname:\s*["\']?([^"\'#\n]+)', text)
+        if m:
+            return m.group(1).strip()
+    return os.environ.get("DISPATCH_HOSTNAME", "localhost")
+
+HOSTNAME = _load_hostname()
 CERT_DIR = os.path.expanduser("~/dispatch/services/dispatch-api/certs")
 CERT_FILE = os.path.join(CERT_DIR, f"{HOSTNAME}.crt")
 KEY_FILE = os.path.join(CERT_DIR, f"{HOSTNAME}.key")
