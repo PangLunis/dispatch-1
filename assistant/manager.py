@@ -2374,36 +2374,46 @@ class Manager:
             log.error(f"IMESSAGE_UI | tapback.scpt not found at {tapback_script}")
             return False
 
-        # GUID verification: Cmd+T always reacts to the most recent incoming
-        # message. If a new message arrived between queueing and execution, the
-        # tapback would land on the wrong message. Query chat.db to verify.
+        # GUID verification: Cmd+T reacts to the most recent incoming message.
+        # If a new message arrived between queueing and execution, the tapback
+        # would land on the wrong message. Query chat.db to verify the target
+        # GUID is among recent messages. We check the last 10 messages (not just
+        # the latest) to handle group chats where messages arrive rapidly and
+        # our own replies interleave with incoming messages.
         if guid:
             try:
                 conn = sqlite3.connect(f"file:{MESSAGES_DB}?mode=ro", uri=True)
                 conn.execute("PRAGMA busy_timeout=2000")
-                row = conn.execute(
+                rows = conn.execute(
                     """
                     SELECT m.guid FROM message m
                     JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
                     JOIN chat c ON c.ROWID = cmj.chat_id
                     WHERE c.chat_identifier = ?
-                      AND m.is_from_me = 0
-                    ORDER BY m.date DESC LIMIT 1
+                    ORDER BY m.date DESC LIMIT 10
                     """,
                     (chat_id,),
-                ).fetchone()
+                ).fetchall()
                 conn.close()
                 # Normalize GUIDs for comparison: chat.db stores raw UUIDs,
                 # but the prompt injects p:0/UUID format. Strip the prefix.
                 def _strip_guid_prefix(g: str) -> str:
                     import re
                     return re.sub(r'^[ps]:\d+/', '', g)
-                if row and _strip_guid_prefix(row[0]) != _strip_guid_prefix(guid):
+                target_stripped = _strip_guid_prefix(guid)
+                recent_guids = [_strip_guid_prefix(r[0]) for r in rows]
+                if recent_guids and target_stripped not in recent_guids:
                     log.warning(
-                        f"IMESSAGE_UI | tapback GUID mismatch for {chat_id}: "
-                        f"target={guid} latest={row[0]}, skipping to avoid wrong-message reaction"
+                        f"IMESSAGE_UI | tapback GUID not found in recent messages for {chat_id}: "
+                        f"target={guid}, skipping to avoid wrong-message reaction"
                     )
                     return False
+                # Warn if target is not the most recent (Cmd+T will react to latest)
+                if recent_guids and target_stripped != recent_guids[0]:
+                    log.warning(
+                        f"IMESSAGE_UI | tapback target is not the most recent message "
+                        f"(target={guid}, latest={rows[0][0]}). Cmd+T may react to wrong message."
+                    )
             except Exception as e:
                 log.warning(f"IMESSAGE_UI | GUID verification failed ({e}), proceeding anyway")
 
