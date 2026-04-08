@@ -141,7 +141,7 @@ class Bus:
         )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=30000")  # 30s to survive prune/vacuum locks
         conn.execute("PRAGMA cache_size=-2000")  # 2MB cache (DB is ~2MB, 64MB was 218x overkill)
         conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         return conn

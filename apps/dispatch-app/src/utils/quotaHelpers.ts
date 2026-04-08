@@ -9,21 +9,49 @@ export function quotaBarColor(util: number): string {
   return "#22c55e";
 }
 
-/** Format a reset time as a human-readable relative string */
-export function formatResetTime(resetsAt: string): string {
+/**
+ * Format a reset time as a human-readable relative string.
+ * Returns an object so callers can adjust prefix/display for special cases.
+ */
+export interface ResetTimeInfo {
+  /** The display text */
+  text: string;
+  /** Whether the reset time refers to a valid future window */
+  isFresh: boolean;
+}
+
+export function formatResetTimeInfo(resetsAt: string): ResetTimeInfo {
   const diffMs = new Date(resetsAt).getTime() - Date.now();
   if (diffMs <= 0) {
-    // Reset time in the past — quota already reset, waiting for fresh data
     const agoMs = Math.abs(diffMs);
+    const agoMins = Math.floor(agoMs / 60_000);
     const agoHours = Math.floor(agoMs / 3_600_000);
-    if (agoHours > 24) return "stale data";
-    return "refreshing…";
+    // Show how long ago the window expired so the user sees actual staleness
+    let agoText: string;
+    if (agoHours > 24) {
+      const days = Math.floor(agoHours / 24);
+      agoText = `${days}d ${agoHours % 24}h`;
+    } else if (agoHours > 0) {
+      agoText = `${agoHours}h ${agoMins % 60}m`;
+    } else {
+      agoText = `${agoMins}m`;
+    }
+    if (agoHours > 24) return { text: `Stale (expired ${agoText} ago)`, isFresh: false };
+    return { text: `Window expired ${agoText} ago`, isFresh: false };
   }
   const hours = Math.floor(diffMs / 3_600_000);
   const mins = Math.floor((diffMs % 3_600_000) / 60_000);
-  if (hours > 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${mins}m`;
-  return `${mins}m`;
+  let text: string;
+  if (hours > 24) text = `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  else if (hours > 0) text = `${hours}h ${mins}m`;
+  else text = `${mins}m`;
+  return { text, isFresh: true };
+}
+
+/** Legacy helper — returns just the string (used in sparkline x-axis etc.) */
+export function formatResetTime(resetsAt: string): string {
+  const info = formatResetTimeInfo(resetsAt);
+  return info.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -31,7 +59,7 @@ export function formatResetTime(resetsAt: string): string {
 // ---------------------------------------------------------------------------
 
 export interface QuotaPrediction {
-  status: "safe" | "tight" | "danger" | "unknown";
+  status: "safe" | "danger" | "unknown";
   projectedAtReset: number;
   hitsQuotaInMinutes?: number;
   message: string;
@@ -103,41 +131,23 @@ export function computeQuotaPrediction(
     return h > 0 ? `~${h}h ${m}m` : `~${m}m`;
   }
 
-  // Already very high — always warn
-  if (utilization >= 90) {
-    const hoursToHit = burnRatePerHour > 0 ? (100 - utilization) / burnRatePerHour : Infinity;
-    if (hoursToHit < remainingHours) {
-      return {
-        status: "danger",
-        projectedAtReset: projected,
-        hitsQuotaInMinutes: Math.round(hoursToHit * 60),
-        message: `hits quota in ${formatHitsIn(hoursToHit)}`,
-      };
-    }
-    return { status: "tight", projectedAtReset: projected, message: `~${Math.round(projected)}% at reset` };
-  }
-
+  // Only show a warning when projected to exceed quota
   if (projected > 100) {
     const hoursToHit = (100 - utilization) / burnRatePerHour;
     return {
       status: "danger",
       projectedAtReset: projected,
       hitsQuotaInMinutes: Math.round(hoursToHit * 60),
-      message: `hits quota in ${formatHitsIn(hoursToHit)}`,
+      message: `runs out in ${formatHitsIn(hoursToHit)}`,
     };
   }
 
-  if (projected > 80) {
-    return { status: "tight", projectedAtReset: projected, message: `~${Math.round(projected)}% at reset` };
-  }
-
-  return { status: "safe", projectedAtReset: projected, message: `~${Math.round(projected)}% at reset` };
+  // Won't go over — no message needed
+  return { status: "safe", projectedAtReset: projected, message: "" };
 }
 
 export function predictionIcon(status: QuotaPrediction["status"]): string {
   switch (status) {
-    case "safe": return "✅";
-    case "tight": return "⚠️";
     case "danger": return "🔴";
     default: return "";
   }
@@ -145,8 +155,6 @@ export function predictionIcon(status: QuotaPrediction["status"]): string {
 
 export function predictionColor(status: QuotaPrediction["status"]): string {
   switch (status) {
-    case "safe": return "#22c55e";
-    case "tight": return "#eab308";
     case "danger": return "#ef4444";
     default: return "#52525b";
   }
