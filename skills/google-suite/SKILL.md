@@ -5,20 +5,22 @@ description: Access Google services (Gmail, Calendar, Drive, Docs, Sheets, Tasks
 
 # Google Suite Skill
 
-Access all Google Workspace APIs via the `gws` CLI (googleworkspace/cli). This is the official Google Workspace CLI.
+> **⚠️ IMPORTANT: Use `gog` instead of `gws` for all Google operations.**
+> `gws` is NOT set up. Use `gog` which is fully authenticated for configured accounts.
+> Usage: `gog gmail <command> -a <account>` — see `gog auth status` for available accounts.
+> See `gog --help` for full command reference.
+
+~~Access all Google Workspace APIs via the `gws` CLI (googleworkspace/cli). This is the official Google Workspace CLI.~~
 
 ## CLI Location
 
-Binary: `~/.local/bin/gws`
+Binary: `/opt/homebrew/bin/gog` (NOT `gws`)
 
 ## Authentication
 
-Already authenticated via browser OAuth. To re-auth or add accounts:
-
-```bash
-gws auth login              # Browser-based OAuth
-gws auth status             # Check current auth
-```
+`gog` is already authenticated for configured accounts. No setup needed.
+- `gog gmail labels list -a <account>`
+- `gog auth status` to see available accounts
 
 ## CLI Syntax
 

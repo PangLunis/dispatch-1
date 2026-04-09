@@ -350,6 +350,9 @@ async function handleCommand(message) {
     case 'click_by_name':
       return await clickByAccessibleName(params.tabId, params.name, params.role, params.index || 0);
 
+    case 'set_file_input':
+      return await setFileInput(params.tabId, params.selector, params.files);
+
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -1624,6 +1627,51 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     }
   }
 });
+
+// Set files on a file input element using CDP DOM.setFileInputFiles
+async function setFileInput(tabId, selector, files) {
+  try {
+    await ensureDebuggerAttached(tabId);
+
+    // Enable DOM first
+    await chrome.debugger.sendCommand({ tabId }, 'DOM.enable');
+
+    // Get the document
+    const doc = await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', { depth: -1 });
+
+    // Use Runtime.evaluate to find the element
+    const evalResult = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+      expression: selector.includes('querySelector') ? selector : `document.querySelector('${selector.replace(/'/g, "\\'")}')`,
+      returnByValue: false
+    });
+
+    if (!evalResult.result || evalResult.result.type === 'undefined' || !evalResult.result.objectId) {
+      throw new Error(`No element found for selector: ${selector}`);
+    }
+
+    const objectId = evalResult.result.objectId;
+
+    // Use DOM.requestNode to convert Runtime objectId to DOM nodeId
+    const nodeResult = await chrome.debugger.sendCommand({ tabId }, 'DOM.requestNode', {
+      objectId: objectId
+    });
+
+    const nodeId = nodeResult.nodeId;
+
+    // Set the files on the input using nodeId
+    await chrome.debugger.sendCommand({ tabId }, 'DOM.setFileInputFiles', {
+      nodeId: nodeId,
+      files: files
+    });
+
+    // Disable DOM to clean up
+    await chrome.debugger.sendCommand({ tabId }, 'DOM.disable');
+
+    return { success: true, filesSet: files.length, nodeId, selector };
+  } catch (e) {
+    return { error: e.message, stack: e.stack };
+  }
+}
 
 // Initial alarm setup
 setupKeepaliveAlarm();

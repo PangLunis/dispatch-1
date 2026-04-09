@@ -118,7 +118,7 @@ export const ChatRow = React.memo(function ChatRow({ conversation, onPress, onLo
           </View>
           {preview ? (
             <View style={is_thinking ? styles.previewWithThinking : undefined}>
-              <Text style={[styles.preview, isUnread && styles.previewUnread]} numberOfLines={is_thinking ? 1 : 2}>
+              <Text style={[styles.preview, isUnread && styles.previewUnread]}>
                 {preview}
               </Text>
               {is_thinking && <TypingDots />}

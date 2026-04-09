@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["markdown", "pygments"]
+# dependencies = ["markdown", "pygments", "websocket-client"]
 # ///
 """
 Markdown to PDF converter using Chrome headless rendering.
@@ -435,6 +435,9 @@ hr {
 }
 
 /* Print styles */
+@page {
+    margin: 0.75in;
+}
 @media print {
     body {
         padding: 0;
@@ -507,11 +510,133 @@ def convert_markdown_to_html(md_content: str, theme: str = "default") -> str:
 
 
 def html_to_pdf(html_path: Path, pdf_path: Path) -> bool:
-    """Convert HTML file to PDF using Chrome headless."""
+    """Convert HTML file to PDF using Chrome headless with CDP via HTTP."""
+    import json
+    import base64
+    import socket
+    import time
+    import http.client
+    import urllib.request
 
+    # Find a free port
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(('', 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    # Launch Chrome with remote debugging (no initial URL - use about:blank)
     cmd = [
         CHROME_PATH,
-        "--headless",
+        "--headless=new",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--disable-software-rasterizer",
+        f"--remote-debugging-port={port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--remote-allow-origins=*",
+        "about:blank",
+    ]
+
+    chrome_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    try:
+        # Wait for Chrome to start
+        page_ws_url = None
+        for _ in range(30):
+            time.sleep(0.5)
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                conn.request("GET", "/json/list")
+                resp = conn.getresponse()
+                tabs = json.loads(resp.read().decode())
+                conn.close()
+                for tab in tabs:
+                    if tab.get("type") == "page":
+                        page_ws_url = tab.get("webSocketDebuggerUrl")
+                        break
+                if page_ws_url:
+                    break
+            except Exception:
+                continue
+
+        if not page_ws_url:
+            print("Error: Could not find Chrome page target", file=sys.stderr)
+            # Fall back to CLI
+            chrome_proc.terminate()
+            chrome_proc.wait()
+            return _fallback_pdf(html_path, pdf_path)
+
+        import websocket
+        ws = websocket.create_connection(page_ws_url, timeout=30)
+
+        # Navigate to the HTML file
+        ws.send(json.dumps({
+            "id": 1,
+            "method": "Page.navigate",
+            "params": {"url": f"file://{html_path}"}
+        }))
+        # Wait for navigation response
+        while True:
+            msg = json.loads(ws.recv())
+            if msg.get("id") == 1:
+                break
+
+        # Wait for page to load
+        time.sleep(2)
+
+        # Print to PDF with no headers/footers
+        ws.send(json.dumps({
+            "id": 2,
+            "method": "Page.printToPDF",
+            "params": {
+                "displayHeaderFooter": False,
+                "printBackground": True,
+                "marginTop": 0.75,
+                "marginBottom": 0.75,
+                "marginLeft": 0.75,
+                "marginRight": 0.75,
+                "paperWidth": 8.5,
+                "paperHeight": 11,
+            }
+        }))
+
+        # Read response for printToPDF (skip events)
+        while True:
+            result = json.loads(ws.recv())
+            if result.get("id") == 2:
+                break
+
+        ws.close()
+
+        if "result" in result and "data" in result["result"]:
+            pdf_data = base64.b64decode(result["result"]["data"])
+            pdf_path.write_bytes(pdf_data)
+            return True
+        else:
+            print(f"Error: PDF generation failed: {result}", file=sys.stderr)
+            return False
+
+    except ImportError:
+        chrome_proc.terminate()
+        chrome_proc.wait()
+        return _fallback_pdf(html_path, pdf_path)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return False
+    finally:
+        chrome_proc.terminate()
+        try:
+            chrome_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            chrome_proc.kill()
+
+
+def _fallback_pdf(html_path: Path, pdf_path: Path) -> bool:
+    """Fallback PDF generation using CLI flags."""
+    cmd = [
+        CHROME_PATH,
+        "--headless=new",
         "--disable-gpu",
         "--no-sandbox",
         "--disable-software-rasterizer",
@@ -519,18 +644,9 @@ def html_to_pdf(html_path: Path, pdf_path: Path) -> bool:
         "--print-to-pdf-no-header",
         f"file://{html_path}",
     ]
-
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         return result.returncode == 0 or pdf_path.exists()
-    except subprocess.TimeoutExpired:
-        print("Error: Chrome timed out", file=sys.stderr)
-        return False
     except Exception as e:
         print(f"Error running Chrome: {e}", file=sys.stderr)
         return False

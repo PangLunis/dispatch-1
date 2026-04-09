@@ -398,11 +398,23 @@ class SDKSession:
         Uses simple keyword matching — no time parsing. The API message format
         (e.g., "You've hit your limit · resets 10am") is not a stable contract,
         so we suppress for a fixed duration instead of trying to parse reset times.
+
+        IMPORTANT: Only match short messages (< 200 chars) to avoid false positives
+        from the session's own output discussing limits in longer text.
+        Additionally requires "resets" or "·" to confirm it's an API limit message.
         """
         if not text:
             return
-        # Match patterns like "hit your limit", "hit the limit", "reached your limit"
+        # API limit messages are short — ignore long assistant output that
+        # might coincidentally contain "hit the limit" in conversation
+        if len(text) > 200:
+            return
+        # Primary pattern: "hit your limit" or "reached your limit" + must contain
+        # "resets" or "·" (middle dot) which are hallmarks of the API limit message
         if not re.search(r"(hit|reached)\s+(your|the)\s+limit", text, re.IGNORECASE):
+            return
+        if "resets" not in text.lower() and "\u00b7" not in text:
+            self._log.debug(f"BLOCK_LIMIT | skipped (no 'resets' or '·'): {text[:100]}")
             return
 
         self._log.info(f"BLOCK_LIMIT | detected: {text}")

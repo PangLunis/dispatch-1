@@ -1,181 +1,117 @@
 #!/usr/bin/env -S uv run --script
 """
-Philips Hue control script.
-Usage:
-    python3 control.py on <light_name>
-    python3 control.py off <light_name>
-    python3 control.py brightness <light_name> <0-254>
-    python3 control.py color <light_name> <hue 0-65535> <sat 0-254>
-    python3 control.py list [bridge]
+Philips Hue control — multi-bridge, auto-discovery, full API.
+
+LIGHTS:
+    list [bridge]                   List all lights (alias: ls)
+    on <light>                      Turn on a light
+    off <light>                     Turn off a light
+    toggle <light>                  Toggle on/off
+    brightness <light> <0-254>      Set brightness (alias: bri)
+    color <light> <hue> <sat>       Set color (hue 0-65535, sat 0-254)
+    temp <light> <153-500>          Color temp in mireds (alias: ct)
+    alert <light> [long]            Flash once, or 15s with 'long'
+
+ROOMS:
+    room list                       List all rooms/groups
+    room on <room>                  Turn on all lights in room
+    room off <room>                 Turn off all lights in room
+    room blink <room> [seconds]     Blink room (off, wait, on)
+
+SCENES:
+    scenes [bridge]                 List all scenes
+    scene <name>                    Activate a scene by name
+
+BRIDGES:
+    bridges                         Show configured bridges + connectivity
+    discover                        Find bridges on network (N-UPnP)
+    pair <ip>                       Pair with a bridge (press button first!)
+    status                          Full health check
+
+OPTIONS (work anywhere in command):
+    --transition <seconds>          Transition time (default: instant)
+    --bridge <name>                 Target a specific bridge
+    --json                          JSON output (works with list, room list,
+                                    scenes, bridges)
+    --quiet                         Suppress OK messages (for scripting)
+
+Partial name matching: 'Kitchen' matches 'Kitchen Ceiling 1'.
+Errors go to stderr, data to stdout — safe for piping.
 """
 
 import sys
-import json
 import os
-import urllib.request
-import urllib.error
 
-# Load bridge configurations
-CONFIG_DIR = os.path.expanduser("~/.hue")
+# Add scripts dir to path for local imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-BRIDGES = {}
-for config_file in ["office.json", "home.json"]:
-    config_path = os.path.join(CONFIG_DIR, config_file)
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            config = json.load(f)
-            bridge_key = config_file.replace(".json", "")
-            BRIDGES[bridge_key] = config
+from hue_lib.config import load_bridges
+from hue_lib.api import HueAPI
+from hue_lib.commands import COMMANDS
 
-def get_all_lights():
-    """Get all lights from all bridges."""
-    all_lights = {}
-    for bridge_key, config in BRIDGES.items():
-        url = f"http://{config['bridge_ip']}/api/{config['username']}/lights"
-        try:
-            with urllib.request.urlopen(url, timeout=5) as response:
-                lights = json.loads(response.read())
-                for light_id, light in lights.items():
-                    all_lights[f"{bridge_key}:{light_id}"] = {
-                        "id": light_id,
-                        "name": light["name"],
-                        "bridge": bridge_key,
-                        "bridge_ip": config["bridge_ip"],
-                        "username": config["username"],
-                        "state": light["state"]
-                    }
-        except Exception as e:
-            print(f"Error connecting to {bridge_key}: {e}")
-    return all_lights
 
-def find_light(name):
-    """Find a light by name (case-insensitive partial match)."""
-    all_lights = get_all_lights()
-    name_lower = name.lower()
-
-    # First try exact match
-    for key, light in all_lights.items():
-        if light["name"].lower() == name_lower:
-            return light
-
-    # Then try partial match
-    for key, light in all_lights.items():
-        if name_lower in light["name"].lower():
-            return light
-
+def pop_flag(args, flag, has_value=True):
+    """Remove a flag from args list and return its value. Position-independent."""
+    for i, arg in enumerate(args):
+        if arg == flag:
+            if has_value and i + 1 < len(args):
+                val = args[i + 1]
+                del args[i:i + 2]
+                return val
+            elif not has_value:
+                del args[i]
+                return True
     return None
 
-def set_light_state(light, state):
-    """Set the state of a light."""
-    url = f"http://{light['bridge_ip']}/api/{light['username']}/lights/{light['id']}/state"
-    data = json.dumps(state).encode()
-
-    req = urllib.request.Request(url, data=data, method='PUT')
-    req.add_header('Content-Type', 'application/json')
-
-    try:
-        with urllib.request.urlopen(req, timeout=5) as response:
-            result = json.loads(response.read())
-            return any("success" in r for r in result)
-    except Exception as e:
-        print(f"Error: {e}")
-        return False
-
-def list_lights(bridge_filter=None):
-    """List all lights."""
-    all_lights = get_all_lights()
-
-    by_bridge = {}
-    for key, light in all_lights.items():
-        bridge = light["bridge"]
-        if bridge_filter and bridge_filter.lower() != bridge.lower():
-            continue
-        if bridge not in by_bridge:
-            by_bridge[bridge] = []
-        state = "ON" if light["state"]["on"] else "OFF"
-        bri = light["state"].get("bri", "N/A")
-        by_bridge[bridge].append(f"  {light['id']:>2}: {light['name']} [{state}] bri={bri}")
-
-    for bridge, lights in sorted(by_bridge.items()):
-        print(f"\n{bridge.upper()} BRIDGE ({BRIDGES[bridge]['bridge_name']}):")
-        print("\n".join(sorted(lights, key=lambda x: int(x.split(":")[0].strip()))))
 
 def main():
-    if len(sys.argv) < 2:
+    args = list(sys.argv[1:])
+
+    if not args or args[0] in ("--help", "-h"):
+        print(__doc__)
+        sys.exit(0)
+
+    # Extract global flags (position-independent)
+    transition = pop_flag(args, "--transition")
+    bridge_filter = pop_flag(args, "--bridge")
+    as_json = pop_flag(args, "--json", has_value=False)
+    quiet = pop_flag(args, "--quiet", has_value=False)
+
+    if not args:
         print(__doc__)
         sys.exit(1)
 
-    command = sys.argv[1].lower()
+    command = args[0].lower()
 
-    if command == "list":
-        bridge_filter = sys.argv[2] if len(sys.argv) > 2 else None
-        list_lights(bridge_filter)
-        return
-
-    if command == "on" and len(sys.argv) >= 3:
-        name = " ".join(sys.argv[2:])
-        light = find_light(name)
-        if not light:
-            print(f"Light '{name}' not found")
-            sys.exit(1)
-        if set_light_state(light, {"on": True}):
-            print(f"OK: {light['name']} -> ON")
-        else:
-            print("FAILED")
-            sys.exit(1)
-
-    elif command == "off" and len(sys.argv) >= 3:
-        name = " ".join(sys.argv[2:])
-        light = find_light(name)
-        if not light:
-            print(f"Light '{name}' not found")
-            sys.exit(1)
-        if set_light_state(light, {"on": False}):
-            print(f"OK: {light['name']} -> OFF")
-        else:
-            print("FAILED")
-            sys.exit(1)
-
-    elif command == "brightness" and len(sys.argv) >= 4:
-        name = " ".join(sys.argv[2:-1])
-        try:
-            bri = max(0, min(254, int(sys.argv[-1])))
-        except ValueError:
-            print("Brightness must be 0-254")
-            sys.exit(1)
-
-        light = find_light(name)
-        if not light:
-            print(f"Light '{name}' not found")
-            sys.exit(1)
-        if set_light_state(light, {"on": True, "bri": bri}):
-            print(f"OK: {light['name']} -> brightness {bri}")
-        else:
-            print("FAILED")
-            sys.exit(1)
-
-    elif command == "color" and len(sys.argv) >= 5:
-        name = " ".join(sys.argv[2:-2])
-        try:
-            hue = max(0, min(65535, int(sys.argv[-2])))
-            sat = max(0, min(254, int(sys.argv[-1])))
-        except ValueError:
-            print("Hue must be 0-65535, sat must be 0-254")
-            sys.exit(1)
-
-        light = find_light(name)
-        if not light:
-            print(f"Light '{name}' not found")
-            sys.exit(1)
-        if set_light_state(light, {"on": True, "hue": hue, "sat": sat}):
-            print(f"OK: {light['name']} -> hue={hue} sat={sat}")
-        else:
-            print("FAILED")
-            sys.exit(1)
-
-    else:
-        print(__doc__)
+    if command not in COMMANDS:
+        # Suggest close matches: prefix OR substring
+        close = set()
+        if len(command) >= 2:
+            for c in COMMANDS:
+                if c.startswith(command[:2]) or command in c or c in command:
+                    close.add(c)
+        print(f"Unknown command: {command}", file=sys.stderr)
+        if close:
+            print(f"Did you mean: {', '.join(sorted(close))}?", file=sys.stderr)
+        print("Run 'control.py --help' for usage.", file=sys.stderr)
         sys.exit(1)
+
+    # Build context
+    bridges = load_bridges()
+    apis = {key: HueAPI(key, config) for key, config in bridges.items()}
+
+    ctx = {
+        "apis": apis,
+        "bridges": bridges,
+        "bridge_filter": bridge_filter,
+        "transition": transition,
+        "as_json": as_json,
+        "quiet": quiet,
+    }
+
+    # Dispatch
+    COMMANDS[command](ctx, args[1:])
+
 
 if __name__ == "__main__":
     main()

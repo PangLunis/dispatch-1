@@ -82,7 +82,7 @@ def save_global_index(index: dict):
     index["updated"] = datetime.now().isoformat()
     index_path = get_global_index_path()
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(json.dumps(index, indent=2))
+    index_path.write_text(json.dumps(index, indent=2, default=str))
 
 
 def update_index_entry(plan_path: Path, plan_data: dict):

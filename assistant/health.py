@@ -442,16 +442,45 @@ _last_disk_alert_time: float = 0.0
 
 
 def _get_apfs_container_space() -> tuple[int, int] | None:
-    """Get APFS container total and free bytes via diskutil.
+    """Get real available disk space on macOS including purgeable space.
 
-    On macOS with APFS, the container free space includes purgeable space
-    (caches, snapshots, etc. that macOS can reclaim on demand). This matches
-    what macOS Settings shows as "Available" and avoids false disk warnings.
+    Uses Swift's volumeAvailableCapacityForImportantUsageKey which returns
+    the same "Available" value shown in macOS System Settings. This includes
+    purgeable space (caches, logs, etc.) that macOS can reclaim on demand.
+
+    Falls back to diskutil APFS container free space if Swift fails.
 
     Returns (total_bytes, free_bytes) or None if not available.
     """
     if sys.platform != "darwin":
         return None
+
+    # Primary: Use Swift to get real available space (includes purgeable)
+    swift_code = '''
+import Foundation
+let url = URL(fileURLWithPath: "/")
+let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey]
+if let values = try? url.resourceValues(forKeys: keys),
+   let available = values.volumeAvailableCapacityForImportantUsage,
+   let total = values.volumeTotalCapacity {
+    print("\\(total) \\(available)")
+}
+'''
+    try:
+        result = subprocess.run(
+            ["swift", "-e", swift_code],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parts = result.stdout.strip().split()
+            if len(parts) == 2:
+                total_bytes = int(parts[0])
+                free_bytes = int(parts[1])
+                return (total_bytes, free_bytes)
+    except Exception as e:
+        log.debug(f"Swift disk space query failed: {e}")
+
+    # Fallback: diskutil APFS container space (does NOT include purgeable)
     try:
         result = subprocess.run(
             ["diskutil", "info", "-plist", "/"],
@@ -472,9 +501,9 @@ def _get_apfs_container_space() -> tuple[int, int] | None:
 def check_disk_space(warn_pct: float = 90.0, critical_pct: float = 95.0) -> dict[str, Any]:
     """Check disk space on the root volume.
 
-    On macOS with APFS, uses container-level free space which includes
-    purgeable space (what macOS Settings shows as "Available"). Falls back
-    to shutil.disk_usage on non-APFS or non-macOS systems.
+    On macOS, uses Swift's volumeAvailableCapacityForImportantUsageKey to get
+    real available space including purgeable (matches macOS System Settings).
+    Falls back to APFS container free, then shutil.disk_usage.
 
     Returns dict with:
         total_gb, used_gb, free_gb, used_pct,

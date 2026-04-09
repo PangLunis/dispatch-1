@@ -1,110 +1,94 @@
 ---
 name: hue
-description: Control Philips Hue lights (on/off, brightness, colors). Use together with lutron skill when user asks about controlling lights or smart home lighting.
+description: Control Philips Hue lights (on/off, brightness, colors, scenes). Multi-bridge support with auto-discovery and pairing. Use together with lutron skill for smart home lighting.
+allowed_tiers: admin, family
 ---
 
 # Philips Hue Skill
 
-Control Philips Hue lights across multiple bridges.
+Control Philips Hue lights across multiple bridges. Supports discovery, pairing, scenes, color temperature, rooms, and alerts.
 
-## Quick Commands
+## Quick Reference
+
+```bash
+# All commands use: uv run ~/.claude/skills/hue/scripts/control.py <command>
+HUE="uv run ~/.claude/skills/hue/scripts/control.py"
+```
 
 ### Individual Lights
+
 ```bash
-# Turn on/off a light
-uv run ~/.claude/skills/hue/scripts/control.py on "Piano Backlight"
-uv run ~/.claude/skills/hue/scripts/control.py off "Piano Backlight"
-
-# Set brightness (0-254)
-uv run ~/.claude/skills/hue/scripts/control.py brightness "Piano Backlight" 150
-
-# Set color (hue 0-65535, sat 0-254)
-uv run ~/.claude/skills/hue/scripts/control.py color "Piano Backlight" 10000 254
-
-# List all lights
-uv run ~/.claude/skills/hue/scripts/control.py list
-uv run ~/.claude/skills/hue/scripts/control.py list office
+$HUE list                          # List all lights (alias: ls)
+$HUE list alpha                    # List lights on Alpha bridge only
+$HUE on "Kitchen Ceiling 1"       # Turn on
+$HUE off "Kitchen Ceiling 1"      # Turn off
+$HUE toggle "Kitchen Ceiling 1"   # Toggle on/off
+$HUE brightness "Kitchen" 200     # Set brightness 0-254 (alias: bri)
+$HUE color "Kristens Room 1" 10000 254   # Set color (hue 0-65535, sat 0-254)
+$HUE temp "Kitchen Ceiling 1" 300        # Color temperature 153-500 (alias: ct)
+$HUE alert "Kitchen Ceiling 1"          # Flash once
+$HUE alert "Kitchen Ceiling 1" long     # Flash for 15 seconds
 ```
 
-### Room/Group Control
-```bash
-# Blink a room (off, wait, on)
-uv run ~/.claude/skills/hue/scripts/blink_room.py "Great Room Lamps" 1
+### Rooms / Groups
 
-# Control rooms via API:
-# Turn room on:  curl -X PUT "http://<ip>/api/<user>/groups/<id>/action" -d '{"on":true}'
-# Turn room off: curl -X PUT "http://<ip>/api/<user>/groups/<id>/action" -d '{"on":false}'
+```bash
+$HUE room list                    # List all rooms with on/off state
+$HUE room on "Basement"           # Turn on all lights in room
+$HUE room off "Master Bedroom"    # Turn off all lights in room
+$HUE room blink "Front Hallway" 1 # Blink room (off, 1s delay, on)
 ```
 
-## Rooms/Groups
+### Scenes
 
-### Office Bridge
-| ID | Name | Type |
-|----|------|------|
-| 81 | Great Room Lamps | Room |
-| 82 | Great Room Floor Lights | Room |
-| 83 | Great Room | Zone |
-| 84 | Great Room Overhead Spots | Room |
-| 85 | Office | Room |
+```bash
+$HUE scenes                       # List all scenes across all bridges
+$HUE scenes alpha                 # List scenes on Alpha only
+$HUE scene "Energize"             # Activate a scene by name
+```
 
-### Home Bridge
-| ID | Name | Type |
-|----|------|------|
-| 84 | Front Hallway | Room |
-| 85 | Upstairs Loft | Room |
-| 86 | Big Fish Tank | Room |
-| 88 | Master Bedroom | Room |
-| 89 | Basement | Room |
+### Bridge Management
+
+```bash
+$HUE discover                     # Find all bridges on network (via meethue N-UPnP)
+$HUE bridges                      # Show configured bridges + connectivity status
+$HUE pair <bridge-ip>             # Pair with a new bridge (press button first!)
+$HUE status                       # Full health check — bridges + discovery
+```
+
+### Global Options (position-independent)
+
+```bash
+$HUE on "light" --transition 2.0     # Transition over 2 seconds
+$HUE off "light" --bridge alpha      # Target specific bridge
+$HUE list --json                     # JSON output (for scripting/jq pipelines)
+$HUE --json room list                # Flags work before or after command
+$HUE bridges --json                  # JSON bridge status
+$HUE on "light" --quiet              # Suppress OK messages (for scripting)
+```
 
 ## Bridges
 
-| Name | IP | Location |
-|------|-----|----------|
-| Great Office kit | see config.local.yaml hue.bridges.office.ip | office |
-| Hue Bridge | see config.local.yaml hue.bridges.home.ip | home |
+Use `$HUE bridges` or `$HUE discover` to see current bridge IPs and pairing status. Credentials stored in `~/.hue/` as JSON files.
 
-## Office Bridge Lights (24)
-- String Lights Stairs
-- Hanging Lamp Wall Laundry Side
-- Red Shade Lamp Wall Laundry Side
-- Edison Tri Lamp
-- Microphone Lamp
-- Christmas Tree Lights
-- Cylinder Lamp Wood Base
-- Salt Lamp
-- Floor Lamp Egg Ratan
-- Spot Piano
-- Overhead Spot Angled Center
-- Overhead Spot Straight Wall
-- Piano Backlight
-- Stair Floor Strip
-- Spot Couch Sliding Door
-- Incense Center Table Strip
-- Top Stairs Office Loft
-- Office Overhead Desk 1-3
-- Office Overhead Hole 1-3
-- Christmas tree
-
-## Home Bridge Lights (44)
-- Hallway Center 1-5
-- Hallway Front 1-5
-- Side A, Side B
-- Bedroom ceiling grid (b0,0 - b3,4)
-- Bar 1-3
-- Closet Corner Overhead
-- Closet art light
-- Outdoor Strip 1
-- Fishtank Light Strip
-- Upstairs Light Above Desk
-- Vivint Panel
-- Smart plug
-- Noise Machine Master Bedroom
+**To pair a new bridge:** Press the physical button on the bridge, then within 30 seconds run:
+```bash
+$HUE pair <bridge-ip>
+```
 
 ## Configuration
 
-Credentials stored in: ~/.hue/
-- office.json
-- home.json
+Credentials stored in `~/.hue/` as JSON files. The config loader dynamically reads ALL `*.json` files in this directory (no hardcoded filenames).
+
+Each JSON file contains:
+```json
+{
+  "bridge_ip": "<bridge-ip>",
+  "bridge_name": "<name>",
+  "bridge_id": "<serial>",
+  "username": "<api-key>"
+}
+```
 
 ## Entertainment / Light Show (Basement Ceiling Grid)
 
@@ -189,3 +173,43 @@ Stop the server:
 ```bash
 ssh pocket-sven "pkill -f entertainment-v2.js"
 ```
+
+## Light Names
+
+**Do NOT hardcode light names in this file.** Light names change as Ryan adds/removes bulbs. Always use `control.py list` for current inventory.
+
+Run `$HUE list` to see current lights with:
+- Name, on/off state, reachability (✓/✗), brightness, color temp, model, product type
+
+## Troubleshooting
+
+### Bulb Factory Reset (Philips Hue)
+If a bulb is unresponsive, unreachable, or you want to move it to a different bridge:
+1. Screw bulb into any socket
+2. Turn power on/off **5 times** (1 sec on, 1 sec off each cycle)
+3. Bulb will blink to confirm factory reset
+4. Open Hue app → room → **Search for lights** → bulb appears as new
+5. Old dead reference on previous bridge can be deleted
+
+### Bridge Unreachable
+- Check IP hasn't changed: `$HUE discover`
+- If IP changed, update `~/.hue/<bridge>.json` with new IP
+- If bridge was factory reset, re-pair: `$HUE pair <new_ip>`
+
+### Light Shows Unreachable (✗)
+- Physical switch is off (most common)
+- Bulb is too far from bridge (Zigbee range ~30ft)
+- Bulb needs factory reset (see above)
+
+## Scripting Notes
+
+- Errors go to **stderr**, data to **stdout** — safe for piping: `$HUE list --json | jq '.[] | .name'`
+- Use `--quiet` to suppress OK messages in scripts
+- Exit codes: 0 = success, 1 = error (bad args, not found, API failure)
+- Partial name matching: `"Kitchen"` matches `"Kitchen Ceiling 1"` (exact match preferred)
+
+## Integration
+
+- **Lutron skill**: Use together for full home lighting (Hue = color/smart, Lutron = dimmers/shades)
+- **House app**: Hue lights accessible via house-app frontend
+- **Sonos**: Pair with announcements for notification workflows

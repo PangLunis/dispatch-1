@@ -21,6 +21,28 @@
  *   node deals.cjs health                                   # Store health status
  */
 
+// Auto-load secrets.env for API keys (Best Buy, etc.)
+const fs = require('fs');
+const path = require('path');
+const secretsPath = path.join(process.env.HOME || '', '.claude', 'secrets.env');
+if (fs.existsSync(secretsPath)) {
+  const lines = fs.readFileSync(secretsPath, 'utf8').split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx > 0) {
+      const key = trimmed.substring(0, eqIdx).trim();
+      let val = trimmed.substring(eqIdx + 1).trim();
+      // Strip surrounding quotes
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (!process.env[key]) process.env[key] = val;
+    }
+  }
+}
+
 const stores = require('./lib/stores.cjs');
 const scraper = require('./lib/scraper.cjs');
 const httpScraper = require('./lib/http-scraper.cjs');

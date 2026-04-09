@@ -273,6 +273,20 @@ def main():
         if Path(png_path).exists():
             print(f"PNG|{png_path}")
 
+    # Analyze for 3D printing (overhang, wall thickness, printability score)
+    ANALYZE_SCRIPT = Path.home() / ".claude/skills/cad/scripts/cad-analyze"
+    if Path(stl_path).exists() and ANALYZE_SCRIPT.exists():
+        print("\n")  # Blank line before analysis
+        analyze_result = subprocess.run(
+            [str(ANALYZE_SCRIPT), stl_path],
+            capture_output=True,
+            text=True
+        )
+        if analyze_result.returncode == 0:
+            print(analyze_result.stdout)
+        else:
+            print(f"Warning: Printability analysis failed: {analyze_result.stderr}")
+
     return 0
 
 if __name__ == "__main__":
